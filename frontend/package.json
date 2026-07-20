@@ -28,7 +28,7 @@
     "eslint-plugin-react-hooks": "^5.1.0",
     "globals": "^17.7.0",
     "prettier": "^3.4.2",
-    "vite": "^8.1.4",
+    "vite": "^8.1.5",
     "vitest": "^4.1.10"
   }
 }
