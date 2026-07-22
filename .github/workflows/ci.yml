@@ -109,11 +109,8 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install ruff
-      # Advisory until the one-time lint/format cleanup PR lands.
       - run: ruff check .
-        continue-on-error: true
       - run: ruff format --check .
-        continue-on-error: true
       # TODO: re-enable the test suite. Several tests currently assume a writable
       # /root home (codex/claude dirs) and one has an outdated assertion, so they
       # fail on CI runners. Lint-only for now.

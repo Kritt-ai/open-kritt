@@ -8,7 +8,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-
 LOGGER = logging.getLogger("open_kritt_engine")
 MODEL_ERROR_OUTPUT_DIR = "model-error-outputs"
 MODEL_ERROR_OUTPUT_LIMIT = 5
@@ -53,10 +52,7 @@ def record_model_error_output(
     created_at = datetime.now(timezone.utc)
     root = Path(data_dir) / MODEL_ERROR_OUTPUT_DIR
     timestamp = created_at.strftime("%Y%m%dT%H%M%S.%fZ")
-    dirname = (
-        f"{timestamp}-{time.time_ns()}-"
-        f"{kind}-scan-{scan_id}-metadata-{metadata_id}-attempt-{attempt}"
-    )
+    dirname = f"{timestamp}-{time.time_ns()}-{kind}-scan-{scan_id}-metadata-{metadata_id}-attempt-{attempt}"
     if step_id is not None:
         dirname += f"-step-{step_id}"
     final_path = root / dirname
