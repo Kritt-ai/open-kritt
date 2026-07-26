@@ -497,7 +497,10 @@ class Database:
             """
             UPDATE public.scans
             SET reasoning = jsonb_set(
-                    coalesce(reasoning, '{}'::jsonb),
+                    CASE WHEN jsonb_typeof(reasoning) = 'object'
+                         THEN reasoning
+                         ELSE '{}'::jsonb
+                    END,
                     '{storage_warning}',
                     %s::jsonb,
                     true

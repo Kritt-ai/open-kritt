@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { Prisma } from '@prisma/client';
 import { prisma } from '../db.js';
 import {
   validateScan,
@@ -161,7 +162,9 @@ export async function patchScanIfPresent(tx, scanId, body, { assertAvailable, av
     }
     data.status = status;
     if (status === 'pending' && existing.status !== 'pending') {
-      data.reasoning = null;
+      // Prisma writes plain null as JSON 'null' (a jsonb scalar), which breaks
+      // the engine's jsonb_set(reasoning, ...) updates; DbNull stores SQL NULL.
+      data.reasoning = Prisma.DbNull;
       data.lastResumedAt = new Date();
     }
   }
