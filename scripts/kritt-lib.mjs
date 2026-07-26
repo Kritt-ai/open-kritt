@@ -6,10 +6,21 @@ import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 
-export const PROVIDER_KEYS = ['CODEX_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'OPENROUTER_API_KEY'];
+export const PROVIDER_KEYS = [
+  'CODEX_API_KEY',
+  'OPENAI_API_KEY',
+  'ANTHROPIC_API_KEY',
+  'OPENROUTER_API_KEY',
+  'OPENCODE_API_KEY',
+];
 export const CODEX_LOGIN_STATUS_KEY = 'CODEX_LOGIN_CONFIGURED';
-const MANAGED_PROVIDER_LABELS = {
+export const MANAGED_PROVIDER_LABELS = {
   openrouter: 'OpenRouter API key',
+  opencode: 'OpenCode Zen API key',
+};
+export const MANAGED_PROVIDER_ENV_KEYS = {
+  OPENROUTER_API_KEY: 'openrouter',
+  OPENCODE_API_KEY: 'opencode',
 };
 const CODEX_LOGIN_CONTAINER_USER_HOME = '/open-kritt-login';
 const CODEX_LOGIN_CONTAINER_HOME = `${CODEX_LOGIN_CONTAINER_USER_HOME}/.codex`;
@@ -36,6 +47,11 @@ export const ENVIRONMENT_ITEMS = [
     key: 'OPENROUTER_API_KEY',
     label: 'OpenRouter API key',
     info: 'Used for supported OpenRouter-compatible model and harness selections.',
+  },
+  {
+    key: 'OPENCODE_API_KEY',
+    label: 'OpenCode Zen API key',
+    info: 'Used for OpenCode Zen-hosted Claude and GPT-5.x-codex model and harness selections.',
   },
   {
     key: 'GITHUB_TOKEN',
@@ -473,7 +489,8 @@ export async function getSetupStatus({ rootDir, envFile = join(rootDir, '.env'),
   const valuesPresent = Object.fromEntries(
     ENVIRONMENT_ITEMS.map(({ key }) => [
       key,
-      Boolean(values[key]) && !(key === 'OPENROUTER_API_KEY' && disabledProviders.includes('openrouter')),
+      Boolean(values[key]) &&
+        !(key in MANAGED_PROVIDER_ENV_KEYS && disabledProviders.includes(MANAGED_PROVIDER_ENV_KEYS[key])),
     ])
   );
   const codexAuthInspections = await Promise.all(
@@ -715,17 +732,17 @@ async function manageEnvironmentItem(context, item) {
       write(io, 'Nothing changed.');
       return;
     }
-    if (item.key === 'OPENROUTER_API_KEY') {
+    if (item.key in MANAGED_PROVIDER_ENV_KEYS) {
       const status = await getSetupStatus(context);
-      await saveManagedProviderCredential(status.credentialsPath, 'openrouter', value);
+      await saveManagedProviderCredential(status.credentialsPath, MANAGED_PROVIDER_ENV_KEYS[item.key], value);
     }
     await setEnvValue(envFile, item.key, value);
     write(io, `${item.label} saved.`);
   } else if (action === '2') {
     if (await prompter.confirm(`Unset ${item.label}?`)) {
-      if (item.key === 'OPENROUTER_API_KEY') {
+      if (item.key in MANAGED_PROVIDER_ENV_KEYS) {
         const status = await getSetupStatus(context);
-        await disableManagedProviderCredential(status.credentialsPath, 'openrouter');
+        await disableManagedProviderCredential(status.credentialsPath, MANAGED_PROVIDER_ENV_KEYS[item.key]);
       }
       await setEnvValue(envFile, item.key, '');
       write(io, `${item.label} unset.`);
@@ -1033,8 +1050,7 @@ async function manageCodexLogin(context) {
       if (result.ok) {
         await syncCodexLoginStatus(context);
         write(io, result.message);
-      }
-      else writeError(io, result.message);
+      } else writeError(io, result.message);
     }
   } else if (action === '4') {
     write(io, itemInfo(CODEX_LOGIN));
@@ -1100,11 +1116,12 @@ export async function runSetup(options = {}) {
     write(context.io, '4) OpenAI API key');
     write(context.io, '5) Anthropic API key');
     write(context.io, '6) OpenRouter API key');
-    write(context.io, '7) GitHub token');
-    write(context.io, '8) Finish setup');
+    write(context.io, '7) OpenCode Zen API key');
+    write(context.io, '8) GitHub token');
+    write(context.io, '9) Finish setup');
     const choice = (await context.prompter.ask('Choose an item: ')).toLowerCase();
 
-    if (choice === '8' || choice === 'q' || choice === 'quit') break;
+    if (choice === '9' || choice === 'q' || choice === 'quit') break;
     if (choice === '1') {
       await manageCodexLogin(context);
       continue;
@@ -1113,7 +1130,7 @@ export async function runSetup(options = {}) {
       await manageClaudeLogin(context);
       continue;
     }
-    const item = ENVIRONMENT_ITEMS[Number(choice) - 3] || (choice === '7' ? ENVIRONMENT_ITEMS[4] : null);
+    const item = ENVIRONMENT_ITEMS[Number(choice) - 3];
     if (!item) {
       write(context.io, 'Choose a listed item.');
       continue;
@@ -1182,7 +1199,7 @@ Creates .env from .env.example when it does not exist, shows credential status, 
 
 Configure one model provider key or a saved Codex or Claude login. GITHUB_TOKEN is optional and only needed for private GitHub repositories.
 
-The Codex and Claude login flows use temporary engine containers and persist their provider credentials in the same homes monitored by Accounts. OpenRouter keys are saved in .env and mirrored to the managed credential store used by running services.
+The Codex and Claude login flows use temporary engine containers and persist their provider credentials in the same homes monitored by Accounts. OpenRouter and OpenCode Zen keys are saved in .env and mirrored to the managed credential store used by running services.
 
 The recommended Codex flow uses device authentication (no localhost callback) and saves auth.json with host-user ownership and private permissions.
 

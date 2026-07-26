@@ -223,7 +223,7 @@ test('setup stores a selected secret without printing it', async (t) => {
   await runSetup({
     ...project,
     io,
-    prompter: answers({ ask: ['3', '1', '8'], secret: [secret] }),
+    prompter: answers({ ask: ['3', '1', '9'], secret: [secret] }),
   });
 
   assert.equal(parseEnv(await readFile(project.envFile, 'utf8')).CODEX_API_KEY, secret);
@@ -238,7 +238,7 @@ test('setup stores OpenRouter in .env and the managed credential store', async (
   await runSetup({
     ...project,
     io,
-    prompter: answers({ ask: ['6', '1', '8'], secret: [secret] }),
+    prompter: answers({ ask: ['6', '1', '9'], secret: [secret] }),
   });
 
   const env = parseEnv(await readFile(project.envFile, 'utf8'));
@@ -247,6 +247,27 @@ test('setup stores OpenRouter in .env and the managed credential store', async (
   );
   assert.equal(env.OPENROUTER_API_KEY, secret);
   assert.equal(store.credentials.openrouter, secret);
+  assert.deepEqual(store.disabledEnvironmentProviders, []);
+  assert.doesNotMatch(io.output.text, new RegExp(secret));
+});
+
+test('setup stores OpenCode Zen in .env and the managed credential store', async (t) => {
+  const project = await createProject(t);
+  const io = testIo();
+  const secret = 'opencode-managed-secret';
+
+  await runSetup({
+    ...project,
+    io,
+    prompter: answers({ ask: ['7', '1', '9'], secret: [secret] }),
+  });
+
+  const env = parseEnv(await readFile(project.envFile, 'utf8'));
+  const store = JSON.parse(
+    await readFile(join(project.rootDir, '.data', 'engine', 'credentials', 'providers.json'), 'utf8')
+  );
+  assert.equal(env.OPENCODE_API_KEY, secret);
+  assert.equal(store.credentials.opencode, secret);
   assert.deepEqual(store.disabledEnvironmentProviders, []);
   assert.doesNotMatch(io.output.text, new RegExp(secret));
 });
@@ -287,7 +308,7 @@ test('guided Claude login uses the shared home monitored by Accounts', async (t)
   await runSetup({
     ...project,
     io,
-    prompter: answers({ ask: ['2', '1', '8'] }),
+    prompter: answers({ ask: ['2', '1', '9'] }),
     runner,
   });
 
@@ -320,7 +341,7 @@ test('setup explains the optional GitHub token', async (t) => {
   await runSetup({
     ...project,
     io,
-    prompter: answers({ ask: ['7', '3', '8'] }),
+    prompter: answers({ ask: ['8', '3', '9'] }),
   });
 
   assert.match(io.output.text, /private GitHub repositories/);
@@ -397,7 +418,7 @@ test('guided Docker login copies a host-owned auth file from an isolated contain
   await runSetup({
     ...project,
     io,
-    prompter: answers({ ask: ['1', '1', '8'] }),
+    prompter: answers({ ask: ['1', '1', '9'] }),
     runner,
   });
 
@@ -446,10 +467,7 @@ test('guided Docker login copies a host-owned auth file from an isolated contain
   ]);
   assert.match(commands[1].args.at(-1), /open-kritt-codex-login-.*auth\.json$/);
   assert.equal(await readFile(targetPath, 'utf8'), '{"tokens":{"access_token":"test"}}');
-  assert.equal(
-    (await stat(join(project.rootDir, '.data', 'codex-accounts', 'cli', '.codex'))).mode & 0o777,
-    0o700
-  );
+  assert.equal((await stat(join(project.rootDir, '.data', 'codex-accounts', 'cli', '.codex'))).mode & 0o777, 0o700);
   assert.equal((await stat(targetPath)).mode & 0o777, 0o600);
   assert.equal((await getSetupStatus(project)).codexLoginPresent, true);
   assert.equal(parseEnv(await readFile(project.envFile, 'utf8')).CODEX_LOGIN_CONFIGURED, '1');
@@ -564,10 +582,7 @@ test('start blocks GitHub-only configuration and launches Compose with model acc
   assert.deepEqual(commands, [
     { command: 'docker', args: ['compose', 'up', '--build'], options: { cwd: project.rootDir, stdio: 'inherit' } },
   ]);
-  assert.equal(
-    (await stat(join(project.rootDir, '.data', 'codex-accounts', 'cli', '.codex'))).mode & 0o777,
-    0o700
-  );
+  assert.equal((await stat(join(project.rootDir, '.data', 'codex-accounts', 'cli', '.codex'))).mode & 0o777, 0o700);
 });
 
 test('start reports how to repair a Codex home parent left unwritable by Docker', async (t) => {

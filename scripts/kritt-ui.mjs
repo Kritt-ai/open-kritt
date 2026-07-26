@@ -6,6 +6,8 @@ import {
   CLAUDE_LOGIN,
   CODEX_LOGIN,
   ENVIRONMENT_ITEMS,
+  MANAGED_PROVIDER_ENV_KEYS,
+  MANAGED_PROVIDER_LABELS,
   disableManagedProviderCredential,
   UserCancelledError,
   ensureEnvFile,
@@ -354,6 +356,13 @@ function hiddenIo() {
   };
 }
 
+function isEnvironmentItemPresent(item, status) {
+  return (
+    status.valuesPresent[item.key] ||
+    (item.key in MANAGED_PROVIDER_ENV_KEYS && status.managedProviders.includes(MANAGED_PROVIDER_ENV_KEYS[item.key]))
+  );
+}
+
 function statusDetails(status) {
   const modelAccessDetail = (text, present) => ({ text, tone: present ? 'success' : 'warning' });
   const codexLoginText = status.codexLoginPresent
@@ -371,16 +380,14 @@ function statusDetails(status) {
     ),
   ];
   details.push(
-    ...ENVIRONMENT_ITEMS.slice(0, 4).map((item) => {
-      const present =
-        status.valuesPresent[item.key] ||
-        (item.key === 'OPENROUTER_API_KEY' && status.managedProviders.includes('openrouter'));
+    ...ENVIRONMENT_ITEMS.slice(0, 5).map((item) => {
+      const present = isEnvironmentItemPresent(item, status);
       return modelAccessDetail(`${present ? '✓' : '○'} ${item.label} ${present ? 'present' : 'not set'}`, present);
     })
   );
   details.push(
     ...(status.managedProviders || []).map((provider) => ({
-      text: `✓ ${provider === 'codex' ? 'Codex' : provider === 'claude' ? 'Anthropic' : 'OpenRouter'} API key present (managed from Accounts)`,
+      text: `✓ ${MANAGED_PROVIDER_LABELS[provider] || 'OpenRouter API key'} present (managed from Accounts)`,
       tone: 'success',
     }))
   );
@@ -402,9 +409,7 @@ async function showInfo(terminal, { title, message }) {
 async function manageEnvironmentItem(terminal, context, item) {
   while (true) {
     const status = await getSetupStatus(context);
-    const present =
-      status.valuesPresent[item.key] ||
-      (item.key === 'OPENROUTER_API_KEY' && status.managedProviders.includes('openrouter'));
+    const present = isEnvironmentItemPresent(item, status);
     const choice = await terminal.choose({
       title: item.label,
       subtitle: present ? 'Credential is configured' : 'Credential is not configured',
@@ -427,7 +432,7 @@ async function manageEnvironmentItem(terminal, context, item) {
         title: item.label,
         subtitle: 'Set credential',
         description:
-          item.key === 'OPENROUTER_API_KEY'
+          item.key in MANAGED_PROVIDER_ENV_KEYS
             ? `Paste the ${item.label}. It will be stored in .env and mirrored to the managed credential store used by running services.`
             : `Paste the ${item.label}. It will be stored in .env and is never shown in this interface.`,
         secret: true,
@@ -441,8 +446,8 @@ async function manageEnvironmentItem(terminal, context, item) {
         });
         continue;
       }
-      if (item.key === 'OPENROUTER_API_KEY') {
-        await saveManagedProviderCredential(status.credentialsPath, 'openrouter', value);
+      if (item.key in MANAGED_PROVIDER_ENV_KEYS) {
+        await saveManagedProviderCredential(status.credentialsPath, MANAGED_PROVIDER_ENV_KEYS[item.key], value);
       }
       await setEnvValue(context.envFile, item.key, value);
       await terminal.notice({
@@ -457,21 +462,21 @@ async function manageEnvironmentItem(terminal, context, item) {
         title: item.label,
         subtitle: 'Unset credential',
         message:
-          item.key === 'OPENROUTER_API_KEY'
+          item.key in MANAGED_PROVIDER_ENV_KEYS
             ? `Unset ${item.label}? This removes the managed key and prevents the initial .env value from being imported again.`
             : `Unset ${item.label}? This removes the configured value from .env.`,
         confirmLabel: 'Unset credential',
       })
     ) {
-      if (item.key === 'OPENROUTER_API_KEY') {
-        await disableManagedProviderCredential(status.credentialsPath, 'openrouter');
+      if (item.key in MANAGED_PROVIDER_ENV_KEYS) {
+        await disableManagedProviderCredential(status.credentialsPath, MANAGED_PROVIDER_ENV_KEYS[item.key]);
       }
       await setEnvValue(context.envFile, item.key, '');
       await terminal.notice({
         title: item.label,
         subtitle: 'Unset',
         message:
-          item.key === 'OPENROUTER_API_KEY'
+          item.key in MANAGED_PROVIDER_ENV_KEYS
             ? 'The credential was removed from .env and the managed store.'
             : 'The credential was removed from .env.',
       });
@@ -677,14 +682,10 @@ async function runSetupScreen(terminal, context) {
           label: 'Claude login',
           description: status.claudeLoginPresent ? 'present' : 'sign in with a Claude subscription',
         },
-        ...ENVIRONMENT_ITEMS.slice(0, 4).map((item) => ({
+        ...ENVIRONMENT_ITEMS.slice(0, 5).map((item) => ({
           id: item.key,
           label: item.label,
-          description:
-            status.valuesPresent[item.key] ||
-            (item.key === 'OPENROUTER_API_KEY' && status.managedProviders.includes('openrouter'))
-              ? 'present'
-              : 'not set',
+          description: isEnvironmentItemPresent(item, status) ? 'present' : 'not set',
         })),
         {
           id: 'GITHUB_TOKEN',

@@ -181,6 +181,24 @@ test('interactive setup saves OpenRouter in .env and the shared managed store', 
   assert.equal(store.credentials.openrouter, 'openrouter-hidden');
 });
 
+test('interactive setup saves OpenCode Zen in .env and the shared managed store', async (t) => {
+  const project = await createProject(t);
+  const terminal = new ScriptedTerminal({
+    choices: ['setup', 'OPENCODE_API_KEY', 'set', 'back', 'back', 'back'],
+    inputs: ['opencode-hidden'],
+  });
+
+  const result = await runInteractiveCli({ ...project, terminal });
+  const env = parseEnv(await readFile(project.envFile, 'utf8'));
+  const store = JSON.parse(
+    await readFile(join(project.rootDir, '.data', 'engine', 'credentials', 'providers.json'), 'utf8')
+  );
+
+  assert.deepEqual(result, { code: 0 });
+  assert.equal(env.OPENCODE_API_KEY, 'opencode-hidden');
+  assert.equal(store.credentials.opencode, 'opencode-hidden');
+});
+
 test('interactive Codex import shows a specific credential error', async (t) => {
   const project = await createProject(t);
   const terminal = new ScriptedTerminal({
