@@ -1,212 +1,144 @@
-\# Open Kritt Custom
-
-
+#  Open Kritt Custom
 
 > A customized version of Open Kritt with support for custom AI providers and OpenAI-compatible APIs.
 
+---
 
+# 📖 Introduction
 
-\---
-
-
-
-\## Introduction
-
-
-
-Open Kritt Custom is a customized fork of the original Open Kritt project that extends its provider architecture to support custom AI providers and OpenAI-compatible APIs.
-
-
+Open Kritt Custom is a customized fork of the original **Open Kritt** project that extends its provider architecture to support custom AI providers and OpenAI-compatible APIs.
 
 The primary goal of this fork is to make model integration more flexible by allowing developers to connect custom providers, configure OpenAI-compatible endpoints, and register their own models without being limited to the project's built-in integrations.
 
+---
 
+# ✨ Features Added
 
-\---
+## 🔌 Custom AI Provider Integration
 
+- Register and configure custom AI providers
+- Connect any OpenAI-compatible API
+- Configure custom API endpoints and authentication
 
+## 🤖 Flexible Model Management
 
-\## Features Added
+- Register provider-specific models
+- Organize and switch between available models
+- Support custom model catalogs
 
+## 💻 Automatic CLI Detection
 
+- Automatically detects existing **Claude Code** installations
+- Automatically detects existing **Codex CLI** installations
+- Reuses existing local authentication
+- Eliminates manual CLI configuration for supported providers
 
-\### Custom AI Provider Integration
+---
 
-\- Register and configure custom AI providers
+# 🚀 Getting Started
 
-\- Connect any OpenAI-compatible API
-
-\- Support custom API endpoints and authentication
-
-
-
-\### Flexible Model Management
-
-\- Register provider-specific models
-
-\- Organize and switch between available models
-
-\- Support custom model catalogs
-
-
-
-\### Automatic CLI Detection
-
-\- Automatically detects existing Claude Code installations
-
-\- Automatically detects existing Codex CLI installations
-
-\- Reuses existing local authentication when available
-
-\- Eliminates manual CLI configuration for supported providers
-
-
-
-\---
-
-
-
-\## Getting Started
-
-
-
-\## Prerequisites
-
-
+## 📦 Prerequisites
 
 Before getting started, ensure the following are installed on your system:
 
+- Docker
+- Docker Compose
+- Git
 
+---
 
-\- Docker
+## ⚡ Installation
 
-\- Docker Compose
-
-\- Git
-
-
-
-\## Installation
-
-
-
-\### 1. Clone the Repository
-
-
+### 1️⃣ Clone the Repository
 
 ```bash
-
 git clone https://github.com/nishanm15/open-kritt-custom.git
-
 cd open-kritt-custom
-
 ```
 
-
-
-\### 2. Start the Application
-
-
-
-Build and start all services (once):
-
-
+### 2️⃣ Build the Application
 
 ```bash
-
 docker compose build --no-cache
-
 ```
 
-
-
-On subsequent runs, you can start the application without rebuilding:
-
-
+### 3️⃣ Start the Application
 
 ```bash
-
 docker compose up
-
 ```
 
-
-
-To run the services in the background:
-
-
+Run in the background:
 
 ```bash
-
 docker compose up -d
-
 ```
 
+### 4️⃣ Access the Application
 
-
-\### 4. Access the Application
-
-
-
-Once all services are running, open the frontend in your browser:
-
-
+Once all services are running, open:
 
 ```
-
 http://localhost:5173
-
 ```
 
+The frontend, backend, engine, and database will start automatically via Docker Compose.
 
+---
 
-The backend, engine, and database will be started automatically by Docker Compose.
+# ⚙️ Adding Custom Providers
 
+![Dashboard](assets/screenshots/1.png)
+Manage all configured providers from a single dashboard.
 
+---
 
-\## Adding Custom Providers
+![Custom Providers](assets/screenshots/2.png)
+Configure:
 
+- **Name**
+- **Base URL**
+- **API Key**
+- **Model**
+- **Organization** (optional)
+- **Extra Headers** (optional)
 
+---
 
+![Provider Added](assets/screenshots/3.png)
+You can test, edit or delete the configured provider. Along with add new.
 
+---
 
+![Scan Configuration](assets/screenshots/4.png)
+Once added, your provider automatically appears when creating a new scan.
 
+---
 
-\---
+# 🙌 Credits
 
+This project is based on the original **Open Kritt** project.
 
+## 👨‍💻 Maintainer
 
-\## Credits
+**@nishanm15**
 
+🐙 GitHub: https://github.com/nishanm15
 
+𝕏 X: https://x.com/0xnishanm15
 
-This project is based on the original \*\*Open Kritt\*\* project.
+---
 
+## 🤝 Contributor
 
+**@0xscarfac3**
 
-Modified and maintained by \*\*@nishanm15\*\*
+🐙 GitHub: https://github.com/0xscarfac3
 
+𝕏 X: https://x.com/0Xscarfac3
 
+---
 
-GitHub: https://github.com/nishanm15
+# 📜 License
 
-
-
-X: https://x.com/0xnishanm15
-
-
-
-Nishan Mishra
-
-
-
-\---
-
-
-
-\## License
-
-
-
-This repository remains licensed under the \*\*GNU Affero General Public License v3.0 (AGPL-3.0)\*\*.
-
+This repository remains licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**.
