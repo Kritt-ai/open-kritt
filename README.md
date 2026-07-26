@@ -121,13 +121,14 @@ This project is based on the original **Open Kritt** project.
 
 ## 👨‍💻 Maintainer
 
-**@nishanm15**
+**@itsdarktoday**
 
 🐙 GitHub: https://github.com/itsdarktoday
 
-𝕏 X: https://x.com/@0xitsdarktoday
+𝕏 X: https://x.com/0xitsdarktoday
 
-Medium : Medium : https://medium.com/@itsdarktodaygi
+📝 Medium: [@itsdarktoday](https://medium.com/@itsdarktoday)
+
 ---
 
 ## 🤝 Contributor
@@ -138,10 +139,10 @@ Medium : Medium : https://medium.com/@itsdarktodaygi
 
 𝕏 X: https://x.com/0Xscarfac3
 
-Medium : https://medium.com/@0xscarfac3
+📝 Medium: [@0xscarfac3](https://medium.com/@0xscarfac3)
 
 ---
 
-# 📜 Note
+### 📜 Note
 
-This is custom version of open-kritt version V1.1.0 
+This is a custom version of **Open Kritt v1.1.0**.
