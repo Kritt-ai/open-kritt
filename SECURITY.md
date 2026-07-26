@@ -61,7 +61,7 @@ mind when self-hosting:
   and direct internet access. Use a dedicated VM or Docker host and treat scanned
   repositories and model output as untrusted input.
 - **Secrets.** Model/provider API keys and `GITHUB_TOKEN` live in your gitignored `.env`;
-  provider logins live under `.data/`. Accounts gives the backend write access to those
+  provider logins live under `.data/`. The Accounts feature gives the backend write access to those
   stores so changes persist. Scope tokens minimally and rotate them. Never commit
   secrets; the repo ships a `gitleaks` pre-commit hook to help.
 - **Data egress.** Scans send repository content to whichever model/provider endpoint
