@@ -24,7 +24,7 @@ target repo (+ dependency repos), builds a workspace, and runs each workflow ste
 an AI **harness** (`codex` / `claude-code`), which sends repository content to the
 **configured model/provider endpoint** → results are written back to Postgres → UI.
 
-Workflow and post-script generation uses a separate Postgres queue. The natural-language
+Workflow and post-script generation use a separate Postgres queue. The natural-language
 request is sent to the selected provider, but the generation harness runs without model
 tools or repository access. Postgres retains the request and stores only a validated
 draft or safe failure details, not invalid raw model output; the backend validates
