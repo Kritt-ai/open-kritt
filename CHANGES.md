@@ -69,16 +69,3 @@ without requiring changes to the core application.
 \---
 
 
-
-\### Maintainer
-
-
-
-\*\*@nishanm15\*\* (Nishan Mishra)
-
-
-
-\- GitHub: https://github.com/nishanm15
-
-\- X: https://x.com/0xnishanm15
-
