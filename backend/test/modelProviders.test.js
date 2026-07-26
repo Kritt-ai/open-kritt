@@ -10,10 +10,12 @@ const PROVIDER_ENV_KEYS = [
   'OPENAI_API_KEY',
   'ANTHROPIC_API_KEY',
   'OPENROUTER_API_KEY',
+  'OPENCODE_API_KEY',
   'OPEN_KRITT_CODEX_API_KEY_CONFIGURED',
   'OPEN_KRITT_OPENAI_API_KEY_CONFIGURED',
   'OPEN_KRITT_ANTHROPIC_API_KEY_CONFIGURED',
   'OPEN_KRITT_OPENROUTER_API_KEY_CONFIGURED',
+  'OPEN_KRITT_OPENCODE_API_KEY_CONFIGURED',
   'OPEN_KRITT_CODEX_LOGIN_CONFIGURED',
   'CODEX_LOGIN_CONFIGURED',
 ];
@@ -44,10 +46,11 @@ test('configuredModelProviders returns canonical providers configured by presenc
       OPEN_KRITT_OPENAI_API_KEY_CONFIGURED: '1',
       OPEN_KRITT_ANTHROPIC_API_KEY_CONFIGURED: '1',
       OPEN_KRITT_OPENROUTER_API_KEY_CONFIGURED: '1',
+      OPEN_KRITT_OPENCODE_API_KEY_CONFIGURED: '1',
     },
   });
 
-  assert.deepEqual(providers, ['codex', 'claude', 'openrouter']);
+  assert.deepEqual(providers, ['codex', 'claude', 'openrouter', 'opencode']);
 });
 
 test('configuredModelProviders does not mistake a stale Codex login marker for credentials', () => {

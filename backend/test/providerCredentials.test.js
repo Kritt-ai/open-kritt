@@ -110,6 +110,40 @@ test('credential validation accepts only a single-line OpenRouter key', () => {
   assert.equal(validateProviderCredential('openrouter', 'one\ntwo').field, 'credential');
 });
 
+test('credential validation accepts only a single-line OpenCode Zen key', () => {
+  assert.equal(validateProviderCredential('opencode', 'valid-key'), null);
+  assert.equal(validateProviderCredential('opencode', ' ').field, 'credential');
+  assert.equal(validateProviderCredential('opencode', 'one\ntwo').field, 'credential');
+});
+
+test('OpenCode Zen managed credentials are saved privately, overridable, and removable', async (t) => {
+  const credentialsPath = await temporaryCredentialPath(t);
+  const environmentFilePath = join(dirname(credentialsPath), '.env');
+  await writeFile(environmentFilePath, 'KEEP=value\nOPENCODE_API_KEY=\n');
+  await saveManagedProviderCredential('opencode', 'opencode-secret', {
+    credentialsPath,
+    environmentFilePath,
+  });
+
+  assert.deepEqual(readManagedCredentialsSync(credentialsPath), { opencode: 'opencode-secret' });
+  assert.deepEqual(parseEnvironmentText(await readFile(environmentFilePath, 'utf8')), {
+    KEEP: 'value',
+    OPENCODE_API_KEY: 'opencode-secret',
+  });
+
+  const opencode = providerCredentialStatuses({ env: {}, credentialsPath }).find(
+    (provider) => provider.id === 'opencode'
+  );
+  assert.equal(opencode.source, 'managed_api_key');
+  assert.equal(opencode.canManage, true);
+  assert.equal(opencode.canRemove, true);
+  assert.equal(JSON.stringify(opencode).includes('opencode-secret'), false);
+
+  assert.equal(await removeManagedProviderCredential('opencode', { credentialsPath, environmentFilePath }), true);
+  assert.deepEqual(readManagedCredentialsSync(credentialsPath), {});
+  assert.equal(parseEnvironmentText(await readFile(environmentFilePath, 'utf8')).OPENCODE_API_KEY, '');
+});
+
 test('provider status recognizes Codex and Claude login homes', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'open-kritt-provider-logins-'));
   t.after(() => rm(directory, { recursive: true, force: true }));

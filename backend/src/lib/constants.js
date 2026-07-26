@@ -71,7 +71,7 @@ export const SCAN_STATUSES = [
 export const THINKING_EFFORTS = ['default', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 export const DEFAULT_THINKING_EFFORT = 'medium';
 
-export const MODEL_PROVIDERS = ['codex', 'claude', 'openrouter'];
+export const MODEL_PROVIDERS = ['codex', 'claude', 'openrouter', 'opencode'];
 export const DEFAULT_MODEL_PROVIDER = 'openrouter';
 
 export const HARNESSES = ['codex', 'claude-code', 'cursor'];
@@ -84,7 +84,12 @@ export const MODEL_PROVIDER_HARNESSES = {
   codex: ['codex'],
   claude: ['claude-code'],
   openrouter: ['codex', 'claude-code'],
+  opencode: ['codex', 'claude-code'],
 };
+// OpenRouter's and OpenCode Zen's discovered catalogs are advisory: exact
+// model IDs remain accepted through a free-text input even when the cached
+// catalog is unavailable or incomplete.
+export const FREE_TEXT_MODEL_INPUT_PROVIDERS = ['openrouter', 'opencode'];
 export const HARNESS_THINKING_EFFORTS = {
   codex: ['default', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
   'claude-code': ['default', 'low', 'medium', 'high', 'xhigh', 'max'],

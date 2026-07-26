@@ -191,6 +191,7 @@ test('cached model lookup identifies exact catalog entries', () => {
   assert.equal(isCachedModel('claude', 'claude-opus-4-8', null), true);
   assert.equal(isCachedModel('claude', 'claude-sonnet-4', null), false);
   assert.equal(isCachedModel('openrouter', 'any/provider-model', null), false);
+  assert.equal(isCachedModel('opencode', 'gpt-5.1-codex', null), false);
 });
 
 test('a last refresh error retains a previously valid cached catalog', () => {
@@ -248,6 +249,49 @@ test('OpenRouter exposes cached suggestions while keeping free-text input', () =
   assert.equal(isCachedModel('openrouter', 'custom/not-in-catalog', catalog), false);
   assert.equal(
     buildModelCatalogResponse(['openrouter'], [{ provider: 'openrouter', models: [], lastError: 'refresh failed' }])
+      .providers[0].status,
+    'unavailable'
+  );
+});
+
+test('OpenCode Zen exposes cached suggestions while keeping free-text input', () => {
+  const catalog = {
+    provider: 'opencode',
+    models: [
+      { id: 'gpt-5.1-codex', label: 'gpt-5.1-codex', thinkingEfforts: ['default'] },
+      { id: 'claude-opus-5', thinkingEfforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+    ],
+    defaultModel: 'gpt-5.1-codex',
+  };
+
+  assert.deepEqual(buildModelCatalogResponse(['opencode'], [catalog]), {
+    providers: [
+      {
+        provider: 'opencode',
+        input: 'text',
+        models: [
+          {
+            id: 'gpt-5.1-codex',
+            label: 'gpt-5.1-codex',
+            thinkingEfforts: ['default'],
+            isDefault: true,
+          },
+          {
+            id: 'claude-opus-5',
+            label: 'claude-opus-5',
+            thinkingEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+            isDefault: false,
+          },
+        ],
+        defaultModel: 'gpt-5.1-codex',
+        status: 'ready',
+      },
+    ],
+  });
+  assert.equal(isCachedModel('opencode', 'gpt-5.1-codex', catalog), true);
+  assert.equal(isCachedModel('opencode', 'custom-not-in-catalog', catalog), false);
+  assert.equal(
+    buildModelCatalogResponse(['opencode'], [{ provider: 'opencode', models: [], lastError: 'refresh failed' }])
       .providers[0].status,
     'unavailable'
   );

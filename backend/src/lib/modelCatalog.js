@@ -1,4 +1,4 @@
-import { MODEL_PROVIDERS, THINKING_EFFORTS } from './constants.js';
+import { FREE_TEXT_MODEL_INPUT_PROVIDERS, MODEL_PROVIDERS, THINKING_EFFORTS } from './constants.js';
 
 const SAFE_MODEL_NOTE_URLS = new Set(['https://chatgpt.com/cyber']);
 
@@ -118,10 +118,11 @@ export function modelCatalogEntry(provider, catalog) {
   const lastError = catalogValue(catalog, 'lastError', 'last_error');
   const defaultIsMissing = !configuredDefault || !defaultModel;
   // A failed refresh must not erase a previously valid bounded catalog. Without
-  // one, catalog-backed suggestions remain unavailable; OpenRouter still accepts
-  // explicit model IDs through its text input and selection validation policy.
+  // one, catalog-backed suggestions remain unavailable; free-text providers still
+  // accept explicit model IDs through their text input and selection validation policy.
   const status = models.length > 0 && !defaultIsMissing ? 'ready' : hasText(lastError) ? 'unavailable' : 'loading';
-  return { provider, input: provider === 'openrouter' ? 'text' : 'select', models, defaultModel, status };
+  const input = FREE_TEXT_MODEL_INPUT_PROVIDERS.includes(provider) ? 'text' : 'select';
+  return { provider, input, models, defaultModel, status };
 }
 
 export function buildModelCatalogResponse(configuredProviders, catalogs = []) {
