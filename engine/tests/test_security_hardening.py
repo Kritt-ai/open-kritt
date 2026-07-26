@@ -275,7 +275,8 @@ def test_agent_cli_builds_use_exact_package_versions():
 
 
 @pytest.mark.parametrize("harness_name", ["codex", "claude-code"])
-def test_openrouter_job_home_never_copies_native_provider_secrets(monkeypatch, tmp_path, harness_name):
+@pytest.mark.parametrize("model_provider", ["openrouter", "opencode"])
+def test_gateway_job_home_never_copies_native_provider_secrets(monkeypatch, tmp_path, harness_name, model_provider):
     codex_home = tmp_path / "source-codex"
     claude_home = tmp_path / "source-claude"
     codex_home.mkdir()
@@ -287,12 +288,13 @@ def test_openrouter_job_home_never_copies_native_provider_secrets(monkeypatch, t
     monkeypatch.setenv("ENGINE_CODEX_HOME", str(codex_home))
     monkeypatch.setenv("CLAUDE_HOME", str(claude_home))
     monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-only")
+    monkeypatch.setenv("OPENCODE_API_KEY", "opencode-only")
 
     workspace = prepare_job_workspace(
         str(tmp_path / "data"),
         200 if harness_name == "codex" else 201,
         harness_name=harness_name,
-        model_provider="openrouter",
+        model_provider=model_provider,
     )
 
     job_home = Path(workspace.env["HOME"])
@@ -303,7 +305,12 @@ def test_openrouter_job_home_never_copies_native_provider_secrets(monkeypatch, t
         assert "mcp-secret" not in config
     assert not (job_home / ".claude" / ".credentials.json").exists()
     assert not (job_home / ".claude" / "settings.json").exists()
-    assert workspace.env["OPENROUTER_API_KEY"] == "openrouter-only"
+    if model_provider == "openrouter":
+        assert workspace.env["OPENROUTER_API_KEY"] == "openrouter-only"
+        assert "OPENCODE_API_KEY" not in workspace.env
+    else:
+        assert workspace.env["OPENCODE_API_KEY"] == "opencode-only"
+        assert "OPENROUTER_API_KEY" not in workspace.env
     assert (Path(workspace.root_dir).stat().st_mode & 0o777) == 0o700
 
 
