@@ -1,0 +1,30 @@
+# Tooling config for the open-kritt engine.
+# NOTE: the engine version is intentionally NOT declared here — the single source
+# of truth is the repo-root VERSION file, propagated into
+# open_kritt_engine/__init__.py by scripts/sync-version.mjs.
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+extend-exclude = ["src"]
+
+[tool.ruff.lint]
+# A pragmatic starter set; tighten over time.
+select = ["E", "F", "I", "W", "B", "UP"]
+ignore = [
+  "E501", # line length (handled by the formatter; don't fail lint on it yet)
+  "B008", # function call in default argument (common, low-risk)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["open_kritt_engine"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+# Put the engine root on sys.path so `import open_kritt_engine` works when CI runs
+# bare `pytest` (which, unlike `python -m pytest`, doesn't add the cwd).
+pythonpath = ["."]

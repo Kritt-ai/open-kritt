@@ -1,0 +1,66 @@
+# Pre-commit hooks for open-kritt.
+#   Install once:  pipx install pre-commit && pre-commit install
+#   Run on all:    pre-commit run --all-files
+#
+# Hooks are scoped per ecosystem so contributors only need the relevant toolchain.
+repos:
+  # Generic hygiene
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: '\.md$'
+      - id: end-of-file-fixer
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ['--maxkb=512']
+      - id: check-yaml
+      - id: check-json
+      - id: mixed-line-ending
+        args: ['--fix=lf']
+
+  # Detect accidentally committed secrets
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks
+
+  # Python (engine) — lint + format with Ruff
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.4
+    hooks:
+      - id: ruff
+        args: ['--fix']
+        files: '^engine/'
+      - id: ruff-format
+        files: '^engine/'
+
+  # JS/JSX (frontend + backend) — Prettier + ESLint via local toolchains
+  - repo: local
+    hooks:
+      - id: prettier
+        name: prettier (frontend + backend)
+        entry: bash -c 'cd "$(git rev-parse --show-toplevel)" && npx --prefix frontend prettier --check frontend backend'
+        language: system
+        pass_filenames: false
+        files: '\.(js|jsx|json|css)$'
+      - id: eslint-frontend
+        name: eslint (frontend)
+        entry: bash -c 'cd frontend && npx eslint .'
+        language: system
+        pass_filenames: false
+        files: '^frontend/.*\.(js|jsx)$'
+      - id: eslint-backend
+        name: eslint (backend)
+        entry: bash -c 'cd backend && npx eslint .'
+        language: system
+        pass_filenames: false
+        files: '^backend/.*\.js$'
+
+      # Version drift guard — keep all components pinned to the root VERSION file.
+      - id: version-sync
+        name: version sync check
+        entry: node scripts/sync-version.mjs --check
+        language: system
+        pass_filenames: false
+        files: '^(VERSION|frontend/package\.json|backend/package\.json|engine/open_kritt_engine/__init__\.py)$'

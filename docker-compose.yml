@@ -1,0 +1,208 @@
+services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: open-kritt-frontend
+    ports:
+      - '${FRONTEND_BIND_ADDRESS:-127.0.0.1}:${FRONTEND_PORT:-5173}:5173'
+    environment:
+      # Browser uses relative /api (proxied). Vite proxies it to the backend service.
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
+      VITE_PROXY_TARGET: ${VITE_PROXY_TARGET:-http://backend:3002}
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      args:
+        OPEN_KRITT_ENABLE_CODEX: ${ENABLE_CODEX:-false}
+        CODEX_API_KEY_CONFIGURED: ''
+        CODEX_LOGIN_CONFIGURED: ''
+    container_name: open-kritt-backend
+    ports:
+      - '${BACKEND_BIND_ADDRESS:-127.0.0.1}:${BACKEND_PORT:-3002}:3002'
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      # The process must listen on the container interface. Host exposure is
+      # independently restricted by BACKEND_BIND_ADDRESS above.
+      BACKEND_HOST: 0.0.0.0
+      BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS:-}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://open_kritt:open_kritt_password@db:5432/open_kritt?schema=public}
+      # Raw environment keys stay in the engine. The backend receives non-secret
+      # presence flags and manages the shared login/key stores used by Accounts.
+      OPEN_KRITT_ENABLE_CODEX: ${ENABLE_CODEX:-false}
+      OPEN_KRITT_ANTHROPIC_API_KEY_CONFIGURED: '${ANTHROPIC_API_KEY:+1}'
+      OPEN_KRITT_OPENROUTER_API_KEY_CONFIGURED: '${OPENROUTER_API_KEY:+1}'
+      OPEN_KRITT_PROVIDER_CREDENTIALS_PATH: /credentials/providers.json
+      OPEN_KRITT_CLAUDE_HOME: /provider-homes/claude
+      OPEN_KRITT_ENGINE_RUNTIME_CONFIG_PATH: /engine-data/engine-runtime.env
+      OPEN_KRITT_ENV_FILE_PATH: /project-config/.env
+      EXECUTOR_VIEW_URL: http://executor-view:8090
+      EXECUTOR_VIEW_INTERNAL_TOKEN_FILE: /executor-auth/internal-token
+      # Where local repos live INSIDE the container (the host dir is bind-mounted here).
+      LOCAL_REPOS_PATH: /local_repos
+    depends_on:
+      db:
+        condition: service_healthy
+      executor-view:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+      # Init SQL so the backend can bootstrap the schema on a persisted/empty DB.
+      - ./database/init:/app/database-init:ro
+      # OpenRouter API key saved from the frontend. Its value is never returned.
+      - ${ENGINE_CREDENTIALS_HOST:-./.data/engine/credentials}:/credentials:z
+      - ${ENGINE_CODEX_HOME:-./.data/codex}:/provider-homes/codex
+      - ${ENGINE_CODEX_ACCOUNTS_HOME:-./.data/codex-accounts}:/provider-homes/codex-accounts
+      - ${ENGINE_CLAUDE_HOME:-./.data/claude}:/provider-homes/claude
+      - ${ENGINE_DATA_DIR_HOST:-./.data/engine}:/engine-data
+      # Accounts stores durable provider/account configuration in a dedicated
+      # project-config directory. Docker creates missing bind sources as
+      # directories, so mount the directory itself and let the backend create
+      # the .env file inside it on first boot.
+      - ${PROJECT_CONFIG_DIR_HOST:-./.data/project-config}:/project-config:z
+      - ${EXECUTOR_VIEW_AUTH_HOST:-./.data/engine/executor-auth}:/executor-auth:ro
+      # Local repositories: host LOCAL_REPOS_PATH -> /local_repos (read-only here;
+      # the backend only lists/reads them). Adding a folder on the host appears live.
+      - ${LOCAL_REPOS_PATH:-./local_repos}:/local_repos:ro
+
+  engine:
+    build:
+      context: ./engine
+      dockerfile: Dockerfile
+      args:
+        OPEN_KRITT_ENABLE_CODEX: ${ENABLE_CODEX:-false}
+        CODEX_API_KEY_CONFIGURED: ''
+        CODEX_LOGIN_CONFIGURED: ''
+    image: ${ENGINE_SCAN_RUNNER_IMAGE:-open-kritt-engine:local}
+    container_name: open-kritt-engine
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://open_kritt:open_kritt_password@db:5432/open_kritt?schema=public}
+      ENGINE_DATA_DIR: ${ENGINE_DATA_DIR:-/data}
+      ENGINE_MIN_FREE_STORAGE_GB: ${ENGINE_MIN_FREE_STORAGE_GB:-20}
+      ENGINE_RUNTIME_CONFIG_PATH: ${ENGINE_RUNTIME_CONFIG_PATH:-/data/engine-runtime.env}
+      ENGINE_CHECKOUT_CACHE_DIR: ${ENGINE_CHECKOUT_CACHE_DIR:-/checkout-cache}
+      ENGINE_CHECKOUT_CACHE_PERSIST_DIR: ${ENGINE_CHECKOUT_CACHE_PERSIST_DIR:-/data/checkout-cache-persist}
+      ENGINE_SCAN_CACHE_RETENTION_DAYS: ${ENGINE_SCAN_CACHE_RETENTION_DAYS:-7}
+      ENGINE_POLL_SECONDS: ${ENGINE_POLL_SECONDS:-5}
+      ENGINE_WORKER_COUNT: ${ENGINE_WORKER_COUNT:-2}
+      ENGINE_MAX_CONCURRENT_SCANS: ${ENGINE_MAX_CONCURRENT_SCANS:-1}
+      ENGINE_MAX_WORKERS_PER_SCAN: ${ENGINE_MAX_WORKERS_PER_SCAN:-0}
+      ENGINE_AUTOSCALE_SCAN_WORKERS_ON_PROVIDER_CAPACITY: ${ENGINE_AUTOSCALE_SCAN_WORKERS_ON_PROVIDER_CAPACITY:-true}
+      ENGINE_WORKSPACE_SETUP_CONCURRENCY: ${ENGINE_WORKSPACE_SETUP_CONCURRENCY:-2}
+      ENGINE_RETRY_COUNT: ${ENGINE_RETRY_COUNT:-2}
+      ENGINE_HARNESS_TIMEOUT_SECONDS: ${ENGINE_HARNESS_TIMEOUT_SECONDS:-7200}
+      ENGINE_MODEL_CATALOG_REFRESH_SECONDS: ${ENGINE_MODEL_CATALOG_REFRESH_SECONDS:-300}
+      ENGINE_MODEL_CATALOG_TIMEOUT_SECONDS: ${ENGINE_MODEL_CATALOG_TIMEOUT_SECONDS:-10}
+      ENGINE_CODEX_AUTO_UPDATE: ${ENGINE_CODEX_AUTO_UPDATE:-false}
+      OPEN_KRITT_ENABLE_CODEX: ${ENABLE_CODEX:-false}
+      OPEN_KRITT_PROVIDER_CREDENTIALS_PATH: /credentials/providers.json
+      ENGINE_CLAUDE_DOCKER_RUNNER: ${ENGINE_CLAUDE_DOCKER_RUNNER:-1}
+      ENGINE_SCAN_RUNNER_IMAGE: ${ENGINE_SCAN_RUNNER_IMAGE:-open-kritt-engine:local}
+      # Nested runner containers need the Docker-host path, not /data inside
+      # this container. PWD gives the quickstart an absolute, portable default.
+      ENGINE_DOCKER_DATA_DIR_HOST: ${ENGINE_DOCKER_DATA_DIR_HOST:-${PWD}/.data/engine}
+      CODEX_API_KEY: ${CODEX_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      CURSOR_API_KEY: ${CURSOR_API_KEY:-}
+      CURSOR_AUTH_TOKEN: ${CURSOR_AUTH_TOKEN:-}
+      CURSOR_AGENT_BIN: ${CURSOR_AGENT_BIN:-}
+      CODEX_MODEL_PROVIDER: ${CODEX_MODEL_PROVIDER:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      # Where local repos live INSIDE the container (the host dir is bind-mounted here).
+      LOCAL_REPOS_PATH: /local_repos
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./engine:/app
+      - ${ENGINE_DATA_DIR_HOST:-./.data/engine}:/data
+      # Accounts/CLI mirror provider credentials here so running services see
+      # changes immediately while .env remains durable for future Compose runs.
+      - ${ENGINE_CREDENTIALS_HOST:-./.data/engine/credentials}:/run/open-kritt-secrets/credentials:z
+      - ${ENGINE_CODEX_HOME:-./.data/codex}:/root/.codex
+      - ${ENGINE_CODEX_ACCOUNTS_HOME:-./.data/codex-accounts}:/codex-accounts
+      - ${ENGINE_CLAUDE_HOME:-./.data/claude}:/root/.claude
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Local repositories are copied into scan-specific snapshots; the host source
+      # never needs to be modified by the engine.
+      - ${LOCAL_REPOS_PATH:-./local_repos}:/run/open-kritt-secrets/local-repos:ro
+    tmpfs:
+      - /checkout-cache
+
+  executor-view:
+    build:
+      context: ./executor-view
+      dockerfile: Dockerfile
+    container_name: open-kritt-executor-view
+    ports:
+      - '${EXECUTOR_VIEW_BIND_ADDRESS:-127.0.0.1}:${EXECUTOR_VIEW_PORT:-8090}:8090'
+    environment:
+      EXECUTOR_VIEW_DATABASE_URL: ${EXECUTOR_VIEW_DATABASE_URL:-postgresql://open_kritt:open_kritt_password@db:5432/open_kritt}
+      OPEN_KRITT_ENABLE_CODEX: ${ENABLE_CODEX:-false}
+      EXECUTOR_VIEW_HOST: 0.0.0.0
+      EXECUTOR_VIEW_PORT: 8090
+      EXECUTOR_VIEW_PUBLISHED_BIND_ADDRESS: ${EXECUTOR_VIEW_BIND_ADDRESS:-127.0.0.1}
+      EXECUTOR_VIEW_ALLOWED_HOSTS: ${EXECUTOR_VIEW_ALLOWED_HOSTS:-}
+      EXECUTOR_VIEW_INTERNAL_HOSTS: executor-view
+      EXECUTOR_VIEW_ACCESS_TOKEN: ${EXECUTOR_VIEW_ACCESS_TOKEN:-}
+      EXECUTOR_VIEW_INTERNAL_TOKEN_FILE: /executor-auth/internal-token
+      EXECUTOR_VIEW_SECURE_COOKIE: ${EXECUTOR_VIEW_SECURE_COOKIE:-false}
+      EXECUTOR_VIEW_CLAUDE_HOME: /root/.claude
+      EXECUTOR_VIEW_ENGINE_DATA_DIR: /data
+      EXECUTOR_VIEW_ENGINE_RUNTIME_CONFIG_PATH: ${ENGINE_RUNTIME_CONFIG_PATH:-/data/engine-runtime.env}
+      OPEN_KRITT_PROVIDER_CREDENTIALS_PATH: /credentials/providers.json
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./executor-view:/app
+      - ${ENGINE_DATA_DIR_HOST:-./.data/engine}:/data:ro
+      - ${ENGINE_CREDENTIALS_HOST:-./.data/engine/credentials}:/credentials:ro,z
+      - ${ENGINE_CODEX_HOME:-./.data/codex}:/root/.codex:ro
+      - ${ENGINE_CODEX_ACCOUNTS_HOME:-./.data/codex-accounts}:/codex-accounts:ro
+      - ${ENGINE_CLAUDE_HOME:-./.data/claude}:/root/.claude:ro
+      - ${EXECUTOR_VIEW_AUTH_HOST:-./.data/engine/executor-auth}:/executor-auth
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'python',
+          '-c',
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=2).read()",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  db:
+    build:
+      context: ./database
+      dockerfile: Dockerfile
+    container_name: open-kritt-db
+    restart: unless-stopped
+    ports:
+      - '${POSTGRES_BIND_ADDRESS:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432'
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-open_kritt}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-open_kritt_password}
+      POSTGRES_DB: ${POSTGRES_DB:-open_kritt}
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-open_kritt} -d ${POSTGRES_DB:-open_kritt}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - ${POSTGRES_DATA_DIR:-./.data/postgres}:/var/lib/postgresql/data
+      - ./database/init:/docker-entrypoint-initdb.d:ro

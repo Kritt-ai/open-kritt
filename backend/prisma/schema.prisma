@@ -1,0 +1,364 @@
+// open-kritt Prisma schema.
+// Maps the EXISTING database created by database/init/001_*.sql and 002_*.sql.
+// We do not use Prisma Migrate to create these tables (the SQL init owns the DDL,
+// including the dedicated `workflows` schema and the LIST-partitioned step_results
+// table). This schema only describes the tables so the client can query them.
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["multiSchema"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  schemas  = ["public", "workflows"]
+}
+
+/// A single AI prompt + its declared output JSON schema. Steps are chained into
+/// workflows via llm_workflows.step_ids.
+model Step {
+  id           BigInt   @id @default(autoincrement())
+  content      String
+  outputFormat String   @map("output_format")
+  name         String?
+  depth        Int
+  multiOutput  Boolean  @map("multi_output")
+  // When true, depth runs one agent over the whole previous-depth output array.
+  consumesAll  Boolean  @default(false) @map("consume_all_previous")
+  isLastStep   Boolean  @map("is_last_step")
+  outputTable  String   @default("workflows.step_results") @map("output_table")
+  insertedAt   DateTime @default(now()) @map("inserted_at") @db.Timestamptz(6)
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("steps")
+  @@schema("public")
+}
+
+/// A post-script: runs once per finding. References reserved context + finding keys only.
+model PostScript {
+  id           BigInt   @id @default(autoincrement())
+  content      String
+  outputFormat String   @map("output_format")
+  name         String
+  description  String?
+  insertedAt   DateTime @default(now()) @map("inserted_at") @db.Timestamptz(6)
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("post_scripts")
+  @@schema("public")
+}
+
+/// Reusable agent instructions materialized into each selected scan's agent home.
+model AgentSkill {
+  id           BigInt   @id @default(autoincrement())
+  slug         String   @unique
+  name         String
+  description  String?
+  content      String
+  sourceUrl    String?  @map("source_url")
+  licenseSpdx  String?  @map("license_spdx")
+  attribution  String?
+  insertedAt   DateTime @default(now()) @map("inserted_at") @db.Timestamptz(6)
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("agent_skills")
+  @@schema("public")
+}
+
+/// Reusable severity-ranking rule sets. Selected rankers are concatenated with
+/// the per-scan custom rules into scans.severity_ranker at scan-creation time.
+model SeverityRanker {
+  id          BigInt   @id @default(autoincrement())
+  name        String
+  description String?
+  content     String
+  insertedAt  DateTime @default(now()) @map("inserted_at") @db.Timestamptz(6)
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("severity_rankers")
+  @@schema("public")
+}
+
+/// Cached provider model lists. Codex and Claude entries constrain model
+/// selection; OpenRouter entries provide advisory, account-specific suggestions.
+model ModelCatalog {
+  provider     String    @id
+  models       Json      @default("[]")
+  defaultModel String?   @map("default_model")
+  fetchedAt    DateTime? @map("fetched_at") @db.Timestamptz(6)
+  lastError    String?   @map("last_error")
+  updatedAt    DateTime? @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("model_catalogs")
+  @@schema("public")
+}
+
+/// A queued natural-language request to generate a workflow or post-script draft.
+/// The engine owns execution fields; a completed result remains a draft until the
+/// user explicitly persists it through the corresponding resource API.
+model Generation {
+  id               BigInt    @id @default(autoincrement())
+  kind             String
+  request          String
+  model            String
+  modelProvider    String    @map("model_provider")
+  harness          String
+  thinkingEffort   String    @default("medium") @map("thinking_effort")
+  status           String    @default("pending")
+  result           Json?
+  error            String?
+  validationErrors Json?     @map("validation_errors")
+  rawTokenUsage    Json?     @map("raw_token_usage")
+  codexSessionId   String?   @map("codex_session_id")
+  runStartedAt     DateTime? @map("run_started_at") @db.Timestamptz(6)
+  completedAt      DateTime? @map("completed_at") @db.Timestamptz(6)
+  insertedAt       DateTime  @default(now()) @map("inserted_at") @db.Timestamptz(6)
+  updatedAt        DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([status, insertedAt], map: "generations_status_inserted_at_idx")
+  @@map("generations")
+  @@schema("public")
+}
+
+/// A reusable scan blueprint: an ordered set of step ids.
+model Workflow {
+  id          BigInt   @id @default(autoincrement())
+  stepIds     BigInt[] @default([]) @map("step_ids")
+  name        String
+  description String?
+  // Distinct {{extra.<key>}} sub-keys referenced across this workflow's steps.
+  extra       String[] @default([])
+  insertedAt  DateTime @default(now()) @map("inserted_at") @db.Timestamptz(6)
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("llm_workflows")
+  @@schema("public")
+}
+
+/// A run of a workflow against a repository.
+model Scan {
+  id            BigInt   @id @default(autoincrement())
+  workflowId    BigInt   @map("workflow_id")
+  postScriptId  BigInt   @map("post_script_id")
+  insertedAt    DateTime @default(now()) @map("inserted_at") @db.Timestamptz(6)
+  updatedAt     DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  repoFull      String   @map("repo_full")
+  repoKind      String?  @map("repo_kind") // remote | local
+  commitSha     String   @map("commit_sha")
+  repoScope     String   @map("repo_scope")
+  dependencies  String[] @map("dependencies") // legacy: addresses/names of each dependency
+  dependenciesDetail Json? @map("dependencies_detail") // [{ kind, repo_full, commit_sha }]
+  agentSkillIds BigInt[] @default([]) @map("agent_skill_ids")
+  configuration Json     @map("configuration")
+  model         String
+  modelProvider String  @default("openrouter") @map("model_provider") // codex, claude, openrouter
+  harness       String
+  thinkingEffort String? @map("thinking_effort") // default, low, medium, high, xhigh, max, ultra
+  status        String // queued, pending, prewarming_cache, running, rate_limited, paused, post_processing, completed, stopped, failed
+  config        Json // legacy compatibility JSON; scan columns are authoritative
+  scopes        Json // must include: files, lines
+  reasoning     Json?
+  jobLimit      Int?      @map("job_limit")
+  jobsStarted   Int       @default(0) @map("jobs_started")
+  lastResumedAt DateTime? @map("last_resumed_at") @db.Timestamptz(6)
+  // Concatenated severity-ranking rules (pre-built rankers + per-scan custom rules).
+  severityRanker  String? @map("severity_ranker")
+  // Optional values for the workflow's expected {{extra.<key>}} keys.
+  extra           Json?
+  // Optional free-form scan metadata for executor/UI features.
+  extras          Json?
+
+  @@index([status], map: "scans_status_idx")
+  @@index([insertedAt(sort: Desc)], map: "scans_inserted_at_idx")
+  @@index([updatedAt(sort: Desc), id(sort: Desc)], map: "scans_updated_at_id_idx")
+  @@map("scans")
+  @@schema("public")
+}
+
+/// A confirmed/triaged finding. json_answer holds 8 required keys plus optional exploitable.
+model Vulnerability {
+  id               BigInt   @id @default(autoincrement())
+  scanId           BigInt   @map("scan_id")
+  workflowId       BigInt   @map("workflow_id")
+  scanMetadataId   BigInt   @map("scan_metadata_id")
+  prevId           BigInt   @map("prev_id")
+  jsonAnswer       Json?    @map("json_answer")
+  postScriptAnswer Json?    @map("post_script_answer")
+  insertedAt       DateTime @default(now()) @map("inserted_at") @db.Timestamptz(6)
+  updatedAt        DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  prevTable        String?  @map("prev_table")
+  comments         String?
+  interesting      BigInt?
+  repeatRun        Int?     @map("repeat_run")
+  rank             Int?
+  dedupeRunId      Decimal? @map("dedupe_run_id")
+  dedupeModel      String?  @map("dedupe_model")
+  dedupeIsCanonical Boolean? @map("dedupe_is_canonical")
+  dedupeCanonicalId BigInt? @map("dedupe_canonical_id")
+  dedupeClusterId  String?  @map("dedupe_cluster_id")
+  dedupeReason     String?  @map("dedupe_reason")
+  bountyRankResponse Json?  @map("bounty_rank_response")
+  bountyRank       Int?     @map("bounty_rank")
+  bountyRankImpactLevel String? @map("bounty_rank_impact_level")
+  bountyRankMinimumReward BigInt? @map("bounty_rank_minimum_reward")
+  bountyRankMaximumReward BigInt? @map("bounty_rank_maximum_reward")
+  bountyRankReasoning String? @map("bounty_rank_reasoning")
+  rankRootBug      String?  @map("rank_root_bug")
+  bountyRankMissingFromPrompt String? @map("bounty_rank_missing_from_prompt")
+  bountyRankTotalIssues Int? @map("bounty_rank_total_issues")
+  bountyRankRunId BigInt?  @map("bounty_rank_run_id")
+  bountyRankModel String?  @map("bounty_rank_model")
+  bountyRankTs    DateTime? @map("bounty_rank_ts") @db.Timestamptz(6)
+
+  @@index([scanId], map: "vulnerabilities_scan_id_idx")
+  @@index([scanId, rank], map: "vulnerabilities_rank_idx")
+  @@index([scanId, dedupeIsCanonical, dedupeCanonicalId], map: "vulnerabilities_dedupe_idx")
+  @@index([scanId, bountyRank], map: "vulnerabilities_bounty_rank_idx")
+  @@map("vulnerabilities")
+  @@schema("workflows")
+}
+
+model VulnerabilityEnrichment {
+  id              BigInt   @id @default(autoincrement())
+  scanId          BigInt   @map("scan_id")
+  vulnerabilityId BigInt   @map("vulnerability_id")
+  postScriptId    BigInt   @map("post_script_id")
+  postScriptName  String   @map("post_script_name")
+  result          Json?
+  stub            Boolean  @default(false)
+  stubExplanation String?  @map("stub_explanation")
+  insertedAt      DateTime @default(now()) @map("inserted_at") @db.Timestamptz(6)
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([vulnerabilityId, postScriptId], map: "vulnerability_enrichments_vulnerability_id_post_script_id_key")
+  @@index([scanId], map: "vulnerability_enrichments_scan_idx")
+  @@index([vulnerabilityId], map: "vulnerability_enrichments_vulnerability_idx")
+  @@map("vulnerability_enrichments")
+  @@schema("workflows")
+}
+
+/// Raw per-step output. LIST-partitioned by partition_key = `{scan_id}-{step_depth}`.
+model StepResult {
+  id           BigInt   @default(autoincrement())
+  stepId       BigInt   @map("step_id")
+  scanId       BigInt   @map("scan_id")
+  workflowId   BigInt   @map("workflow_id")
+  insertedAt   DateTime @default(now()) @map("inserted_at") @db.Timestamptz(6)
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  partitionKey String   @map("partition_key")
+  prevId       BigInt?  @map("prev_id")
+  prevTable    String?  @map("prev_table")
+  repeatRun    Int?     @map("repeat_run")
+  jsonAnswer   Json?    @map("json_answer")
+
+  @@id([partitionKey, id])
+  @@index([partitionKey], map: "step_results_partition_key_idx")
+  @@index([scanId, stepId, repeatRun, prevTable, prevId], map: "step_results_scan_lineage_idx")
+  @@map("step_results")
+  @@schema("workflows")
+}
+
+/// Per-step run telemetry (timing, token usage, etc.).
+model StepMetadata {
+  id                        BigInt    @id @default(autoincrement())
+  scanId                    BigInt    @map("scan_id")
+  workflowId                Decimal?  @map("workflow_id")
+  stepId                    BigInt    @map("step_id")
+  prevId                    BigInt?   @map("prev_id")
+  prevTable                 String?   @map("prev_table")
+  repeatRun                 Int?      @map("repeat_run")
+  status                    String?
+  phase                     String?
+  error                     String?
+  kind                      String    @default("step")
+  postProcessMetadataId     BigInt?   @map("post_process_metadata_id")
+  postScriptId              BigInt?   @map("post_script_id")
+  postScriptName            String?   @map("post_script_name")
+  vulnerabilityId           BigInt?   @map("vulnerability_id")
+  targetVulnerabilityIds    BigInt[]  @default([]) @map("target_vulnerability_ids")
+  batchIndex                Int?      @map("batch_index")
+  stub                      Boolean   @default(false)
+  stubExplanation           String?   @map("stub_explanation")
+  promptTemplate            String?   @map("prompt_template")
+  promptFilled              String?   @map("prompt_filled")
+  outputJson                Json?     @map("output_json")
+  checkedOutCommit          String?   @map("checked_out_commit")
+  runStartedAt              DateTime? @map("run_started_at") @db.Timestamptz(6)
+  runTimeMs                 Decimal?  @map("run_time_ms")
+  rawTokenUsage             Json?     @map("raw_token_usage")
+  tokenCountCachedInput     Json?     @map("token_count_cached_input")
+  tokenCountInput           Json?     @map("token_count_input")
+  tokenCountOutput          Json?     @map("token_count_output")
+  tokenCountReasoningOutput Json?     @map("token_count_reasoning_output")
+  tokenCountTotal           Json?     @map("token_count_total")
+  codexSessionId            String?   @map("codex_session_id")
+  codexSourceHome           String?   @map("codex_source_home")
+  codexAccountId            String?   @map("codex_account_id")
+  codexAccountEmail         String?   @map("codex_account_email")
+  model                     String?
+  harness                   String?
+  thinkingEffort            String?   @map("thinking_effort")
+  modelProvider             String?   @map("model_provider")
+  insertedAt                DateTime  @default(now()) @map("inserted_at") @db.Timestamptz(6)
+  updatedAt                 DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([scanId, stepId, repeatRun, prevTable, prevId, status], map: "step_metadata_scan_lineage_idx")
+  @@index([kind, scanId, status], map: "step_metadata_kind_scan_idx")
+  @@map("step_metadata")
+  @@schema("workflows")
+}
+
+model PostProcessMetadata {
+  id                        BigInt    @id @default(autoincrement())
+  scanId                    BigInt    @map("scan_id")
+  workflowId                BigInt?   @map("workflow_id")
+  postScriptId              BigInt?   @map("post_script_id")
+  postScriptName            String?   @map("post_script_name")
+  vulnerabilityId           BigInt?   @map("vulnerability_id")
+  kind                      String
+  batchIndex                Int?      @map("batch_index")
+  targetVulnerabilityIds    BigInt[]  @default([]) @map("target_vulnerability_ids")
+  status                    String
+  phase                     String?
+  error                     String?
+  promptTemplate            String?   @map("prompt_template")
+  promptFilled              String?   @map("prompt_filled")
+  outputJson                Json?     @map("output_json")
+  checkedOutCommit          String?   @map("checked_out_commit")
+  runStartedAt              DateTime? @map("run_started_at") @db.Timestamptz(6)
+  runTimeMs                 Decimal?  @map("run_time_ms")
+  rawTokenUsage             Json?     @map("raw_token_usage")
+  tokenCountCachedInput     Json?     @map("token_count_cached_input")
+  tokenCountInput           Json?     @map("token_count_input")
+  tokenCountOutput          Json?     @map("token_count_output")
+  tokenCountReasoningOutput Json?     @map("token_count_reasoning_output")
+  tokenCountTotal           Json?     @map("token_count_total")
+  codexSessionId            String?   @map("codex_session_id")
+  codexSourceHome           String?   @map("codex_source_home")
+  codexAccountId            String?   @map("codex_account_id")
+  codexAccountEmail         String?   @map("codex_account_email")
+  model                     String?
+  harness                   String?
+  thinkingEffort            String?   @map("thinking_effort")
+  modelProvider             String?   @map("model_provider")
+  insertedAt                DateTime  @default(now()) @map("inserted_at") @db.Timestamptz(6)
+  updatedAt                 DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([scanId, kind, status], map: "post_process_metadata_scan_idx")
+  @@index([vulnerabilityId, kind, postScriptId], map: "post_process_metadata_vulnerability_idx")
+  @@map("post_process_metadata")
+  @@schema("workflows")
+}
+
+/// Links a vulnerability to the post-script applied to it.
+model Triage {
+  id              BigInt   @id @default(autoincrement())
+  vulnerabilityId BigInt   @map("vulnerability_id")
+  postScriptId    BigInt   @map("post_script_id")
+  insertedAt      DateTime @default(now()) @map("inserted_at") @db.Timestamptz(6)
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("triage")
+  @@schema("workflows")
+}

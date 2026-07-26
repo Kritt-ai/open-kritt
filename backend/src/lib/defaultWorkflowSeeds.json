@@ -1,0 +1,147 @@
+[
+  {
+    "name": "external-flow-analysis",
+    "description": "Maps externally reachable entrypoints, traces each production flow, and investigates every flow for concrete security vulnerabilities.",
+    "extra": [],
+    "levels": [
+      {
+        "depth": 0,
+        "steps": [
+          {
+            "name": "Map external entrypoints",
+            "content": "You are mapping the externally reachable attack surface of {{repo_full}} at commit {{commit_sha}}.\n\nRepository scope: {{repo_scope}}\nDependencies: {{dependencies}}\nRuntime configuration: {{configuration}}\n\nFind each distinct production entrypoint through which an actor outside the deployed process or trusted local environment can cause the application to receive or process input. Consider public HTTP, GraphQL, gRPC, RPC, WebSocket, webhook, network/peer protocol, externally supplied queue or event handlers, public package/API boundaries, and externally exposed command interfaces when untrusted input reaches them.\n\nFor every entrypoint:\n- Identify the concrete ingress and first application handler.\n- State the external actor that can reach it and the input they control.\n- Give the exact source path and line for the handler or its registration.\n- Explain why it is externally reachable under the supplied configuration or inherited runtime defaults.\n\nInclude only production-relevant paths. Exclude tests, mocks, examples, benchmarks, dead code, developer-only tools, and interfaces limited to the same trusted host or process. Do not merge distinct handlers or routes into one result. Do not speculate about reachability: return a stub when no externally reachable entrypoints can be established."
+          }
+        ],
+        "consumeAll": false,
+        "isLastStep": false,
+        "multiOutput": true,
+        "outputTable": "workflows.step_results",
+        "outputFormat": {
+          "entrypoint_kind": "string",
+          "entrypoint_label": "string",
+          "entrypoint_handler": "string",
+          "entrypoint_file_path": "string",
+          "entrypoint_line": "number",
+          "entrypoint_actor": "string",
+          "entrypoint_input": "string",
+          "entrypoint_reachability": "string"
+        }
+      },
+      {
+        "depth": 1,
+        "steps": [
+          {
+            "name": "Trace reachable flows",
+            "content": "You are tracing production execution flows from one externally reachable entrypoint in {{repo_full}}.\n\nEntrypoint:\n- kind: {{entrypoint_kind}}\n- label: {{entrypoint_label}}\n- handler: {{entrypoint_handler}}\n- location: {{entrypoint_file_path}}:{{entrypoint_line}}\n- external actor: {{entrypoint_actor}}\n- controlled input: {{entrypoint_input}}\n- reachability evidence: {{entrypoint_reachability}}\n\nMap every materially distinct flow that this external actor can reach from the entrypoint through production code. A flow should capture a meaningful route, dispatch target, validation outcome, authorization boundary, asynchronous continuation, state mutation, external call, sensitive sink, or terminal response. Do not create separate results for cosmetic helper calls, but do separate paths whose conditions, privileged actions, data handling, or security consequences differ.\n\nFor each flow:\n- Summarize what the flow does and where it ends.\n- Provide an ordered `flow_trace` with the important hops as `path:line symbol - behavior`, including parsing, validation, dispatch, and security-sensitive operations.\n- Identify the terminal action and the externally controlled input as it reaches that action.\n- Give the most security-relevant source location in the flow and why the flow deserves security review.\n\nKeep the analysis grounded in the supplied configuration and production code. Exclude impossible, test-only, local-only, and dead paths. Do not report vulnerabilities yet; this stage is an accurate flow map."
+          }
+        ],
+        "consumeAll": false,
+        "isLastStep": false,
+        "multiOutput": true,
+        "outputTable": "workflows.step_results",
+        "outputFormat": {
+          "flow_summary": "string",
+          "flow_trace": "array",
+          "flow_terminal_action": "string",
+          "flow_file_path": "string",
+          "flow_line": "number",
+          "flow_input_to_sink": "string",
+          "flow_security_relevance": "string"
+        }
+      },
+      {
+        "depth": 2,
+        "steps": [
+          {
+            "name": "Investigate flow vulnerabilities",
+            "content": "You are investigating one externally reachable production flow in {{repo_full}} for concrete security vulnerabilities.\n\nEntrypoint:\n- kind: {{entrypoint_kind}}\n- label: {{entrypoint_label}}\n- handler: {{entrypoint_handler}}\n- location: {{entrypoint_file_path}}:{{entrypoint_line}}\n- external actor: {{entrypoint_actor}}\n- controlled input: {{entrypoint_input}}\n\nFlow under review:\n- summary: {{flow_summary}}\n- trace: {{flow_trace}}\n- terminal action: {{flow_terminal_action}}\n- focal location: {{flow_file_path}}:{{flow_line}}\n- input to sink: {{flow_input_to_sink}}\n- security relevance: {{flow_security_relevance}}\n\nReview the source code for this exact flow, including the surrounding implementation and any necessary callers or callees. Report only vulnerabilities that are concrete, reachable from the stated external actor, and supported by code evidence. A valid finding must identify the vulnerable operation, the missing or flawed protection, a realistic malicious input or sequence, and the full trigger path.\n\nDo not report style issues, hypothetical concerns, test-only behavior, or vulnerabilities that require unsupported configuration or unproven assumptions. Set `exploitable` to true only when the stated external actor can realistically trigger the issue in the configured production path. When the flow contains no supported vulnerability, return a stub instead of inventing a finding.\n\nFor each finding, point `file_path` and `line` to the actual vulnerable code, make `trigger_flow` an ordered list from attacker ingress to the vulnerable operation, and use `malicious_input_example` for a minimal realistic payload or sequence."
+          }
+        ],
+        "consumeAll": false,
+        "isLastStep": true,
+        "multiOutput": true,
+        "outputTable": "workflows.vulnerabilities",
+        "outputFormat": {
+          "explanation": "string",
+          "file_path": "string",
+          "line": "number",
+          "malicious_input_example": "string",
+          "summary": "string",
+          "trigger_flow": "array",
+          "vulnerability_type": "string",
+          "malicious_actor": "string",
+          "exploitable": "boolean"
+        }
+      }
+    ]
+  },
+  {
+    "name": "Cosmos ABCI Panic Halt Review",
+    "description": "Enumerate every production-reachable Cosmos ABCI method in a Go codebase, then investigate each method for maliciously triggerable panic paths that could halt the chain.",
+    "extra": [],
+    "levels": [
+      {
+        "depth": 0,
+        "steps": [
+          {
+            "name": "Enumerate ABCI methods",
+            "content": "Repository: {{repo_full}} at commit {{commit_sha}}. Scope: {{repo_scope}}. Dependencies: {{dependencies}}. Configuration: {{configuration}}.\n\nYou are acting as a whitehat security researcher mapping Cosmos ABCI halt surfaces. Your mission is to find every production-reachable ABCI method implementation in the scoped codebase, including but not limited to BeginBlock, BeginBlocker, EndBlock, EndBlocker, InitChain, Info, CheckTx, DeliverTx, FinalizeBlock, PrepareProposal, ProcessProposal, ExtendVote, VerifyVoteExtension, Commit, Query, ListSnapshots, OfferSnapshot, LoadSnapshotChunk, ApplySnapshotChunk, PreBlocker, and any CometBFT/Tendermint, Cosmos SDK, app, module, keeper, or generated adapter method that is wired into ABCI execution.\n\nAnalysis method:\n1. Inspect application construction, module manager wiring, server/startup configuration, baseapp setup, ABCI adapter registration, module BeginBlockers/EndBlockers/PreBlockers, proposal handlers, vote extension handlers, and any custom Application implementations.\n2. Search for both direct ABCI method names and indirect registration patterns, including method values, interface implementations, embedded structs, generated app code, dependency injection providers, module configurators, and keeper hooks invoked from ABCI phases.\n3. For each candidate, independently verify production reachability from startup or app construction to runtime ABCI invocation. Treat comments, documentation, examples, and names as leads only; prove reachability from code, build tags, configuration, and effective module registration.\n4. Identify externally or validator-controlled inputs that can affect the method, such as transactions, evidence, votes, validator set updates, block header fields, proposer behavior, app state, parameters, IBC packets, governance-controlled config, oracle data, snapshots, or prior state transitions.\n5. Exclude tests, mocks, sample apps, local-only tools, generated code that is not built into the production binary, dead registrations, and methods unreachable under the supplied scope/configuration. Record each exclusion category checked.\n6. Perform a second-pass falsification before returning each item: re-check the file path, line, receiver, signature, registration path, and build/config gates. If a candidate cannot be proven reachable, do not return it.\n\nEvidence standard: return one record per ABCI method or ABCI-phase handler that is production-reachable. Include exact file path, line number, symbol/signature, receiver type, ABCI kind, module/app ownership, registration evidence as ordered file/line/symbol hops, reachability evidence, runtime inputs, and exclusions checked. If no ABCI methods are found, return no records.\n\nImportant reminder, map ONLY ABCI methods, no other type of methods should be considered\n"
+          }
+        ],
+        "consumeAll": false,
+        "isLastStep": false,
+        "multiOutput": true,
+        "outputTable": "workflows.step_results",
+        "outputFormat": {
+          "abci_kind": "string",
+          "abci_line": "number",
+          "abci_file_path": "string",
+          "abci_signature": "string",
+          "abci_method_name": "string",
+          "abci_module_or_app": "string",
+          "abci_receiver_type": "string",
+          "abci_runtime_inputs": "array",
+          "abci_exclusions_checked": "array",
+          "abci_reachability_evidence": "array",
+          "abci_registration_evidence": "array"
+        }
+      },
+      {
+        "depth": 1,
+        "steps": [
+          {
+            "name": "Investigate explicit panic calls",
+            "content": "Repository: {{repo_full}} at commit {{commit_sha}} only. Scope: {{repo_scope}}. Dependencies: {{dependencies}}. Configuration: {{configuration}}.\n\nYou are acting as a whitehat security researcher investigating whether one specific production-reachable Cosmos ABCI method can be maliciously made to panic and halt the chain. Target method: {{abci_method_name}} at {{abci_file_path}}:{{abci_line}} with receiver {{abci_receiver_type}}, signature {{abci_signature}}, ABCI kind {{abci_kind}}, module/app {{abci_module_or_app}}. Prior registration and reachability evidence: {{abci_registration_evidence}}. Runtime inputs/leads: {{abci_runtime_inputs}}.\n\nMission: determine whether an attacker can reach an explicit panic path, including direct panic calls, must-style helpers that panic, require/assert helpers that panic, SDK/store/codec helpers documented or implemented to panic, reflection panics, type assertion panics, or dependency calls that intentionally panic on malformed state or input.\n\nAnalysis method:\n1. Trace the exact target method body and all production-reachable callees it invokes during this ABCI phase. Stay within behavior reachable from this specific ABCI method; do not review unrelated repository code.\n2. Enumerate attacker-controlled actors and inputs for this method, such as users submitting transactions before the block, malicious proposers, validators, vote extensions, evidence senders, governance parameter changes, IBC counterparties, oracle reporters, snapshot peers, or state previously written by attacker-reachable messages.\n3. Search for explicit panic sites and panic-equivalent helpers along reachable paths. For each candidate, identify the guard conditions, input/state requirements, and whether a malicious actor can satisfy them in production.\n4. Verify every relevant check. State what each validation, authorization, bounds check, invariant check, or canonicalization step actually proves, then compare it with what the later panic site assumes. Test weaker approximations, inconsistent normalization, stale state, replay, reordering, withholding, reuse across blocks, and cross-component desynchronization.\n5. Exclude false positives where the panic is unreachable, guarded by an unforgeable condition, limited to initialization outside ABCI execution, limited to test/debug builds, recover-protected before returning to ABCI, or only possible through local operator misconfiguration with no malicious trigger.\n6. Perform deliberate falsification before accepting or rejecting a finding: re-read each cited line, rebuild the end-to-end trigger flow from attacker action to ABCI invocation to panic site, and try to disprove attacker control and chain-halt impact. Missing evidence remains uncertainty, not proof of safety or exploitability.\n\nReturn one record for each verified exploitable explicit-panic halt path. Use vulnerability_type to identify the panic class, for example explicit_panic. The trigger_flow must be an ordered array of concrete file/line/symbol hops. explanation must distinguish verified facts from hypotheses and include blockers or uncertainties if any. malicious_input_example must describe a concrete malicious transaction, validator behavior, governance/state setup, block/proposal content, or other input that triggers the panic. malicious_actor must name the actor role. If no exploitable explicit panic path is verified for this target method, return no records."
+          },
+          {
+            "name": "Investigate arithmetic panics",
+            "content": "Repository: {{repo_full}} at commit {{commit_sha}} only. Scope: {{repo_scope}}. Dependencies: {{dependencies}}. Configuration: {{configuration}}.\n\nYou are acting as a whitehat security researcher investigating whether one specific production-reachable Cosmos ABCI method can be maliciously made to panic and halt the chain. Target method: {{abci_method_name}} at {{abci_file_path}}:{{abci_line}} with receiver {{abci_receiver_type}}, signature {{abci_signature}}, ABCI kind {{abci_kind}}, module/app {{abci_module_or_app}}. Prior registration and reachability evidence: {{abci_registration_evidence}}. Runtime inputs/leads: {{abci_runtime_inputs}}.\n\nMission: determine whether an attacker can reach an arithmetic panic from this ABCI method, especially integer division or modulo by zero, invalid big integer operations that panic, numeric conversions followed by unsafe operations, or library math helpers that panic on invalid denominators or nil numeric operands.\n\nAnalysis method:\n1. Trace the exact target method and all production-reachable callees relevant to numeric computation, rewards, slashing, staking, distribution, oracle prices, liquidity, validator powers, epochs, fees, rates, commissions, voting power totals, block counts, or parameter-derived denominators.\n2. Enumerate all divisors, modulo operands, denominators, nil numeric pointers, and panic-prone math helper inputs. For each, identify its source and whether it can be influenced by a user, proposer, validator, governance parameter, prior state transition, IBC packet, oracle report, or corrupted-but-consensus-reachable state.\n3. Verify guards and invariants. State exactly what each nonzero check, range check, parameter validation, defaulting rule, genesis validation, keeper invariant, or state transition guarantees at the panic site. Compare the proven property with the later assumption, and test for bypass through ordering, stale cached values, partial updates, deleted state, zero total supply/power, disabled modules, empty validator sets, or desynchronized derived state.\n4. Exclude false positives where the denominator is compile-time nonzero, protected by an unavoidable production validation, unreachable in this ABCI phase, panic-recovered before returning to ABCI, or only caused by non-malicious local operator edits outside consensus inputs.\n5. Perform deliberate falsification before accepting or rejecting a finding: re-check cited code locations, attacker control, all guard dominance, and whether the exact zero or invalid value can exist at the ABCI execution point. Do not infer exploitability from a suspicious expression alone.\n\nReturn one record for each verified exploitable arithmetic panic halt path. Use vulnerability_type to identify the panic class, for example division_by_zero or arithmetic_panic. The trigger_flow must be an ordered array of concrete file/line/symbol hops. explanation must distinguish verified facts from hypotheses and include blockers or uncertainties if any. malicious_input_example must describe the concrete transaction, validator action, governance/state setup, block/proposal content, or other input that creates the invalid arithmetic condition. malicious_actor must name the actor role. If no exploitable arithmetic panic path is verified for this target method, return no records."
+          },
+          {
+            "name": "Investigate nil pointer panics",
+            "content": "Repository: {{repo_full}} at commit {{commit_sha}} only. Scope: {{repo_scope}}. Dependencies: {{dependencies}}. Configuration: {{configuration}}.\n\nYou are acting as a whitehat security researcher investigating whether one specific production-reachable Cosmos ABCI method can be maliciously made to panic and halt the chain. Target method: {{abci_method_name}} at {{abci_file_path}}:{{abci_line}} with receiver {{abci_receiver_type}}, signature {{abci_signature}}, ABCI kind {{abci_kind}}, module/app {{abci_module_or_app}}. Prior registration and reachability evidence: {{abci_registration_evidence}}. Runtime inputs/leads: {{abci_runtime_inputs}}.\n\nMission: determine whether an attacker can reach a nil pointer dereference or nil interface panic from this ABCI method, including nil keeper fields, nil store services, nil context values, missing module state, nil decoded messages, nil validator/consensus records, nil evidence/vote extension data, nil account objects, nil params, nil pointers returned from maps/lookups, nil interfaces with concrete nil values, and dependency methods that panic when receivers or arguments are nil.\n\nAnalysis method:\n1. Trace the exact target method body and production-reachable callees where pointers, interfaces, map lookups, store reads, codec decodes, keeper dependencies, validator records, account records, params, or module state are dereferenced.\n2. For every dereference or method call on possibly nil data, identify the source of the value and the expected invariant that makes it non-nil. Treat constructor wiring, dependency injection, genesis validation, store key registration, and previous message handlers as claims to verify, not assumptions.\n3. Enumerate attacker-controlled ways to make the value absent or nil: malformed transactions, deleted state, missing params, governance updates, IBC sequences, evidence/proposal contents, validator lifecycle changes, slashing/tombstoning, module account removal, snapshot restore paths, and cross-module ordering effects before the ABCI method runs.\n4. Verify each guard. State what the check actually proves and whether it dominates the dereference on every branch. Test typed nil interfaces, optional returns with ignored ok flags, errors ignored before dereference, cached stale references, nil slices/maps used safely versus unsafely, and differences between not found, zero value, and nil.\n5. Exclude false positives where nil is impossible due to proven construction-time wiring, consensus-enforced genesis validation, unavoidable earlier state creation, explicit branch return before dereference, panic recovery before ABCI return, or local-only non-consensus configuration.\n6. Perform deliberate falsification before accepting or rejecting a finding: re-check each cited dereference, prove the malicious actor can create the nil state at the exact ABCI point, and try to find any earlier validation or repair path that blocks the panic.\n\nReturn one record for each verified exploitable nil pointer or nil interface halt path. Use vulnerability_type to identify the panic class, for example nil_pointer_dereference. The trigger_flow must be an ordered array of concrete file/line/symbol hops. explanation must distinguish verified facts from hypotheses and include blockers or uncertainties if any. malicious_input_example must describe the concrete malicious transaction, validator behavior, state setup, block/proposal content, or other input that causes the nil value to be dereferenced. malicious_actor must name the actor role. If no exploitable nil dereference path is verified for this target method, return no records."
+          },
+          {
+            "name": "Investigate bounds and type panics",
+            "content": "Repository: {{repo_full}} at commit {{commit_sha}} only. Scope: {{repo_scope}}. Dependencies: {{dependencies}}. Configuration: {{configuration}}.\n\nYou are acting as a whitehat security researcher investigating whether one specific production-reachable Cosmos ABCI method can be maliciously made to panic and halt the chain. Target method: {{abci_method_name}} at {{abci_file_path}}:{{abci_line}} with receiver {{abci_receiver_type}}, signature {{abci_signature}}, ABCI kind {{abci_kind}}, module/app {{abci_module_or_app}}. Prior registration and reachability evidence: {{abci_registration_evidence}}. Runtime inputs/leads: {{abci_runtime_inputs}}.\n\nMission: determine whether an attacker can reach an out-of-bounds, slice, map, string, array, or type assertion panic from this ABCI method. Include index out of range, slice bounds out of range, negative or attacker-sized indexes, assumptions about non-empty arrays/slices, string byte/rune indexing, unsafe casts, single-value type assertions, reflection panics, malformed decode results, and panic-prone SDK or dependency helpers around collections and types.\n\nAnalysis method:\n1. Trace the exact target method and all production-reachable callees that index, slice, sort, select first/last elements, parse delimited strings, decode arrays, cast interfaces, reflect on values, iterate validator sets, consume evidence/vote extensions/proposals, or process lists from state.\n2. Enumerate attacker-controlled collection lengths, indexes, byte strings, decoded objects, interface values, and type tags. Consider users, malicious proposers, validators, governance, IBC counterparties, oracle reporters, snapshot peers, and prior state transitions that shape the data consumed during the ABCI method.\n3. Verify bounds and type guards. State exactly what each len check, schema validation, protobuf decode, route/type check, module invariant, sorting/filtering step, and defaulting rule proves at the access site. Compare that proof to the later assumptions, and test for empty-after-filter cases, duplicate removal, reordering, stale indexes, byte length versus rune length, malformed but decodable data, nil/empty equivalence mistakes, and inconsistent type registration.\n4. Exclude false positives where the access is proven guarded on every path, the collection is constructed locally with fixed length, type assertions are two-value assertions with safe handling, malformed input is rejected before ABCI execution, the code is unreachable in production, or a recover prevents chain halt.\n5. Perform deliberate falsification before accepting or rejecting a finding: re-check cited locations, reconstruct the attacker-controlled data path end to end, and try to disprove both reachability and the claimed blocker before finalizing the verdict.\n\nReturn one record for each verified exploitable bounds, collection, string, reflection, or type assertion panic halt path. Use vulnerability_type to identify the panic class, for example out_of_bounds_slice_access, type_assertion_panic, or reflection_panic. The trigger_flow must be an ordered array of concrete file/line/symbol hops. explanation must distinguish verified facts from hypotheses and include blockers or uncertainties if any. malicious_input_example must describe the concrete malicious transaction, validator behavior, state setup, block/proposal content, or other input that triggers the panic. malicious_actor must name the actor role. If no exploitable bounds or type panic path is verified for this target method, return no records."
+          }
+        ],
+        "consumeAll": false,
+        "isLastStep": true,
+        "multiOutput": true,
+        "outputTable": "workflows.vulnerabilities",
+        "outputFormat": {
+          "line": "number",
+          "summary": "string",
+          "file_path": "string",
+          "explanation": "string",
+          "exploitable": "boolean",
+          "trigger_flow": "array",
+          "malicious_actor": "string",
+          "vulnerability_type": "string",
+          "malicious_input_example": "string"
+        }
+      }
+    ]
+  }
+]

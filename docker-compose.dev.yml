@@ -1,0 +1,5 @@
+# Local-development override for readable backend logs.
+services:
+  backend:
+    environment:
+      LOG_PRETTY: '1'

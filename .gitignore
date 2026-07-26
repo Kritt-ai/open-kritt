@@ -1,0 +1,79 @@
+# Environment files
+.env
+.env.*
+!.env.example
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Node / TypeScript
+node_modules/
+dist/
+build/
+coverage/
+.vite/
+.turbo/
+*.tsbuildinfo
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.python-version
+.venv/
+venv/
+env/
+.pytest_cache/
+.hypothesis/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Docker / local runtime
+docker-compose.override.yml
+.data/
+
+# Local repositories mounted in for scanning (keep the folder, ignore contents)
+/local_repos/*
+!/local_repos/.gitkeep
+postgres_data/
+
+# Local databases
+*.sqlite
+*.sqlite3
+
+# Archives / design exports — keep these out of git (attach to releases instead).
+# Force-add intentionally with `git add -f` if a specific archive must be tracked.
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+
+# Scratch files / notes (never commit)
+random.md
+z.json
+scratch/
+tmp/
+
+# Local, temporary design/working docs — not part of the shipped product.
+DESIGN_*.md
+
+# ignore everything in the local_repos directory except the .gitkeep file in the folder
+local_repos/*
+!local_repos/.gitkeep
+
+OPEN_SOURCE_READINESS.md

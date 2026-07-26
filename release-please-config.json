@@ -1,0 +1,20 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "release-type": "simple",
+  "include-component-in-tag": false,
+  "tag-separator": "-",
+  "changelog-path": "CHANGELOG.md",
+  "bump-minor-pre-major": true,
+  "bump-patch-for-minor-pre-major": true,
+  "packages": {
+    ".": {
+      "package-name": "open-kritt",
+      "extra-files": [
+        { "type": "json", "path": "backend/package.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "frontend/package.json", "jsonpath": "$.version" },
+        "engine/open_kritt_engine/__init__.py",
+        { "type": "generic", "path": "VERSION" }
+      ]
+    }
+  }
+}

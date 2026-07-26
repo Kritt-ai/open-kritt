@@ -1,0 +1,20 @@
+FROM node:22-bookworm-slim
+
+WORKDIR /workspace
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates git \
+    && npm install -g @anthropic-ai/claude-code@2.1.215 \
+    && mkdir -p /home/runner/.claude /home/runner/.config /home/runner/.cache /home/runner/.local/share /home/runner/.npm \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV HOME=/home/runner \
+    CLAUDE_HOME=/home/runner/.claude \
+    CLAUDE_CONFIG_DIR=/home/runner/.claude \
+    XDG_CONFIG_HOME=/home/runner/.config \
+    XDG_CACHE_HOME=/home/runner/.cache \
+    XDG_DATA_HOME=/home/runner/.local/share \
+    NPM_CONFIG_CACHE=/home/runner/.npm
+
+CMD ["claude", "--help"]

@@ -1,0 +1,22 @@
+# Build output / deps
+dist
+build
+coverage
+node_modules
+.data
+local_repos
+
+# Non-JS ecosystems Prettier shouldn't touch
+engine
+database
+*.py
+*.sql
+
+# Docs & changelogs (avoid reflowing prose/tables)
+*.md
+CHANGELOG.md
+
+# Lockfiles
+package-lock.json
+pnpm-lock.yaml
+yarn.lock

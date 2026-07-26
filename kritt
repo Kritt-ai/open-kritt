@@ -1,0 +1,18 @@
+#!/usr/bin/env sh
+
+set -eu
+
+ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "open-kritt CLI requires Node.js 20 or newer. Install Node.js, then run ./kritt again." >&2
+  exit 1
+fi
+
+NODE_MAJOR=$(node -p "process.versions.node.split('.')[0]")
+if [ "$NODE_MAJOR" -lt 20 ]; then
+  echo "open-kritt CLI requires Node.js 20 or newer (found $(node --version))." >&2
+  exit 1
+fi
+
+exec node "$ROOT_DIR/scripts/kritt.mjs" "$@"
