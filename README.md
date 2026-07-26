@@ -123,10 +123,11 @@ This project is based on the original **Open Kritt** project.
 
 **@nishanm15**
 
-🐙 GitHub: https://github.com/nishanm15
+🐙 GitHub: https://github.com/itsdarktoday
 
-𝕏 X: https://x.com/0xnishanm15
+𝕏 X: https://x.com/@0xitsdarktoday
 
+Medium : Medium : https://medium.com/@itsdarktodaygi
 ---
 
 ## 🤝 Contributor
@@ -137,8 +138,10 @@ This project is based on the original **Open Kritt** project.
 
 𝕏 X: https://x.com/0Xscarfac3
 
+Medium : https://medium.com/@0xscarfac3
+
 ---
 
-# 📜 License
+# 📜 Note
 
-This repository remains licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**.
+This is custom version of open-kritt version V1.1.0 
