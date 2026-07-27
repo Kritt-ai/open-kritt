@@ -11,6 +11,7 @@ between them per run, but a single working provider is enough to start.
 | **Codex** | ChatGPT/Codex login or an OpenAI Platform key | Account-specific picker |
 | **Claude** | Claude subscription login or `ANTHROPIC_API_KEY` | Subscription aliases or account-specific picker |
 | **OpenRouter** | `OPENROUTER_API_KEY` | Searchable authenticated catalog, with an exact-ID fallback |
+| **OpenCode Zen** | `OPENCODE_API_KEY` | Searchable authenticated catalog, with an exact-ID fallback |
 
 <CardGroup cols={2}>
   <Card title="Codex" icon="terminal" href="/ai-provider-setup/codex">
@@ -21,6 +22,9 @@ between them per run, but a single working provider is enough to start.
   </Card>
   <Card title="OpenRouter" icon="route" href="/ai-provider-setup/openrouter">
     Use one key to access compatible models through OpenRouter.
+  </Card>
+  <Card title="OpenCode Zen" icon="cloud" href="/ai-provider-setup/opencode-zen">
+    Use one key to access OpenCode Zen's curated Claude and GPT-5.x-codex models.
   </Card>
 </CardGroup>
 
@@ -36,9 +40,9 @@ between them per run, but a single working provider is enough to start.
   </Step>
   <Step title="Choose one access method">
     Select **Codex login**, **OpenAI API key**, **Codex API key**, **Anthropic API key**,
-    or **OpenRouter API key**. Follow the provider guide above to obtain the correct
-    credential. The CLI configures keys and Codex login; Claude subscription login is
-    available from the running application's **Accounts** page.
+    **OpenRouter API key**, or **OpenCode Zen API key**. Follow the provider guide above
+    to obtain the correct credential. The CLI configures keys and Codex login; Claude
+    subscription login is available from the running application's **Accounts** page.
   </Step>
   <Step title="Start or recreate the stack">
     ```bash
@@ -61,7 +65,7 @@ API keys configured by the CLI are written to the repository's `.env` file. Code
 are stored under `ENGINE_CODEX_ACCOUNTS_HOST`, which defaults to
 `./.data/codex-accounts`; a Claude login is stored under `ENGINE_CLAUDE_HOME`, which
 defaults to `./.data/claude`. The Accounts page keeps Codex account paths and its
-OpenRouter key synchronized with `.env`, and mirrors the OpenRouter key under
+OpenRouter and OpenCode Zen keys synchronized with `.env`, and mirrors those keys under
 `.data/engine/credentials` so running services see changes immediately. `.env` and
 `.data/` are ignored by Git.
 
@@ -82,5 +86,5 @@ engine receives the actual credential when it starts a model harness.
 </Note>
 
 Next: configure the recommended [Codex provider](/ai-provider-setup/codex),
-[Claude Code](/ai-provider-setup/claude-code), or
-[OpenRouter](/ai-provider-setup/openrouter).
+[Claude Code](/ai-provider-setup/claude-code), [OpenRouter](/ai-provider-setup/openrouter),
+or [OpenCode Zen](/ai-provider-setup/opencode-zen).
