@@ -90,7 +90,7 @@ Releases are automated from [Conventional Commits](https://www.conventionalcommi
 - `feat!: …` / `BREAKING CHANGE:` → minor bump (pre-1.0)
 - `docs:`, `chore:`, `refactor:`, `test:`, `ci:` → no release on their own
 
-> **Scope is optional, but never use empty parentheses.** `feat():` is *invalid*
+> **Scope is optional, but never use empty parentheses.** `feat():` is *invalid in*
 > Conventional Commits and release-please silently skips it (`unexpected token ')'`).
 > Write `feat:` (no scope) or `feat(frontend):` (with a scope) — not `feat()`.
 
