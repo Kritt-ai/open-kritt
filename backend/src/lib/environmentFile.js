@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { chmod, mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 
 export const PROJECT_ENV_FILE_PATH = process.env.OPEN_KRITT_ENV_FILE_PATH || '';
@@ -102,6 +102,24 @@ export async function mutateEnvironmentFile(
 ) {
   if (!environmentFilePath) return null;
   if (typeof mutator !== 'function') throw new TypeError('Environment mutation must be a function.');
+
+  // The project environment file is a convenience mirror of managed credentials
+  // and live settings for future Compose runs; it is not the authoritative
+  // store (engine-runtime.env / providers.json are). On a fresh checkout the
+  // host .env does not exist, and `docker compose up` creates the bind-mount
+  // source as a *directory*. Reading or writing that as a file throws EISDIR,
+  // which would surface as a 500 on every Settings/Accounts save. When the
+  // configured path exists but is not a regular file, treat it as "not
+  // configured" and skip the mirror instead of failing the whole request.
+  try {
+    const stats = await stat(environmentFilePath);
+    if (!stats.isFile()) return null;
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+    // ENOENT: the file does not exist yet. Fall through so the read below treats
+    // it as empty and the write creates a regular file on first save.
+  }
+
   const operation = async () => {
     let text = '';
     try {
