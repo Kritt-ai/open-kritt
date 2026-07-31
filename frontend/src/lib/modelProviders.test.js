@@ -60,11 +60,12 @@ const modelCatalog = configuredModelCatalog({
 });
 
 describe('configuredModelProviders', () => {
-  it('uses only supported provider IDs returned by the API', () => {
-    expect(configuredModelProviders({ providers: ['OPENROUTER', 'unknown', 'claude', 'codex', 'codex'] })).toEqual([
-      'codex',
-      'claude',
+  it('keeps normalized provider IDs returned by the API, including custom providers', () => {
+    expect(configuredModelProviders({ providers: ['OPENROUTER', 'my-gateway', 'claude', 'codex', 'codex'] })).toEqual([
       'openrouter',
+      'my-gateway',
+      'claude',
+      'codex',
     ]);
   });
 
@@ -112,15 +113,29 @@ describe('model catalog', () => {
             { id: '' },
           ],
         },
-        { provider: 'unknown', input: 'text', status: 'ready', models: [] },
+        {
+          provider: 'my-gateway',
+          label: 'My Gateway',
+          input: 'text',
+          status: 'ready',
+          defaultModel: 'gateway-model',
+          harnesses: ['openai-compatible'],
+          models: [{ id: 'gateway-model', label: 'gateway-model', thinkingEfforts: ['medium'] }],
+        },
       ],
     });
 
-    expect(Object.keys(catalog)).toEqual(['codex']);
+    expect(Object.keys(catalog)).toEqual(['codex', 'my-gateway']);
     expect(modelCatalogForProvider(catalog, 'codex')).toMatchObject({
       input: 'select',
       status: 'ready',
       defaultModel: 'gpt-5-codex',
+    });
+    expect(modelCatalogForProvider(catalog, 'my-gateway')).toMatchObject({
+      input: 'text',
+      label: 'My Gateway',
+      defaultModel: 'gateway-model',
+      harnesses: ['openai-compatible'],
     });
     expect(modelsForModelProvider(catalog, 'codex')).toEqual([
       {

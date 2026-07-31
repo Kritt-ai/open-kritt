@@ -37,6 +37,7 @@ import {
   multiOutputDepthKey,
   isMultiOutputDepthKey,
 } from './constants.js';
+import { customProviderDefinition } from './providerCredentials.js';
 
 class ValidationError extends Error {
   constructor(errors) {
@@ -70,7 +71,8 @@ function modelSelectionValidation(body, fieldPrefix = '') {
   }
   const rawProvider = typeof providerValue === 'string' ? providerValue.trim().toLowerCase() : DEFAULT_MODEL_PROVIDER;
   const modelProvider = rawProvider || DEFAULT_MODEL_PROVIDER;
-  if (!MODEL_PROVIDERS.includes(modelProvider)) {
+  const customProvider = customProviderDefinition(modelProvider);
+  if (!MODEL_PROVIDERS.includes(modelProvider) && !customProvider) {
     push('model_provider', `Model provider must be one of: ${MODEL_PROVIDERS.join(', ')}.`);
   }
 
@@ -83,7 +85,9 @@ function modelSelectionValidation(body, fieldPrefix = '') {
       harnessValue == null || typeof harnessValue === 'string' ? 'A harness is required.' : 'Harness must be a string.'
     );
   } else if (!HARNESSES.includes(harness)) push('harness', `Harness must be one of: ${HARNESSES.join(', ')}.`);
-  else if (MODEL_PROVIDERS.includes(modelProvider) && !isModelProviderHarnessCompatible(modelProvider, harness)) {
+  else if (customProvider && !customProvider.harnesses.includes(harness)) {
+    push('harness', `Harness "${harness}" is not compatible with model provider "${modelProvider}". Use openai-compatible.`);
+  } else if (MODEL_PROVIDERS.includes(modelProvider) && !isModelProviderHarnessCompatible(modelProvider, harness)) {
     push(
       'harness',
       `Harness "${harness}" is not compatible with model provider "${modelProvider}". Use ${MODEL_PROVIDER_HARNESSES[

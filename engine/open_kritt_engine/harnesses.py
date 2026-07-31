@@ -12,9 +12,12 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import urljoin
+from urllib.request import Request, urlopen
 
 from .claude_auth import CLAUDE_OAUTH_EXPIRY_ENV, claude_oauth_timeout_seconds
-from .provider_credentials import provider_environment
+from .provider_credentials import CUSTOM_PROVIDER_API_KEY_ENV, custom_provider_settings, provider_environment
 from .schema import EXTRACTOR_HELPER_FIELD
 
 NON_RETRYABLE_HARNESS_FAILURES = frozenset(
@@ -170,6 +173,7 @@ CLAUDE_MODEL_ALIASES = {
 }
 DEFAULT_MODEL_PROVIDER = "openrouter"
 MODEL_PROVIDERS = {"codex", "claude", "openrouter"}
+OPENAI_COMPATIBLE_MAX_RESPONSE_BYTES = 10 * 1024 * 1024
 CLAUDE_WORKSPACE_SYSTEM_PROMPT = (
     "Use only files under the current working directory and dependency paths listed in WORKSPACE.json. "
     "Do not search from filesystem root (/), /data, /root, /home, or other global paths. "
@@ -1839,6 +1843,245 @@ class CursorHarness:
         return HarnessResult(payload=payload, usage=usage, output=process_output)
 
 
+def _openai_compatible_headers(env: dict[str, str], provider: dict[str, object]) -> dict[str, str]:
+    headers = {
+        "Authorization": f"Bearer {env.get(CUSTOM_PROVIDER_API_KEY_ENV) or provider.get('api_key') or ''}",
+        "Content-Type": "application/json",
+    }
+    organization = str(provider.get("organization") or env.get("OPEN_KRITT_CUSTOM_PROVIDER_ORGANIZATION") or "").strip()
+    if organization:
+        headers["OpenAI-Organization"] = organization
+    extra_headers = provider.get("extra_headers") or {}
+    if isinstance(extra_headers, dict):
+        for name, value in extra_headers.items():
+            name = str(name).strip()
+            value = str(value).strip()
+            if name and value:
+                headers[name] = value
+    return headers
+
+
+def _openai_compatible_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in schema.items() if key != "$schema"}
+
+
+def _openai_compatible_request(
+    url: str,
+    payload: dict[str, Any],
+    headers: dict[str, str],
+    timeout_seconds: int,
+    endpoint_name: str,
+) -> tuple[dict[str, Any], HarnessOutput]:
+    safe_payload = {
+        key: ("[REDACTED]" if "key" in key.lower() or "token" in key.lower() else value)
+        for key, value in payload.items()
+    }
+    request = Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+    try:
+        with urlopen(request, timeout=max(1, timeout_seconds)) as response:  # noqa: S310 - user-configured provider URL
+            raw = response.read(OPENAI_COMPATIBLE_MAX_RESPONSE_BYTES + 1)
+            if len(raw) > OPENAI_COMPATIBLE_MAX_RESPONSE_BYTES:
+                raise HarnessError("Provider response was too large.", code="invalid_output", harness="openai-compatible")
+            text = raw.decode("utf-8", errors="replace")
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError as exc:
+                raise HarnessError(
+                    "Provider returned invalid JSON.",
+                    code="invalid_output",
+                    harness="openai-compatible",
+                    output=HarnessOutput(
+                        stdout=text,
+                        files={
+                            f"{endpoint_name}-request.json": json.dumps(safe_payload, indent=2),
+                            f"{endpoint_name}-raw-response.txt": text,
+                        },
+                    ),
+                ) from exc
+            return parsed, HarnessOutput(
+                stdout=text,
+                returncode=0,
+                files={
+                    f"{endpoint_name}-request.json": json.dumps(safe_payload, indent=2),
+                    f"{endpoint_name}-raw-response.txt": text,
+                },
+            )
+    except HTTPError as exc:
+        text = _output_text(exc.read())
+        output = HarnessOutput(
+            stdout=text,
+            stderr=str(exc),
+            returncode=exc.code,
+            files={
+                f"{endpoint_name}-request.json": json.dumps(safe_payload, indent=2),
+                f"{endpoint_name}-raw-response.txt": text,
+            },
+        )
+        raise _classified_harness_error(
+            f"http_status={exc.code}\n{text}",
+            harness="openai-compatible",
+            output_artifact=output,
+        ) from exc
+    except (URLError, TimeoutError, OSError) as exc:
+        raise HarnessError(
+            f"OpenAI-compatible request failed: {exc}",
+            code="network_error",
+            harness="openai-compatible",
+            output=HarnessOutput(
+                stderr=str(exc),
+                files={f"{endpoint_name}-request.json": json.dumps(safe_payload, indent=2)},
+            ),
+        ) from exc
+
+
+def _extract_responses_text(response: dict[str, Any]) -> str:
+    if isinstance(response.get("output_text"), str):
+        return response["output_text"]
+    parts: list[str] = []
+    for item in response.get("output") or []:
+        if not isinstance(item, dict):
+            continue
+        for content in item.get("content") or []:
+            if isinstance(content, dict) and isinstance(content.get("text"), str):
+                parts.append(content["text"])
+    return "\n".join(parts)
+
+
+def _extract_chat_text(response: dict[str, Any]) -> str:
+    choices = response.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return ""
+    message = choices[0].get("message") if isinstance(choices[0], dict) else None
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(part.get("text", "") for part in content if isinstance(part, dict))
+    return ""
+
+
+class OpenAICompatibleHarness:
+    name = "openai-compatible"
+
+    def __init__(self, timeout_seconds: int, model_provider: str | None = None):
+        self.timeout_seconds = timeout_seconds
+        self.model_provider = model_provider
+
+    def run(
+        self,
+        *,
+        prompt: str,
+        schema: dict[str, Any],
+        repo_dir: str,
+        model: str,
+        thinking_effort: str | None = None,
+        env: dict[str, str] | None = None,
+        allow_tools: bool = True,
+    ) -> HarnessResult:
+        actual_env = env if env is not None else _base_env()
+        custom_provider = custom_provider_settings(self.model_provider, actual_env)
+        if custom_provider is None:
+            raise HarnessError(
+                "OpenAI-compatible harness requires a configured custom provider.",
+                code="configuration_error",
+                harness="openai-compatible",
+            )
+        base_url = str(custom_provider.get("base_url") or "").strip()
+        api_key = actual_env.get(CUSTOM_PROVIDER_API_KEY_ENV) or str(custom_provider.get("api_key") or "").strip()
+        if not base_url or not api_key:
+            raise HarnessError(
+                "Custom provider base URL or API key is missing.",
+                code="configuration_error",
+                harness="openai-compatible",
+            )
+
+        headers = _openai_compatible_headers(actual_env, custom_provider)
+        schema_payload = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "open_kritt_result",
+                "schema": _openai_compatible_schema(schema),
+                "strict": False,
+            },
+        }
+        attempts = [
+            (
+                "responses",
+                urljoin(base_url.rstrip("/") + "/", "responses"),
+                {
+                    "model": model,
+                    "input": prompt,
+                    "text": {"format": schema_payload},
+                    "max_output_tokens": 8000,
+                },
+                _extract_responses_text,
+            ),
+            (
+                "chat.completions",
+                urljoin(base_url.rstrip("/") + "/", "chat/completions"),
+                {
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "response_format": schema_payload,
+                    "max_tokens": 8000,
+                },
+                _extract_chat_text,
+            ),
+            (
+                "chat.completions.plain",
+                urljoin(base_url.rstrip("/") + "/", "chat/completions"),
+                {"model": model, "messages": [{"role": "user", "content": prompt}], "max_tokens": 8000},
+                _extract_chat_text,
+            ),
+        ]
+
+        failures: list[HarnessOutput] = []
+        for endpoint_name, endpoint_url, payload, extract_text in attempts:
+            try:
+                response, output = _openai_compatible_request(
+                    endpoint_url,
+                    payload,
+                    headers,
+                    self.timeout_seconds,
+                    endpoint_name,
+                )
+            except HarnessError as exc:
+                failures.append(exc.output or HarnessOutput(stderr=str(exc)))
+                if exc.code in {"auth_failed", "model_access_denied", "quota_exceeded", "rate_limited"}:
+                    raise
+                continue
+            try:
+                model_text = extract_text(response)
+                parsed = _extract_json(model_text or response)
+                output = _add_output_file(output, f"{endpoint_name}-parsed-output.json", json.dumps(parsed, indent=2))
+                return HarnessResult(
+                    payload=parsed,
+                    usage={
+                        "model_provider": self.model_provider,
+                        "endpoint": endpoint_name,
+                        **(response.get("usage") if isinstance(response.get("usage"), dict) else {}),
+                    },
+                    output=output,
+                )
+            except (HarnessError, json.JSONDecodeError) as exc:
+                failures.append(
+                    _add_output_file(output, f"{endpoint_name}-parse-error.txt", str(exc))
+                )
+
+        combined = HarnessOutput(
+            stdout="\n".join(part.stdout for part in failures if part.stdout),
+            stderr="\n".join(part.stderr for part in failures if part.stderr),
+            returncode=failures[-1].returncode if failures else None,
+            files={name: contents for part in failures for name, contents in (part.files or {}).items()} or None,
+        )
+        raise HarnessError(
+            "OpenAI-compatible provider did not return a usable structured response.",
+            code="invalid_output",
+            harness="openai-compatible",
+            output=combined,
+        )
+
+
 def normalize_harness_name(name: str) -> str:
     if name == "codex-cli":
         return "codex"
@@ -1870,4 +2113,6 @@ def harness_for(
         return ClaudeHarness(timeout_seconds, provider)
     if normalized == "cursor":
         return CursorHarness(timeout_seconds, provider)
+    if normalized == "openai-compatible":
+        return OpenAICompatibleHarness(timeout_seconds, provider)
     raise HarnessError(f"unsupported harness {name!r}")

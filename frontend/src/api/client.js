@@ -114,6 +114,14 @@ export const api = {
     request(`/accounts/provider/${encodeURIComponent(provider)}${refresh ? '?refresh=1' : ''}`, {
       cache: 'no-store',
     }),
+  customProviders: () => request('/accounts/custom-providers', { cache: 'no-store' }),
+  createCustomProvider: (body) => request('/accounts/custom-providers', { method: 'POST', body }),
+  updateCustomProvider: (providerId, body) =>
+    request(`/accounts/custom-providers/${encodeURIComponent(providerId)}`, { method: 'PUT', body }),
+  testCustomProvider: (providerId) =>
+    request(`/accounts/custom-providers/${encodeURIComponent(providerId)}/test`, { method: 'POST' }),
+  deleteCustomProvider: (providerId) =>
+    request(`/accounts/custom-providers/${encodeURIComponent(providerId)}`, { method: 'DELETE' }),
   saveProviderCredential: (provider, credential) =>
     request(`/accounts/${provider}`, { method: 'POST', body: { credential } }),
   removeProviderCredential: (provider) => request(`/accounts/${provider}`, { method: 'DELETE' }),

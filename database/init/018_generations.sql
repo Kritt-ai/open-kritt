@@ -7,9 +7,9 @@ CREATE TABLE IF NOT EXISTS public.generations (
     kind text NOT NULL CHECK (kind IN ('workflow', 'post_script')),
     request text NOT NULL CHECK (length(btrim(request)) BETWEEN 1 AND 20000),
     model text NOT NULL CHECK (length(btrim(model)) BETWEEN 1 AND 200),
-    model_provider text NOT NULL CHECK (model_provider IN ('codex', 'claude', 'openrouter')),
-    harness text NOT NULL CHECK (harness IN ('codex', 'claude-code')),
-    thinking_effort text DEFAULT 'medium' NOT NULL CHECK (thinking_effort IN ('low', 'medium', 'high', 'xhigh')),
+    model_provider text NOT NULL CHECK (length(btrim(model_provider)) BETWEEN 1 AND 63),
+    harness text NOT NULL CHECK (length(btrim(harness)) BETWEEN 1 AND 80),
+    thinking_effort text DEFAULT 'medium' NOT NULL CHECK (thinking_effort IN ('default', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra')),
     status text DEFAULT 'pending' NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'failed')),
     result jsonb CHECK (result IS NULL OR jsonb_typeof(result) = 'object'),
     error text,
@@ -20,11 +20,7 @@ CREATE TABLE IF NOT EXISTS public.generations (
     completed_at timestamp with time zone,
     inserted_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CHECK (
-        (model_provider = 'codex' AND harness = 'codex') OR
-        (model_provider = 'claude' AND harness = 'claude-code') OR
-        model_provider = 'openrouter'
-    )
+    CHECK (model_provider <> '' AND harness <> '')
 );
 
 CREATE INDEX IF NOT EXISTS generations_status_inserted_at_idx

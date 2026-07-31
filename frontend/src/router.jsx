@@ -17,6 +17,7 @@ import SeverityRankerEditor from './pages/SeverityRankerEditor.jsx';
 import Steps from './pages/Steps.jsx';
 import AiGeneration from './pages/AiGeneration.jsx';
 import Accounts from './pages/Accounts.jsx';
+import CustomProviders from './pages/CustomProviders.jsx';
 import Settings from './pages/Settings.jsx';
 
 // Data router (createBrowserRouter) so pages can use useBlocker to guard
@@ -38,6 +39,7 @@ export const router = createBrowserRouter(
         { path: 'scans/:scanId/vulnerabilities/:vulnId', element: <VulnerabilityPage /> },
         { path: 'settings', element: <Settings /> },
         { path: 'accounts', element: <Accounts /> },
+        { path: 'custom-providers', element: <CustomProviders /> },
         { path: 'post-scripts', element: <PostScripts /> },
         { path: 'post-scripts/generate', element: <AiGeneration kind="post_script" /> },
         { path: 'post-scripts/new', element: <PostScriptEditor /> },

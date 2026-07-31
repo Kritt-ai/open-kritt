@@ -74,7 +74,7 @@ export const DEFAULT_THINKING_EFFORT = 'medium';
 export const MODEL_PROVIDERS = ['codex', 'claude', 'openrouter'];
 export const DEFAULT_MODEL_PROVIDER = 'openrouter';
 
-export const HARNESSES = ['codex', 'claude-code', 'cursor'];
+export const HARNESSES = ['codex', 'claude-code', 'cursor', 'openai-compatible'];
 export const HARNESS_ALIASES = {
   'codex-cli': 'codex',
   'cursor-agent': 'cursor',
@@ -88,6 +88,7 @@ export const MODEL_PROVIDER_HARNESSES = {
 export const HARNESS_THINKING_EFFORTS = {
   codex: ['default', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
   'claude-code': ['default', 'low', 'medium', 'high', 'xhigh', 'max'],
+  'openai-compatible': ['default', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
 };
 
 export const GENERATION_KINDS = ['workflow', 'post_script'];

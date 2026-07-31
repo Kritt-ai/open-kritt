@@ -7,18 +7,28 @@ import express from 'express';
 import { consumeCodexManualReset, fetchExecutorAccounts, fetchExecutorProvider } from '../src/lib/accounts.js';
 import { createAccountsRouter } from '../src/routes/accounts.js';
 
-async function requestRouter(router, path = '/') {
+async function requestRouter(router, path = '/', options = {}) {
   const app = express();
+  app.use(express.json());
   app.use(router);
   const server = app.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const { port } = server.address();
 
   try {
-    return await fetch(`http://127.0.0.1:${port}${path}`);
+    return await fetch(`http://127.0.0.1:${port}${path}`, options);
   } finally {
     await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }
+}
+
+async function requestJson(router, path, options = {}) {
+  const response = await requestRouter(router, path, {
+    ...options,
+    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+  });
+  const text = await response.text();
+  return { status: response.status, body: text ? JSON.parse(text) : null };
 }
 
 test('account API responses cannot be stored by browser caches', async () => {
@@ -30,6 +40,40 @@ test('account API responses cannot be stored by browser caches', async () => {
 
   assert.equal(response.status, 200);
   assert.equal(response.headers.get('cache-control'), 'no-store');
+});
+
+test('custom provider updates may omit the write-only API key', async () => {
+  const existing = {
+    id: 'my-gateway',
+    label: 'My Gateway',
+    baseUrl: 'https://gateway.example/v1/',
+    apiKey: 'stored-secret',
+    model: 'old-model',
+  };
+  let updateCall;
+  const router = createAccountsRouter({
+    getCustomProviderRecord: () => existing,
+    updateCustomProvider: async (body, options) => {
+      updateCall = { body, options };
+      return { id: options.providerId, label: body.name, model: body.model };
+    },
+  });
+
+  const response = await requestJson(router, '/custom-providers/my-gateway', {
+    method: 'PUT',
+    body: JSON.stringify({
+      name: 'My Gateway',
+      baseUrl: 'https://gateway.example/v1/',
+      apiKey: '',
+      model: 'new-model',
+      extraHeaders: {},
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(updateCall.options.providerId, 'my-gateway');
+  assert.equal(updateCall.body.apiKey, '');
+  assert.deepEqual(response.body, { provider: { id: 'my-gateway', label: 'My Gateway', model: 'new-model' } });
 });
 
 test('executor account integration loads each provider independently with the distinct internal bearer token', async (t) => {

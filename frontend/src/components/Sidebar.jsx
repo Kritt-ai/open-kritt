@@ -150,6 +150,7 @@ export default function Sidebar() {
       </div>
       <div className="sidebar-nav-group" style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
         <NavItem label="Accounts" to="/accounts" active={isActive('/accounts')} />
+        <NavItem label="Custom providers" to="/custom-providers" active={isActive('/custom-providers')} />
         <NavItem label="Settings" to="/settings" active={isActive('/settings')} />
       </div>
 

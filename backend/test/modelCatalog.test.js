@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import { mkdtemp, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { test } from 'node:test';
 
 import express from 'express';
@@ -251,6 +254,50 @@ test('OpenRouter exposes cached suggestions while keeping free-text input', () =
       .providers[0].status,
     'unavailable'
   );
+});
+
+test('custom providers expose a ready free-text catalog entry from managed credentials', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'open-kritt-model-catalog-'));
+  const credentialsPath = join(dir, 'providers.json');
+  await writeFile(
+    credentialsPath,
+    JSON.stringify({
+      version: 2,
+      credentials: {},
+      customProviders: [
+        {
+          id: 'my-gateway',
+          label: 'My Gateway',
+          baseUrl: 'https://gateway.example/v1/',
+          apiKey: 'secret-key',
+          model: 'gateway-model',
+        },
+      ],
+      disabledEnvironmentProviders: [],
+    }),
+    'utf8'
+  );
+
+  assert.deepEqual(buildModelCatalogResponse(['my-gateway'], [], { credentialsPath }), {
+    providers: [
+      {
+        provider: 'my-gateway',
+        label: 'My Gateway',
+        input: 'text',
+        models: [
+          {
+            id: 'gateway-model',
+            label: 'gateway-model',
+            thinkingEfforts: ['default', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+            isDefault: true,
+          },
+        ],
+        defaultModel: 'gateway-model',
+        status: 'ready',
+        harnesses: ['openai-compatible'],
+      },
+    ],
+  });
 });
 
 test('model catalog endpoint returns only configured providers', async () => {

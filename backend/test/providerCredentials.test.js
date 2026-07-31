@@ -8,10 +8,15 @@ import { buildAccountsOverview } from '../src/lib/accounts.js';
 import { parseEnvironmentText } from '../src/lib/environmentFile.js';
 import {
   providerCredentialStatuses,
+  customProviderDefinition,
+  customProviderStatuses,
   readManagedCredentialStateSync,
   readManagedCredentialsSync,
+  removeCustomProvider,
   removeManagedProviderCredential,
+  saveCustomProvider,
   saveManagedProviderCredential,
+  validateCustomProvider,
   validateProviderCredential,
 } from '../src/lib/providerCredentials.js';
 
@@ -90,8 +95,9 @@ test('removing an environment-bootstrapped key keeps it removed until explicitly
   openrouter = providerCredentialStatuses(options).find((provider) => provider.id === 'openrouter');
   assert.equal(openrouter.configured, false);
   assert.deepEqual(readManagedCredentialStateSync(credentialsPath), {
-    version: 1,
+    version: 2,
     credentials: {},
+    customProviders: [],
     disabledEnvironmentProviders: ['openrouter'],
   });
 
@@ -100,6 +106,64 @@ test('removing an environment-bootstrapped key keeps it removed until explicitly
   assert.equal(openrouter.source, 'managed_api_key');
   assert.equal(openrouter.canRemove, true);
   assert.deepEqual(readManagedCredentialStateSync(credentialsPath).disabledEnvironmentProviders, []);
+});
+
+test('custom providers are stored privately and exposed as OpenAI-compatible provider summaries', async (t) => {
+  const credentialsPath = await temporaryCredentialPath(t);
+  const saved = await saveCustomProvider(
+    {
+      name: 'Custom Gateway',
+      baseUrl: 'https://provider.example/v1/',
+      apiKey: 'secret-key',
+      model: 'gateway-model',
+      organization: 'org_123',
+      extraHeaders: { 'X-Test': 'yes' },
+    },
+    { credentialsPath }
+  );
+
+  assert.equal(saved.id, 'custom-gateway');
+  assert.deepEqual(saved.harnesses, ['openai-compatible']);
+  assert.equal(saved.defaultModel, 'gateway-model');
+  assert.equal(saved.apiKey, undefined);
+  assert.equal(customProviderDefinition(saved.id, credentialsPath).baseUrl, 'https://provider.example/v1/');
+  assert.deepEqual(customProviderStatuses({ credentialsPath }).map((provider) => provider.id), ['custom-gateway']);
+
+  const file = JSON.parse(await readFile(credentialsPath, 'utf8'));
+  assert.equal(file.customProviders[0].apiKey, 'secret-key');
+});
+
+test('custom providers can be updated without re-entering an API key and removed', async (t) => {
+  const credentialsPath = await temporaryCredentialPath(t);
+  const saved = await saveCustomProvider(
+    { name: 'Gateway', baseUrl: 'https://provider.example/v1/', apiKey: 'secret-key', model: 'model-a' },
+    { credentialsPath }
+  );
+  const updated = await saveCustomProvider(
+    { name: 'Gateway', baseUrl: 'https://provider.example/v1/', apiKey: '', model: 'model-b' },
+    { credentialsPath, providerId: saved.id }
+  );
+
+  assert.equal(updated.model, 'model-b');
+  assert.equal(JSON.parse(await readFile(credentialsPath, 'utf8')).customProviders[0].apiKey, 'secret-key');
+  assert.equal(await removeCustomProvider(saved.id, { credentialsPath }), true);
+  assert.equal(await removeCustomProvider(saved.id, { credentialsPath }), false);
+});
+
+test('custom provider validation rejects unsafe endpoint definitions', () => {
+  assert.equal(validateCustomProvider({ name: '', baseUrl: 'https://x.test', apiKey: 'key', model: 'model' }).field, 'name');
+  assert.equal(validateCustomProvider({ name: 'X', baseUrl: 'file:///x', apiKey: 'key', model: 'model' }).field, 'baseUrl');
+  assert.equal(validateCustomProvider({ name: 'X', baseUrl: 'https://x.test', apiKey: 'a\nb', model: 'model' }).field, 'apiKey');
+  assert.equal(
+    validateCustomProvider({
+      name: 'X',
+      baseUrl: 'https://x.test',
+      apiKey: 'key',
+      model: 'model',
+      extraHeaders: { 'Bad Header': 'x' },
+    }).field,
+    'extraHeaders'
+  );
 });
 
 test('credential validation accepts only a single-line OpenRouter key', () => {

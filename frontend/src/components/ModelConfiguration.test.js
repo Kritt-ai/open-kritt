@@ -58,6 +58,29 @@ describe('modelConfigurationIsValid', () => {
     });
   });
 
+  it('defaults to the first configured custom provider when no built-in provider is configured', () => {
+    const customCatalog = configuredModelCatalog({
+      providers: [
+        {
+          provider: 'my-gateway',
+          label: 'My Gateway',
+          input: 'text',
+          status: 'ready',
+          defaultModel: 'gateway-model',
+          harnesses: ['openai-compatible'],
+          models: [{ id: 'gateway-model', label: 'gateway-model', thinkingEfforts: ['medium'] }],
+        },
+      ],
+    });
+
+    expect(modelConfigurationForCatalog({}, ['my-gateway'], customCatalog)).toEqual({
+      model_provider: 'my-gateway',
+      model: 'gateway-model',
+      thinking_effort: 'medium',
+      harness: 'openai-compatible',
+    });
+  });
+
   it('accepts a catalog model with its compatible harness', () => {
     expect(
       modelConfigurationIsValid(
