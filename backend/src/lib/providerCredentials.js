@@ -31,9 +31,16 @@ export const PROVIDER_DEFINITIONS = {
     description: 'OpenRouter-compatible models through a project API key.',
     management: 'api_key',
   },
+  xai: {
+    label: 'xAI (Grok)',
+    envKeys: ['XAI_API_KEY'],
+    credentialLabel: 'xAI API key',
+    description: 'Direct Grok models via the xAI API (api.x.ai), not OpenRouter.',
+    management: 'api_key',
+  },
 };
 
-const MANAGED_CREDENTIAL_PROVIDERS = new Set(['openrouter']);
+const MANAGED_CREDENTIAL_PROVIDERS = new Set(['openrouter', 'xai']);
 
 const MAX_CREDENTIAL_LENGTH = 16 * 1024;
 let writeQueue = Promise.resolve();
@@ -215,8 +222,8 @@ export function providerCredentialStatuses({
       management: definition.management,
       configured,
       source,
-      canManage: definition.management === 'login' || id === 'openrouter',
-      canRemove: id === 'openrouter' && (managedCredential || environmentCredential),
+      canManage: definition.management === 'login' || MANAGED_CREDENTIAL_PROVIDERS.has(id),
+      canRemove: MANAGED_CREDENTIAL_PROVIDERS.has(id) && (managedCredential || environmentCredential),
       managed: managedCredential,
     };
   });

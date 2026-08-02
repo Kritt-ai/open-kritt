@@ -246,11 +246,19 @@ test('OpenRouter exposes cached suggestions while keeping free-text input', () =
   });
   assert.equal(isCachedModel('openrouter', 'vendor/code-model', catalog), true);
   assert.equal(isCachedModel('openrouter', 'custom/not-in-catalog', catalog), false);
-  assert.equal(
-    buildModelCatalogResponse(['openrouter'], [{ provider: 'openrouter', models: [], lastError: 'refresh failed' }])
-      .providers[0].status,
-    'unavailable'
-  );
+  const emptyOpenrouter = buildModelCatalogResponse(
+    ['openrouter'],
+    [{ provider: 'openrouter', models: [], lastError: 'refresh failed' }]
+  ).providers[0];
+  assert.equal(emptyOpenrouter.status, 'unavailable');
+  assert.equal(emptyOpenrouter.defaultModel, 'z-ai/glm-5.2');
+  assert.equal(emptyOpenrouter.input, 'text');
+
+  const xaiCatalog = buildModelCatalogResponse(['xai'], []).providers[0];
+  assert.equal(xaiCatalog.provider, 'xai');
+  assert.equal(xaiCatalog.status, 'ready');
+  assert.equal(xaiCatalog.defaultModel, 'grok-4.5');
+  assert.ok(xaiCatalog.models.some((model) => model.id === 'grok-4.5' && model.isDefault));
 });
 
 test('model catalog endpoint returns only configured providers', async () => {

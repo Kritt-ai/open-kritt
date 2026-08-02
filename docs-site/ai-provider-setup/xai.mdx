@@ -1,0 +1,88 @@
+---
+title: "xAI (Grok)"
+description: "Use Grok 4.5 directly via the xAI API with XAI_API_KEY — not OpenRouter."
+---
+
+The **xAI** provider talks to [api.x.ai](https://api.x.ai) with your own
+`XAI_API_KEY`. This is **direct Grok access**, separate from the OpenRouter
+provider (which uses OpenRouter model IDs such as `x-ai/grok-4.5`).
+
+## Setup
+
+<Steps>
+  <Step title="Create an xAI API key">
+    Sign in to the [xAI console](https://console.x.ai/team/default/api-keys), create a
+    key, and fund the account as required by xAI.
+  </Step>
+  <Step title="Configure open·kritt">
+    Run `./kritt setup`, choose **xAI API key**, and paste the key (input is hidden).
+
+    Or set in `.env`:
+
+    ```bash
+    XAI_API_KEY=xai-...
+    ```
+
+    Then recreate the stack so the backend presence flag and engine credentials mount
+    pick up the change.
+  </Step>
+  <Step title="Create a scan">
+    Provider: **xai**  
+    Model: **`grok-4.5`** (default)  
+    Harness: **codex** (Responses API) or **claude-code** (Anthropic-compatible messages)
+
+    Example API body:
+
+    ```json
+    {
+      "model": "grok-4.5",
+      "model_provider": "xai",
+      "harness": "codex",
+      "thinking_effort": "high"
+    }
+    ```
+  </Step>
+</Steps>
+
+## Model IDs
+
+Use **native xAI model names**, not OpenRouter IDs:
+
+| Enter | Notes |
+| --- | --- |
+| `grok-4.5` | Default; flagship coding / agentic model |
+| `grok-4.5-latest` | Alias family |
+| `grok-4.3` | Previous generation |
+
+Do **not** use `x-ai/grok-4.5` with the `xai` provider — that form is for OpenRouter only.
+
+## How it works
+
+| Harness | Path |
+| --- | --- |
+| **codex** | Codex CLI with `model_providers.xai` → xAI Responses API (`https://api.x.ai/v1`), credential from `XAI_API_KEY`. A **local, xAI-only compat proxy** rewrites OpenAI-specific tool fields so **web search** and multi-turn tool use work with Grok 4.5. OpenRouter / Codex OAuth / Claude paths are unchanged. |
+| **claude-code** | Claude Code with `ANTHROPIC_BASE_URL=https://api.x.ai` and the xAI key as auth token |
+
+### Web search (codex harness)
+
+xAI supports the native Responses tool `{ "type": "web_search" }`. Codex enables search with `--search`; open·kritt’s xAI compat layer strips OpenAI-only fields (for example `external_web_access`) before the request reaches api.x.ai. That lets agents research the public web during a scan when useful.
+
+### Isolation from other providers
+
+- Provider config is written only under `model_providers.xai` and only when `model_provider` is `xai`.
+- Feature disables that xAI needs (`multi_agent`, browser surfaces, remote compaction) apply to **xAI jobs only**.
+- Prefer **`grok-4.5`** for scans; other Grok IDs remain available in the catalog for users who want them.
+
+## Verify
+
+- Accounts / setup show **xAI API key present**.
+- Model catalog for provider `xai` lists `grok-4.5` as default.
+- A scan with `model_provider: "xai"` and `model: "grok-4.5"` starts without asking for OpenRouter.
+
+## Troubleshooting
+
+- **401 / auth errors**: confirm the key is an xAI console key, not an OpenRouter key.
+- **Model not found**: use `grok-4.5`, not `x-ai/grok-4.5`.
+- **`Argument not supported: external_web_access`**: engine image/code is older than the xAI compat proxy — rebuild/restart the engine service.
+- **`Could not decode the compaction blob`**: same — need the compat rewrite of `reasoning.encrypted_content`. Rebuild/restart engine.
+- **EU availability**: some Grok 4.5 console restrictions may apply by region; see xAI docs.

@@ -160,16 +160,32 @@ TOOL_FREE_CODEX_DISABLED_FEATURES = (
 OPENROUTER_CLAUDE_BASE_URL = "https://openrouter.ai/api"
 OPENROUTER_CURSOR_BASE_URL = "https://openrouter.ai/api/v1/cursor"
 OPENROUTER_CODEX_BASE_URL = "https://openrouter.ai/api/v1"
+XAI_CODEX_BASE_URL = "https://api.x.ai/v1"
+# Anthropic SDK appends /v1/messages; use host without /v1 (same pattern as OpenRouter).
+XAI_ANTHROPIC_BASE_URL = "https://api.x.ai"
+# Imported lazily in codex_exec_command / CodexHarness so non-xAI paths pay nothing.
+# Short OpenRouter IDs accepted in the UI / API and expanded before harness launch.
+# Full author/model IDs pass through unchanged.
 OPENROUTER_MODEL_ALIASES = {
     "glm-5.2": "z-ai/glm-5.2",
+    "grok": "x-ai/grok-4.5",
     "grok-4.5": "x-ai/grok-4.5",
+    "grok4.5": "x-ai/grok-4.5",
+    "grok-4": "x-ai/grok-4.5",
+}
+# Direct xAI model aliases (native api.x.ai IDs — not OpenRouter).
+XAI_MODEL_ALIASES = {
+    "grok": "grok-4.5",
+    "grok4.5": "grok-4.5",
+    "grok-4.5-latest": "grok-4.5",
+    "grok-build-latest": "grok-4.5",
 }
 CLAUDE_MODEL_ALIASES = {
     "opus-4.7": "claude-opus-4-7",
     "opus-4.8": "claude-opus-4-8",
 }
 DEFAULT_MODEL_PROVIDER = "openrouter"
-MODEL_PROVIDERS = {"codex", "claude", "openrouter"}
+MODEL_PROVIDERS = {"codex", "claude", "openrouter", "xai"}
 CLAUDE_WORKSPACE_SYSTEM_PROMPT = (
     "Use only files under the current working directory and dependency paths listed in WORKSPACE.json. "
     "Do not search from filesystem root (/), /data, /root, /home, or other global paths. "
@@ -830,6 +846,7 @@ def _scan_docker_command(
         "CODEX_API_KEY",
         "OPENAI_API_KEY",
         "OPENROUTER_API_KEY",
+        "XAI_API_KEY",
         "ANTHROPIC_BASE_URL",
         "ANTHROPIC_AUTH_TOKEN",
         "ANTHROPIC_API_KEY",
@@ -914,6 +931,8 @@ def codex_cli_model_provider(
         return None
     if selected == "openrouter":
         return (configured or "openrouter") if allow_tools else "openrouter"
+    if selected == "xai":
+        return (configured or "xai") if allow_tools else "xai"
     return selected or configured
 
 
@@ -932,28 +951,37 @@ def claude_model_provider(
     requested_provider = normalize_model_provider(model_provider)
     if requested_provider == "openrouter":
         return "openrouter"
+    if requested_provider == "xai":
+        return "xai"
     if requested_provider:
         return None
     actual_env = env or os.environ
     provider = normalize_model_provider(
         actual_env.get("CLAUDE_CODE_MODEL_PROVIDER") or actual_env.get("CODEX_MODEL_PROVIDER")
     )
+    if provider == "xai" and actual_env.get("XAI_API_KEY"):
+        return "xai"
     if provider == "openrouter" and actual_env.get("OPENROUTER_API_KEY"):
         return "openrouter"
+    if actual_env.get("XAI_API_KEY") and (model in XAI_MODEL_ALIASES or model.startswith("grok-")):
+        return "xai"
     if actual_env.get("OPENROUTER_API_KEY") and (model in OPENROUTER_MODEL_ALIASES or "/" in model):
         return "openrouter"
     return None
 
 
 def _claude_model_name(model: str, env: dict[str, str], model_provider: str | None = None) -> str:
-    if claude_model_provider(model, env, model_provider) == "openrouter":
+    provider = claude_model_provider(model, env, model_provider)
+    if provider == "openrouter":
         return OPENROUTER_MODEL_ALIASES.get(model, model)
+    if provider == "xai":
+        return XAI_MODEL_ALIASES.get(model, model)
     return CLAUDE_MODEL_ALIASES.get(model, model)
 
 
 def _apply_claude_host_auth_home(env: dict[str, str], provider: str | None) -> dict[str, str]:
     auth_home = env.get("ENGINE_CLAUDE_AUTH_HOME") or os.getenv("ENGINE_CLAUDE_AUTH_HOME")
-    if provider == "openrouter" or not auth_home or _env_enabled("ENGINE_CLAUDE_DOCKER_RUNNER"):
+    if provider in {"openrouter", "xai"} or not auth_home or _env_enabled("ENGINE_CLAUDE_DOCKER_RUNNER"):
         return env
     actual_env = dict(env)
     auth_home = str(Path(auth_home).expanduser())
@@ -972,11 +1000,19 @@ def _apply_claude_host_auth_home(env: dict[str, str], provider: str | None) -> d
 
 def _claude_env(env: dict[str, str], model: str, model_provider: str | None = None) -> dict[str, str]:
     actual_env = dict(env)
-    if claude_model_provider(model, actual_env, model_provider) == "openrouter":
+    provider = claude_model_provider(model, actual_env, model_provider)
+    if provider == "openrouter":
         if not actual_env.get("OPENROUTER_API_KEY"):
             raise HarnessError("OPENROUTER_API_KEY is required when model provider is openrouter")
         actual_env["ANTHROPIC_BASE_URL"] = actual_env.get("ANTHROPIC_BASE_URL") or OPENROUTER_CLAUDE_BASE_URL
         actual_env["ANTHROPIC_AUTH_TOKEN"] = actual_env.get("ANTHROPIC_AUTH_TOKEN") or actual_env["OPENROUTER_API_KEY"]
+        actual_env["ANTHROPIC_API_KEY"] = ""
+    elif provider == "xai":
+        if not actual_env.get("XAI_API_KEY"):
+            raise HarnessError("XAI_API_KEY is required when model provider is xai")
+        # Direct xAI Anthropic-compatible Messages API (not OpenRouter).
+        actual_env["ANTHROPIC_BASE_URL"] = actual_env.get("ANTHROPIC_BASE_URL") or XAI_ANTHROPIC_BASE_URL
+        actual_env["ANTHROPIC_AUTH_TOKEN"] = actual_env.get("ANTHROPIC_AUTH_TOKEN") or actual_env["XAI_API_KEY"]
         actual_env["ANTHROPIC_API_KEY"] = ""
     return actual_env
 
@@ -1364,15 +1400,29 @@ def codex_exec_command(
         codex_model_provider,
         allow_tools=allow_tools,
     )
-    if normalize_model_provider(model_provider) == "openrouter":
+    provider = normalize_model_provider(model_provider)
+    if provider == "openrouter":
         model = OPENROUTER_MODEL_ALIASES.get(model, model)
+    elif provider == "xai":
+        model = XAI_MODEL_ALIASES.get(model, model)
     command = ["codex"]
+    # Web search: OpenAI/OpenRouter use Codex --search as-is. xAI also gets
+    # --search; OpenAI-only fields are rewritten by xai_codex_compat (not by
+    # disabling search). Other providers are untouched.
     if allow_tools:
         command.append("--search")
     command.extend(["exec", "--json", "-C", repo_dir, "-m", model])
     if allow_tools:
         command.append("--dangerously-bypass-approvals-and-sandbox")
-        if max_subagents is not None:
+        if provider == "xai":
+            # xAI-only feature gates (namespace / browser / remote compaction).
+            from .xai_codex_compat import XAI_CODEX_DISABLED_FEATURES
+
+            for feature in XAI_CODEX_DISABLED_FEATURES:
+                command.extend(["--disable", feature])
+            # Keep multi-agent off for xAI; subagent fan-out uses unsupported types.
+            command.extend(["-c", "agents.max_concurrent_threads_per_session=1"])
+        elif max_subagents is not None:
             command.extend(["-c", f"agents.max_concurrent_threads_per_session={max_subagents}"])
     else:
         command.extend(
@@ -1396,6 +1446,14 @@ def codex_exec_command(
         command.extend(["-c", f'model_providers.openrouter.base_url="{OPENROUTER_CODEX_BASE_URL}"'])
         command.extend(["-c", 'model_providers.openrouter.env_key="OPENROUTER_API_KEY"'])
         command.extend(["-c", 'model_providers.openrouter.wire_api="responses"'])
+    if cli_model_provider == "xai":
+        # Provider definition only — never mutates openrouter/codex blocks.
+        command.extend(["-c", 'model_providers.xai.name="xAI"'])
+        command.extend(["-c", f'model_providers.xai.base_url="{XAI_CODEX_BASE_URL}"'])
+        command.extend(["-c", 'model_providers.xai.env_key="XAI_API_KEY"'])
+        command.extend(["-c", 'model_providers.xai.wire_api="responses"'])
+        command.extend(["-c", "features.multi_agent=false"])
+        command.extend(["-c", "features.remote_compaction_v2=false"])
     if cli_model_provider:
         command.extend(["-c", f"model_provider={json.dumps(cli_model_provider)}"])
     if thinking_effort and thinking_effort != "default":
@@ -1469,6 +1527,17 @@ class CodexHarness:
                 allow_tools=allow_tools,
                 max_subagents=self.max_subagents if allow_tools else None,
             )
+            # xAI-only: wrap through the Responses rewrite proxy. Other providers
+            # keep the bare `codex` argv and talk to their own base URLs.
+            if normalize_model_provider(self.model_provider) == "xai" or (
+                codex_cli_model_provider(
+                    self.model_provider, self.codex_model_provider, allow_tools=allow_tools
+                )
+                == "xai"
+            ):
+                from .xai_codex_compat import wrap_codex_command_for_xai
+
+                cmd = wrap_codex_command_for_xai(cmd, codex_home=actual_env.get("CODEX_HOME"))
             if allow_tools:
                 cmd = (
                     _scan_docker_command(cmd, repo_dir, actual_env, runner_image=runner_image)
@@ -1580,11 +1649,24 @@ class CodexHarness:
             self.codex_model_provider,
             allow_tools=True,
         )
+        if cli_model_provider == "xai":
+            cmd.extend(["-c", 'model_providers.xai.name="xAI"'])
+            cmd.extend(["-c", f'model_providers.xai.base_url="{XAI_CODEX_BASE_URL}"'])
+            cmd.extend(["-c", 'model_providers.xai.env_key="XAI_API_KEY"'])
+            cmd.extend(["-c", 'model_providers.xai.wire_api="responses"'])
+            from .xai_codex_compat import XAI_CODEX_DISABLED_FEATURES
+
+            for feature in XAI_CODEX_DISABLED_FEATURES:
+                cmd.extend(["--disable", feature])
         if cli_model_provider:
             cmd.extend(["-c", f"model_provider={json.dumps(cli_model_provider)}"])
         if thinking_effort and thinking_effort != "default":
             cmd.extend(["-c", f'model_reasoning_effort="{thinking_effort}"'])
         cmd.extend([session_id, "-"])
+        if cli_model_provider == "xai":
+            from .xai_codex_compat import wrap_codex_command_for_xai
+
+            cmd = wrap_codex_command_for_xai(cmd, codex_home=env.get("CODEX_HOME"))
         cmd = (
             _scan_docker_command(cmd, repo_dir, env, runner_image=runner_image)
             if runner_image

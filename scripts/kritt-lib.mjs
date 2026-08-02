@@ -6,10 +6,17 @@ import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 
-export const PROVIDER_KEYS = ['CODEX_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'OPENROUTER_API_KEY'];
+export const PROVIDER_KEYS = [
+  'CODEX_API_KEY',
+  'OPENAI_API_KEY',
+  'ANTHROPIC_API_KEY',
+  'OPENROUTER_API_KEY',
+  'XAI_API_KEY',
+];
 export const CODEX_LOGIN_STATUS_KEY = 'CODEX_LOGIN_CONFIGURED';
 const MANAGED_PROVIDER_LABELS = {
   openrouter: 'OpenRouter API key',
+  xai: 'xAI API key',
 };
 const CODEX_LOGIN_CONTAINER_USER_HOME = '/open-kritt-login';
 const CODEX_LOGIN_CONTAINER_HOME = `${CODEX_LOGIN_CONTAINER_USER_HOME}/.codex`;
@@ -36,6 +43,11 @@ export const ENVIRONMENT_ITEMS = [
     key: 'OPENROUTER_API_KEY',
     label: 'OpenRouter API key',
     info: 'Used for supported OpenRouter-compatible model and harness selections.',
+  },
+  {
+    key: 'XAI_API_KEY',
+    label: 'xAI API key',
+    info: 'Direct Grok access via api.x.ai (provider "xai", model grok-4.5). Not OpenRouter.',
   },
   {
     key: 'GITHUB_TOKEN',
@@ -522,7 +534,9 @@ export async function getSetupStatus({ rootDir, envFile = join(rootDir, '.env'),
   const valuesPresent = Object.fromEntries(
     ENVIRONMENT_ITEMS.map(({ key }) => [
       key,
-      Boolean(values[key]) && !(key === 'OPENROUTER_API_KEY' && disabledProviders.includes('openrouter')),
+      Boolean(values[key]) &&
+        !(key === 'OPENROUTER_API_KEY' && disabledProviders.includes('openrouter')) &&
+        !(key === 'XAI_API_KEY' && disabledProviders.includes('xai')),
     ])
   );
   const codexAuthInspections = await Promise.all(
@@ -668,7 +682,7 @@ function renderStatus(status, io) {
     io,
     `${status.claudeLoginPresent ? '✓' : '○'} Claude login ${status.claudeLoginPresent ? 'present' : 'not set'}`
   );
-  for (const item of ENVIRONMENT_ITEMS.slice(0, 4)) {
+  for (const item of ENVIRONMENT_ITEMS.filter((entry) => PROVIDER_KEYS.includes(entry.key))) {
     const present = status.valuesPresent[item.key];
     write(io, `${present ? '✓' : '○'} ${item.label} ${present ? 'present' : 'not set'}`);
   }
@@ -789,6 +803,9 @@ async function manageEnvironmentItem(context, item) {
     if (item.key === 'OPENROUTER_API_KEY') {
       const status = await getSetupStatus(context);
       await saveManagedProviderCredential(status.credentialsPath, 'openrouter', value);
+    } else if (item.key === 'XAI_API_KEY') {
+      const status = await getSetupStatus(context);
+      await saveManagedProviderCredential(status.credentialsPath, 'xai', value);
     }
     await setEnvValue(envFile, item.key, value);
     write(io, `${item.label} saved.`);
@@ -797,6 +814,9 @@ async function manageEnvironmentItem(context, item) {
       if (item.key === 'OPENROUTER_API_KEY') {
         const status = await getSetupStatus(context);
         await disableManagedProviderCredential(status.credentialsPath, 'openrouter');
+      } else if (item.key === 'XAI_API_KEY') {
+        const status = await getSetupStatus(context);
+        await disableManagedProviderCredential(status.credentialsPath, 'xai');
       }
       await setEnvValue(envFile, item.key, '');
       write(io, `${item.label} unset.`);
@@ -1172,11 +1192,12 @@ export async function runSetup(options = {}) {
     write(context.io, '4) OpenAI API key');
     write(context.io, '5) Anthropic API key');
     write(context.io, '6) OpenRouter API key');
-    write(context.io, '7) GitHub token');
-    write(context.io, '8) Finish setup');
+    write(context.io, '7) xAI API key (direct Grok)');
+    write(context.io, '8) GitHub token');
+    write(context.io, '9) Finish setup');
     const choice = (await context.prompter.ask('Choose an item: ')).toLowerCase();
 
-    if (choice === '8' || choice === 'q' || choice === 'quit') break;
+    if (choice === '9' || choice === 'q' || choice === 'quit') break;
     if (choice === '1') {
       await manageCodexLogin(context);
       continue;
@@ -1185,7 +1206,9 @@ export async function runSetup(options = {}) {
       await manageClaudeLogin(context);
       continue;
     }
-    const item = ENVIRONMENT_ITEMS[Number(choice) - 3] || (choice === '7' ? ENVIRONMENT_ITEMS[4] : null);
+    // Menu 3..8 map onto ENVIRONMENT_ITEMS[0..5] (API keys + GitHub token).
+    const itemIndex = Number(choice) - 3;
+    const item = Number.isInteger(itemIndex) ? ENVIRONMENT_ITEMS[itemIndex] : null;
     if (!item) {
       write(context.io, 'Choose a listed item.');
       continue;

@@ -89,7 +89,7 @@ The create body accepts these fields:
 | `dependencies` | No | Array of `{ "kind", "repo_full", "commit_sha"? }` references. |
 | `configuration` | No | JSON object exposed as `{{configuration}}`; `repeat_runs` and additional post-script IDs also live here. |
 | `model` | Yes | Provider model ID or supported alias. Use a current catalog entry, or an exact custom OpenRouter ID. |
-| `model_provider` | Yes | `codex`, `claude`, or `openrouter`. |
+| `model_provider` | Yes | `codex`, `claude`, `openrouter`, or `xai` (direct Grok via api.x.ai). |
 | `harness` | Yes | Supported values are `codex` and `claude-code`; it must be compatible with the provider. |
 | `thinking_effort` | No | Model/harness-specific: `default`, `low`, `medium`, `high`, `xhigh`, `max`, or `ultra`; defaults to `medium`. |
 | `model_overrides` | No | Object keyed by workflow depth. Each value is a complete `{ "model", "model_provider", "harness", "thinking_effort" }` tuple. Missing depths use the top-level tuple; post-processing always uses the top-level tuple. |
@@ -137,10 +137,10 @@ curl --fail-with-body \
     "repeat_runs": 1,
     "post_script_ids": [1, 2]
   },
-  "model": "z-ai/glm-5.2",
-  "model_provider": "openrouter",
-  "harness": "claude-code",
-  "thinking_effort": "low",
+  "model": "grok-4.5",
+  "model_provider": "xai",
+  "harness": "codex",
+  "thinking_effort": "high",
   "severity_ranker": "Rank exploitable, remotely reachable findings first.",
   "extra": {}
 }

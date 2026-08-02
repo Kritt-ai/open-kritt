@@ -56,15 +56,30 @@ const modelCatalog = configuredModelCatalog({
         { id: 'moonshotai/kimi-code', label: 'Moonshot: Kimi Code', thinkingEfforts: ['default'] },
       ],
     },
+    {
+      provider: 'xai',
+      input: 'select',
+      status: 'ready',
+      defaultModel: 'grok-4.5',
+      models: [
+        {
+          id: 'grok-4.5',
+          label: 'Grok 4.5',
+          isDefault: true,
+          thinkingEfforts: ['low', 'medium', 'high', 'xhigh'],
+        },
+      ],
+    },
   ],
 });
 
 describe('configuredModelProviders', () => {
   it('uses only supported provider IDs returned by the API', () => {
-    expect(configuredModelProviders({ providers: ['OPENROUTER', 'unknown', 'claude', 'codex', 'codex'] })).toEqual([
+    expect(configuredModelProviders({ providers: ['OPENROUTER', 'unknown', 'claude', 'codex', 'xai', 'codex'] })).toEqual([
       'codex',
       'claude',
       'openrouter',
+      'xai',
     ]);
   });
 
@@ -79,11 +94,13 @@ describe('model provider defaults', () => {
     expect(defaultModelForModelProvider('codex')).toBe('gpt-5-codex');
     expect(defaultModelForModelProvider('claude')).toBe('claude-sonnet-5');
     expect(defaultModelForModelProvider('openrouter')).toBe('z-ai/glm-5.2');
+    expect(defaultModelForModelProvider('xai')).toBe('grok-4.5');
   });
 
   it('moves provider-owned model defaults with the provider', () => {
     expect(modelForProviderChange('z-ai/glm-5.2', 'openrouter', 'codex')).toBe('gpt-5-codex');
     expect(modelForProviderChange('gpt-5-codex', 'codex', 'claude')).toBe('claude-sonnet-5');
+    expect(modelForProviderChange('grok-4.5', 'xai', 'codex')).toBe('gpt-5-codex');
   });
 
   it('keeps a user-selected model when the provider changes', () => {
@@ -144,6 +161,7 @@ describe('model catalog', () => {
       'z-ai/glm-5.2',
       'moonshotai/kimi-code',
     ]);
+    expect(modelsForModelProvider(modelCatalog, 'xai').map(({ id }) => id)).toEqual(['grok-4.5']);
     expect(modelCatalogIsReady(modelCatalog, 'codex')).toBe(true);
     expect(modelCatalogIsReady(modelCatalog, 'claude')).toBe(true);
     expect(modelCatalogIsReady(modelCatalog, 'openrouter')).toBe(true);
@@ -159,6 +177,7 @@ describe('model catalog', () => {
     expect(modelForCatalogChange('gpt-4.1', 'codex', 'codex', modelCatalog)).toBe('gpt-4.1');
     expect(modelForCatalogChange('not-listed', 'codex', 'codex', modelCatalog)).toBe('gpt-5-codex');
     expect(modelForCatalogChange('gpt-5-codex', 'codex', 'openrouter', modelCatalog)).toBe('z-ai/glm-5.2');
+    expect(modelForCatalogChange('gpt-5-codex', 'codex', 'xai', modelCatalog)).toBe('grok-4.5');
   });
 
   it('clears native model selections while their catalog is loading', () => {

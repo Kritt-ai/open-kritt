@@ -2,6 +2,39 @@ import { MODEL_PROVIDERS, THINKING_EFFORTS } from './constants.js';
 
 const SAFE_MODEL_NOTE_URLS = new Set(['https://chatgpt.com/cyber']);
 
+// Direct xAI (api.x.ai) models — not OpenRouter IDs.
+const XAI_MODELS = [
+  {
+    id: 'grok-4.5',
+    label: 'Grok 4.5',
+    note: 'Direct xAI API. Default for the xAI provider.',
+    thinkingEfforts: ['default', 'low', 'medium', 'high', 'xhigh', 'max'],
+    isDefault: true,
+  },
+  {
+    id: 'grok-4.5-latest',
+    label: 'Grok 4.5 (latest alias)',
+    thinkingEfforts: ['default', 'low', 'medium', 'high', 'xhigh', 'max'],
+    isDefault: false,
+  },
+  {
+    id: 'grok-4.3',
+    label: 'Grok 4.3',
+    thinkingEfforts: ['default', 'low', 'medium', 'high', 'xhigh', 'max'],
+    isDefault: false,
+  },
+];
+
+// Curated OpenRouter suggestions used when the live catalog is empty/unavailable.
+const OPENROUTER_CURATED_MODELS = [
+  {
+    id: 'z-ai/glm-5.2',
+    label: 'GLM 5.2',
+    thinkingEfforts: ['default', 'low', 'medium', 'high', 'xhigh', 'max'],
+    isDefault: true,
+  },
+];
+
 const CLAUDE_CODE_MODELS = [
   {
     id: 'claude-fable-5',
@@ -112,6 +145,30 @@ export function modelCatalogEntry(provider, catalog) {
       models: CLAUDE_CODE_MODELS,
       defaultModel: 'claude-sonnet-5',
       status: 'ready',
+    };
+  }
+
+  // Direct xAI provider: static curated Grok list (live catalog is optional).
+  if (provider === 'xai' && (!models.length || !defaultModel)) {
+    return {
+      provider,
+      input: 'select',
+      models: XAI_MODELS,
+      defaultModel: 'grok-4.5',
+      status: 'ready',
+    };
+  }
+
+  // OpenRouter: always free-text for exact IDs. When the live catalog is empty,
+  // surface curated suggestions so create-scan has a usable default.
+  if (provider === 'openrouter' && !models.length) {
+    const lastError = catalogValue(catalog, 'lastError', 'last_error');
+    return {
+      provider,
+      input: 'text',
+      models: OPENROUTER_CURATED_MODELS,
+      defaultModel: 'z-ai/glm-5.2',
+      status: hasText(lastError) ? 'unavailable' : 'ready',
     };
   }
 
