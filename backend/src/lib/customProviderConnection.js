@@ -32,32 +32,26 @@ export async function testCustomProviderConnection(provider) {
   const headers = requestHeaders(provider);
   const baseUrl = withTrailingSlash(provider.baseUrl);
   const attempts = [
-    {
-      name: 'responses',
-      url: new URL('responses', baseUrl),
-      options: {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          model: provider.model,
-          input: [{ role: 'user', content: [{ type: 'input_text', text: 'ping' }] }],
-          max_output_tokens: 1,
-        }),
-      },
+  {
+    name: 'chat-completions',
+    url: new URL('chat/completions', baseUrl),
+    options: {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        model: provider.model,
+        messages: [
+          {
+            role: 'user',
+            content: 'ping',
+          },
+        ],
+        stream: false,
+        max_tokens: 1,
+      }),
     },
-    {
-      name: 'models',
-      url: new URL('models', baseUrl),
-      options: {
-        method: 'GET',
-        headers: {
-          Authorization: headers.Authorization,
-          ...(provider.organization ? { 'OpenAI-Organization': provider.organization } : {}),
-          ...(provider.extraHeaders || {}),
-        },
-      },
-    },
-  ];
+  },
+];
 
   const failures = [];
   for (const attempt of attempts) {

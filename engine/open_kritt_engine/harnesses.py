@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -19,6 +20,8 @@ from urllib.request import Request, urlopen
 from .claude_auth import CLAUDE_OAUTH_EXPIRY_ENV, claude_oauth_timeout_seconds
 from .provider_credentials import CUSTOM_PROVIDER_API_KEY_ENV, custom_provider_settings, provider_environment
 from .schema import EXTRACTOR_HELPER_FIELD
+
+LOGGER = logging.getLogger("open_kritt_engine")
 
 NON_RETRYABLE_HARNESS_FAILURES = frozenset(
     {
@@ -174,6 +177,8 @@ CLAUDE_MODEL_ALIASES = {
 DEFAULT_MODEL_PROVIDER = "openrouter"
 MODEL_PROVIDERS = {"codex", "claude", "openrouter"}
 OPENAI_COMPATIBLE_MAX_RESPONSE_BYTES = 10 * 1024 * 1024
+OPENAI_COMPATIBLE_MAX_TOKENS = 8000
+OPENAI_COMPATIBLE_LARGE_MAX_TOKENS = 32000
 CLAUDE_WORKSPACE_SYSTEM_PROMPT = (
     "Use only files under the current working directory and dependency paths listed in WORKSPACE.json. "
     "Do not search from filesystem root (/), /data, /root, /home, or other global paths. "
@@ -258,6 +263,16 @@ def _add_output_file(output: HarnessOutput, name: str, contents: str) -> Harness
     files = dict(output.files or {})
     files[name] = contents
     return HarnessOutput(stdout=output.stdout, stderr=output.stderr, returncode=output.returncode, files=files)
+
+
+def _json_candidates_diagnostic(candidates: list[str]) -> str:
+    """Serialize recovered JSON candidates for failure diagnostics, bounded in size."""
+    capped: list[str] = []
+    for candidate in candidates[:5]:
+        if len(candidate) > 20_000:
+            candidate = candidate[:20_000] + "\n...[truncated]"
+        capped.append(candidate)
+    return json.dumps(capped, indent=2)
 
 
 def _docker_control_env() -> dict[str, str]:
@@ -1034,16 +1049,26 @@ def _balanced_json_objects(text: str):
                 start = None
 
 
-def _parse_json_text(text: str) -> dict[str, Any]:
+def _json_text_candidates(text: str) -> list[str]:
+    """Return the raw candidate JSON documents found in model output text."""
     stripped = text.strip()
     if not stripped:
-        raise json.JSONDecodeError("Expecting value", text, 0)
+        return []
     candidates = [stripped]
     candidates.extend(match.strip() for match in FENCED_JSON_RE.findall(text) if match.strip())
     candidates.extend(_balanced_json_objects(text))
+    return candidates
+
+
+def _parse_json_text(text: str, *, allow_loose: bool = False) -> dict[str, Any]:
+    stripped = text.strip()
+    if not stripped:
+        raise json.JSONDecodeError("Expecting value", text, 0)
+    candidates = _json_text_candidates(text)
     last_error = None
     seen = set()
     parsed_structured = []
+    loose_candidates: list[tuple[str, dict[str, Any]]] = []
     for candidate in candidates:
         if candidate in seen:
             continue
@@ -1055,24 +1080,70 @@ def _parse_json_text(text: str) -> dict[str, Any]:
             continue
         if _looks_like_structured_output(parsed):
             parsed_structured.append(parsed)
+        elif allow_loose and isinstance(parsed, dict):
+            loose_candidates.append((candidate, parsed))
     for parsed in parsed_structured:
         if parsed.get(EXTRACTOR_HELPER_FIELD) is True:
+            LOGGER.debug("structured json extraction succeeded (strict, marked)")
             return parsed
     for parsed in parsed_structured:
         if EXTRACTOR_HELPER_FIELD not in parsed:
+            LOGGER.debug("structured json extraction succeeded (strict)")
             return _with_extractor_marker(parsed)
     if parsed_structured:
+        LOGGER.debug("structured json extraction succeeded (strict, unmarked)")
         return parsed_structured[0]
+    if allow_loose and loose_candidates:
+        selected = loose_candidates[0]
+        for candidate, parsed in loose_candidates[1:]:
+            if len(candidate) > len(selected[0]):
+                selected = (candidate, parsed)
+        LOGGER.debug(
+            "structured json extraction succeeded (loose fallback, %s-byte candidate)",
+            len(selected[0]),
+        )
+        return _with_extractor_marker(selected[1])
     if last_error is not None:
         raise last_error
     raise HarnessError("harness did not return the required JSON object")
 
 
-def _extract_json(value: Any) -> dict[str, Any]:
+def _text_from_response_items(items: list[Any]) -> str:
+    """Collect text content from standard OpenAI response item lists (choices/output)."""
+    parts: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        message = item.get("message")
+        if isinstance(message, dict):
+            content = message.get("content")
+            if isinstance(content, str):
+                parts.append(content)
+                continue
+            if isinstance(content, list):
+                parts.extend(
+                    part.get("text", "")
+                    for part in content
+                    if isinstance(part, dict) and isinstance(part.get("text"), str)
+                )
+                continue
+        content = item.get("content")
+        if isinstance(content, str):
+            parts.append(content)
+        elif isinstance(content, list):
+            parts.extend(
+                part.get("text", "")
+                for part in content
+                if isinstance(part, dict) and isinstance(part.get("text"), str)
+            )
+    return "\n".join(part for part in parts if part)
+
+
+def _extract_json(value: Any, *, allow_loose: bool = False) -> dict[str, Any]:
     if _looks_like_structured_output(value):
         return _with_extractor_marker(value)
     if isinstance(value, str):
-        return _parse_json_text(value)
+        return _parse_json_text(value, allow_loose=allow_loose)
     if isinstance(value, dict):
         structured_output = value.get("structured_output")
         if isinstance(structured_output, dict):
@@ -1089,9 +1160,19 @@ def _extract_json(value: Any) -> dict[str, Any]:
             if isinstance(content, list):
                 text = "".join(part.get("text", "") for part in content if isinstance(part, dict))
                 if text:
-                    return _parse_json_text(text)
+                    return _parse_json_text(text, allow_loose=allow_loose)
         if isinstance(result, str):
-            return _parse_json_text(result)
+            return _parse_json_text(result, allow_loose=allow_loose)
+        if allow_loose:
+            nested = value.get("data")
+            if isinstance(nested, dict):
+                return _extract_json(nested, allow_loose=True)
+            for key in ("choices", "output"):
+                items = value.get(key)
+                if isinstance(items, list):
+                    text = _text_from_response_items(items)
+                    if text:
+                        return _parse_json_text(text, allow_loose=True)
     raise HarnessError("harness did not return the required JSON object")
 
 
@@ -1934,7 +2015,16 @@ def _openai_compatible_request(
         ) from exc
 
 
+def _unwrap_openai_data_wrapper(response: dict[str, Any]) -> dict[str, Any]:
+    """Some OpenAI-compatible gateways (e.g. Cline Pass) wrap the standard
+    response in ``{"data": {...}, "success": true}``. Only unwrap when the
+    ``data`` value is itself a dict so unrelated shapes pass through unchanged."""
+    nested = response.get("data")
+    return nested if isinstance(nested, dict) else response
+
+
 def _extract_responses_text(response: dict[str, Any]) -> str:
+    response = _unwrap_openai_data_wrapper(response)
     if isinstance(response.get("output_text"), str):
         return response["output_text"]
     parts: list[str] = []
@@ -1948,6 +2038,7 @@ def _extract_responses_text(response: dict[str, Any]) -> str:
 
 
 def _extract_chat_text(response: dict[str, Any]) -> str:
+    response = _unwrap_openai_data_wrapper(response)
     choices = response.get("choices")
     if not isinstance(choices, list) or not choices:
         return ""
@@ -1958,6 +2049,15 @@ def _extract_chat_text(response: dict[str, Any]) -> str:
     if isinstance(content, list):
         return "\n".join(part.get("text", "") for part in content if isinstance(part, dict))
     return ""
+
+
+def _openai_response_truncated(response: dict[str, Any]) -> bool:
+    """Detect ``finish_reason == "length"`` even behind a gateway ``data`` wrapper."""
+    unwrapped = _unwrap_openai_data_wrapper(response)
+    choices = unwrapped.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        return choices[0].get("finish_reason") == "length"
+    return False
 
 
 class OpenAICompatibleHarness:
@@ -2004,6 +2104,11 @@ class OpenAICompatibleHarness:
                 "strict": False,
             },
         }
+        # Preserve OpenAI-standard reasoning effort only for values the OpenAI
+        # chat completions API accepts; other open-kritt efforts are not
+        # translatable and are left out so providers never see an unknown value.
+        reasoning_effort = thinking_effort if thinking_effort in {"low", "medium", "high"} else None
+        chat_messages = [{"role": "user", "content": prompt}]
         attempts = [
             (
                 "responses",
@@ -2012,7 +2117,7 @@ class OpenAICompatibleHarness:
                     "model": model,
                     "input": prompt,
                     "text": {"format": schema_payload},
-                    "max_output_tokens": 8000,
+                    "max_output_tokens": OPENAI_COMPATIBLE_MAX_TOKENS,
                 },
                 _extract_responses_text,
             ),
@@ -2021,19 +2126,54 @@ class OpenAICompatibleHarness:
                 urljoin(base_url.rstrip("/") + "/", "chat/completions"),
                 {
                     "model": model,
-                    "messages": [{"role": "user", "content": prompt}],
+                    "messages": chat_messages,
                     "response_format": schema_payload,
-                    "max_tokens": 8000,
+                    "max_tokens": OPENAI_COMPATIBLE_MAX_TOKENS,
                 },
                 _extract_chat_text,
             ),
+        ]
+        if reasoning_effort:
+            attempts.append(
+                (
+                    "chat.completions.reasoning",
+                    urljoin(base_url.rstrip("/") + "/", "chat/completions"),
+                    {
+                        "model": model,
+                        "messages": chat_messages,
+                        "response_format": schema_payload,
+                        "max_tokens": OPENAI_COMPATIBLE_MAX_TOKENS,
+                        "reasoning_effort": reasoning_effort,
+                    },
+                    _extract_chat_text,
+                )
+            )
+        attempts.append(
             (
                 "chat.completions.plain",
                 urljoin(base_url.rstrip("/") + "/", "chat/completions"),
-                {"model": model, "messages": [{"role": "user", "content": prompt}], "max_tokens": 8000},
+                {"model": model, "messages": chat_messages, "max_tokens": OPENAI_COMPATIBLE_MAX_TOKENS},
                 _extract_chat_text,
-            ),
-        ]
+            )
+        )
+        # Reasoning models can spend the whole modest token budget on thinking
+        # and truncate the JSON draft (finish_reason=length). Retry once with a
+        # much larger budget so the draft can complete; this only runs after
+        # every standard attempt failed, so existing providers are unaffected.
+        attempts.append(
+            (
+                "chat.completions.large",
+                urljoin(base_url.rstrip("/") + "/", "chat/completions"),
+                {
+                    "model": model,
+                    "messages": chat_messages,
+                    "response_format": schema_payload,
+                    "max_tokens": OPENAI_COMPATIBLE_LARGE_MAX_TOKENS,
+                    **({"reasoning_effort": reasoning_effort} if reasoning_effort else {}),
+                },
+                _extract_chat_text,
+            )
+        )
 
         failures: list[HarnessOutput] = []
         for endpoint_name, endpoint_url, payload, extract_text in attempts:
@@ -2049,11 +2189,24 @@ class OpenAICompatibleHarness:
                 failures.append(exc.output or HarnessOutput(stderr=str(exc)))
                 if exc.code in {"auth_failed", "model_access_denied", "quota_exceeded", "rate_limited"}:
                     raise
+                LOGGER.debug(
+                    "openai-compatible attempt failed: provider=%s model=%s endpoint=%s code=%s",
+                    self.model_provider,
+                    model,
+                    endpoint_name,
+                    exc.code,
+                )
                 continue
             try:
                 model_text = extract_text(response)
-                parsed = _extract_json(model_text or response)
+                parsed = _extract_json(model_text or response, allow_loose=True)
                 output = _add_output_file(output, f"{endpoint_name}-parsed-output.json", json.dumps(parsed, indent=2))
+                LOGGER.debug(
+                    "openai-compatible parsed draft: provider=%s model=%s endpoint=%s",
+                    self.model_provider,
+                    model,
+                    endpoint_name,
+                )
                 return HarnessResult(
                     payload=parsed,
                     usage={
@@ -2064,8 +2217,24 @@ class OpenAICompatibleHarness:
                     output=output,
                 )
             except (HarnessError, json.JSONDecodeError) as exc:
-                failures.append(
-                    _add_output_file(output, f"{endpoint_name}-parse-error.txt", str(exc))
+                candidates = _json_text_candidates(model_text) if isinstance(model_text, str) and model_text.strip() else []
+                parse_error = str(exc)
+                if _openai_response_truncated(response):
+                    parse_error += "\nresponse truncated by the provider (finish_reason=length); retrying with a larger token budget"
+                output = _add_output_file(output, f"{endpoint_name}-parse-error.txt", parse_error)
+                if candidates:
+                    output = _add_output_file(
+                        output,
+                        f"{endpoint_name}-extracted-candidates.json",
+                        _json_candidates_diagnostic(candidates),
+                    )
+                failures.append(output)
+                LOGGER.debug(
+                    "openai-compatible parse failed: provider=%s model=%s endpoint=%s error=%s",
+                    self.model_provider,
+                    model,
+                    endpoint_name,
+                    exc,
                 )
 
         combined = HarnessOutput(
