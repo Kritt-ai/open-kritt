@@ -9,8 +9,11 @@ from open_kritt_engine import harnesses
 from open_kritt_engine.harnesses import codex_exec_command
 from open_kritt_engine.xai_codex_compat import (
     XAI_CODEX_DISABLED_FEATURES,
+    augment_xai_scan_prompt,
     inject_xai_base_url,
     install_compat_script,
+    is_xai_reasoning_model,
+    premature_xai_stub_reason,
     rewrite_responses_request_body,
     rewrite_tools,
     wrap_codex_command_for_xai,
@@ -163,3 +166,55 @@ def test_xai_tool_free_command_still_defines_xai_provider_only():
     configs = [tool_free[i + 1] for i, part in enumerate(tool_free) if part == "-c"]
     assert any(value.startswith("model_providers.xai.") for value in configs)
     assert not any("model_providers.openrouter" in value for value in configs)
+
+
+def test_is_xai_reasoning_model_detects_flagship_not_non_reasoning():
+    assert is_xai_reasoning_model("grok-4.5") is True
+    assert is_xai_reasoning_model("grok-4.3") is True
+    assert is_xai_reasoning_model("grok-4.20-0309-reasoning") is True
+    assert is_xai_reasoning_model("grok-4.20-0309-non-reasoning") is False
+    assert is_xai_reasoning_model("gpt-5") is False
+
+
+def test_premature_stub_rejects_no_tools_and_placeholders():
+    stub = {"stub": True, "stub_explanation": "placeholder", "results": []}
+    assert premature_xai_stub_reason(stub, stdout="") == "returned stub=true without using any repository tools"
+    short = premature_xai_stub_reason(stub, stdout='{"type":"command_execution"}')
+    assert short is not None
+    assert "too short" in short or "placeholder" in short
+
+    placeholder = {
+        "stub": True,
+        "stub_explanation": (
+            "temporary placeholder while exploring repository structure for the requested BFU USB surfaces"
+        ),
+        "results": [],
+    }
+    reason = premature_xai_stub_reason(placeholder, stdout='{"type":"command_execution"}')
+    assert reason is not None
+    assert "placeholder" in reason
+
+    good = {
+        "stub": True,
+        "stub_explanation": (
+            "Reviewed do_flash at fastboot/fastboot.cpp:1524 and load_buf_fd size math; "
+            "no concrete USB-reachable memory corruption path was established."
+        ),
+        "results": [],
+    }
+    assert (
+        premature_xai_stub_reason(good, stdout='{"type":"item.completed","item":{"type":"command_execution"}}')
+        is None
+    )
+    assert premature_xai_stub_reason({"stub": False, "results": [{"x": 1}]}, stdout="") is None
+
+
+def test_augment_xai_scan_prompt_adds_tool_rules_once():
+    once = augment_xai_scan_prompt("Investigate the buffer path.", model="grok-4.5")
+    assert "Open-Kritt xAI agent rules" in once
+    assert "reasoning Grok model" in once
+    twice = augment_xai_scan_prompt(once, model="grok-4.5")
+    assert twice.count("Open-Kritt xAI agent rules") == 1
+    non_reason = augment_xai_scan_prompt("Map entrypoints.", model="grok-4.20-0309-non-reasoning")
+    assert "Open-Kritt xAI agent rules" in non_reason
+    assert "reasoning Grok model" not in non_reason

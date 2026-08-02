@@ -67,6 +67,16 @@ Do **not** use `x-ai/grok-4.5` with the `xai` provider — that form is for Open
 
 xAI supports the native Responses tool `{ "type": "web_search" }`. Codex enables search with `--search`; open·kritt’s xAI compat layer strips OpenAI-only fields (for example `external_web_access`) before the request reaches api.x.ai. That lets agents research the public web during a scan when useful.
 
+### Grok 4.5 investigation quality (codex harness)
+
+Reasoning Grok models (including **`grok-4.5`**) sometimes return a schema `stub` immediately under Codex structured output without reading the workspace. For **xAI + tool-enabled** jobs only, open·kritt:
+
+1. Appends mandatory tool-use instructions to the job prompt.
+2. Rejects premature stubs (no tool events in the Codex JSONL stream, or placeholder `stub_explanation` text).
+3. Retries once in-harness with a rejection notice; further failures stay retryable for the worker.
+
+Legitimate stubs after real tool use (substantive `stub_explanation`) are still accepted. OpenRouter / Claude / Codex OAuth paths are unchanged.
+
 ### Isolation from other providers
 
 - Provider config is written only under `model_providers.xai` and only when `model_provider` is `xai`.

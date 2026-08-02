@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import select
 import socket
 import subprocess
@@ -36,6 +37,126 @@ from urllib.parse import urlparse
 
 XAI_UPSTREAM_ORIGIN = "https://api.x.ai"
 XAI_PUBLIC_CODEX_BASE_URL = f"{XAI_UPSTREAM_ORIGIN}/v1"
+
+# Grok 4.x reasoning models often emit structured stub JSON immediately under
+# Codex --output-schema without calling tools. Non-reasoning IDs explore first.
+_NON_REASONING_MODEL_MARKERS = (
+    "non-reasoning",
+    "nonreasoning",
+    "non_reasoning",
+)
+
+_PLACEHOLDER_STUB_RE = re.compile(
+    r"\b("
+    r"placeholder|pending|temporary|tmp|"
+    r"exploring(\s+repository)?(\s+structure)?|"
+    r"while\s+(mapping|tracing|investigating|exploring)|"
+    r"to\s+be\s+determined|tbd|n/?a|"
+    r"will\s+(map|trace|investigate|explore)"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_TOOL_EVENT_MARKERS = (
+    '"type":"command_execution"',
+    '"type": "command_execution"',
+    '"type":"web_search"',
+    '"type": "web_search"',
+    '"type":"file_change"',
+    '"type": "file_change"',
+    "command_execution",
+    "web_search_call",
+)
+
+XAI_TOOL_USE_INSTRUCTION = """
+Open-Kritt xAI agent rules (mandatory for this tool-enabled job):
+1. Before emitting the final JSON object required by the schema, use workspace tools
+   (shell: ls/find/rg/grep, read files). Do not answer from the prompt text alone.
+2. Returning stub=true without any tool use is invalid for this run and will be rejected.
+3. If you return stub=true after tools, stub_explanation must cite concrete files, symbols,
+   and checks you performed. Ban vague placeholders such as "pending", "placeholder",
+   "temporary", "exploring repository…", or "while mapping…".
+4. When production source for the requested surface exists in the workspace, prefer
+   stub=false with real results over an empty stub.
+""".strip()
+
+
+def is_xai_reasoning_model(model: str | None) -> bool:
+    """True for Grok reasoning models that tend to short-circuit structured stubs."""
+
+    name = (model or "").strip().lower()
+    if not name:
+        return False
+    if any(marker in name for marker in _NON_REASONING_MODEL_MARKERS):
+        return False
+    # Flagship / numbered Grok reasoning family used with the xAI provider.
+    return name.startswith("grok-") or name in {"grok", "grok4.5", "grok-build-0.1", "grok-build-latest"}
+
+
+def augment_xai_scan_prompt(prompt: str, *, model: str | None = None) -> str:
+    """Append xAI tool-use rules. Safe for non-reasoning models; critical for 4.5."""
+
+    base = (prompt or "").rstrip()
+    if not base:
+        return XAI_TOOL_USE_INSTRUCTION
+    if "Open-Kritt xAI agent rules" in base:
+        return base
+    extra = XAI_TOOL_USE_INSTRUCTION
+    if is_xai_reasoning_model(model):
+        extra += (
+            "\n5. You are a reasoning Grok model: do not finalize the schema JSON until after "
+            "at least one successful tool call against the repository."
+        )
+    return f"{base}\n\n{extra}"
+
+
+def codex_jsonl_used_tools(stdout: str | None) -> bool:
+    """Detect tool activity from Codex exec --json event stream."""
+
+    text = stdout or ""
+    return any(marker in text for marker in _TOOL_EVENT_MARKERS)
+
+
+def premature_xai_stub_reason(
+    payload: Any,
+    stdout: str | None,
+    usage: dict[str, Any] | None = None,
+) -> str | None:
+    """Return a rejection reason when a stub is not a real investigation result.
+
+    Legitimate stubs after tool use (substantive stub_explanation) return None.
+    """
+
+    if not isinstance(payload, dict) or not payload.get("stub"):
+        return None
+    explanation = str(payload.get("stub_explanation") or "").strip()
+    used_tools = codex_jsonl_used_tools(stdout)
+    if not used_tools:
+        return "returned stub=true without using any repository tools"
+    if len(explanation) < 48:
+        return "stub_explanation is too short to document a real code investigation"
+    if _PLACEHOLDER_STUB_RE.search(explanation):
+        return "stub_explanation looks like a placeholder, not a completed investigation"
+    # Extremely cheap turns with tools still possible; keep if explanation is solid.
+    if usage:
+        try:
+            output_tokens = int(usage.get("output_tokens") or 0)
+        except (TypeError, ValueError):
+            output_tokens = 0
+        if output_tokens and output_tokens < 40 and len(explanation) < 80:
+            return "stub output is too short after tool use to be a real investigation"
+    return None
+
+
+def xai_premature_stub_retry_prompt(reason: str) -> str:
+    return (
+        "Your previous structured response was rejected by open-kritt: "
+        f"{reason.rstrip('.')}.\n"
+        "Re-investigate now. Call tools first (list/search/read the relevant sources), "
+        "then return only schema-valid JSON. If truly no finding, stub=true with a "
+        "substantive stub_explanation naming files and checks; otherwise stub=false "
+        "with real results."
+    )
 
 # OpenAI-only keys Codex attaches to web_search tools; xAI rejects them.
 _OPENAI_WEB_SEARCH_DROP_KEYS = frozenset(

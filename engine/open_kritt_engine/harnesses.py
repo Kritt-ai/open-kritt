@@ -1507,116 +1507,166 @@ class CodexHarness:
         runner_image: str | None,
     ) -> HarnessResult:
         actual_env = env if env is not None else _base_env()
+        is_xai = normalize_model_provider(self.model_provider) == "xai" or (
+            codex_cli_model_provider(self.model_provider, self.codex_model_provider, allow_tools=allow_tools) == "xai"
+        )
+        active_prompt = prompt
+        if is_xai and allow_tools:
+            from .xai_codex_compat import augment_xai_scan_prompt
+
+            active_prompt = augment_xai_scan_prompt(prompt, model=model)
+
+        # xAI reasoning models often emit an immediate schema stub without tools.
+        # One in-harness retry (xAI-only) re-prompts after rejecting that pattern.
+        max_attempts = 2 if (is_xai and allow_tools) else 1
+        last_premature_reason: str | None = None
+        last_result: HarnessResult | None = None
+
         temp_parent = actual_env.get("HOME")
         if not temp_parent or not Path(temp_parent).is_dir():
             temp_parent = None
         with tempfile.TemporaryDirectory(dir=temp_parent) as tmp:
             schema_path = os.path.join(tmp, "schema.json")
-            output_path = os.path.join(tmp, "output.json")
             with open(schema_path, "w", encoding="utf-8") as f:
                 json.dump(schema, f)
             _grant_job_temp_access(tmp, actual_env)
-            cmd = codex_exec_command(
-                repo_dir=repo_dir,
-                model=model,
-                schema_path=schema_path,
-                output_path=output_path,
-                model_provider=self.model_provider,
-                codex_model_provider=self.codex_model_provider,
-                thinking_effort=thinking_effort,
-                allow_tools=allow_tools,
-                max_subagents=self.max_subagents if allow_tools else None,
-            )
-            # xAI-only: wrap through the Responses rewrite proxy. Other providers
-            # keep the bare `codex` argv and talk to their own base URLs.
-            if normalize_model_provider(self.model_provider) == "xai" or (
-                codex_cli_model_provider(
-                    self.model_provider, self.codex_model_provider, allow_tools=allow_tools
-                )
-                == "xai"
-            ):
-                from .xai_codex_compat import wrap_codex_command_for_xai
 
-                cmd = wrap_codex_command_for_xai(cmd, codex_home=actual_env.get("CODEX_HOME"))
-            if allow_tools:
-                cmd = (
-                    _scan_docker_command(cmd, repo_dir, actual_env, runner_image=runner_image)
-                    if runner_image
-                    else _scan_docker_command(cmd, repo_dir, actual_env)
+            for attempt in range(max_attempts):
+                output_path = os.path.join(tmp, f"output-{attempt}.json")
+                cmd = codex_exec_command(
+                    repo_dir=repo_dir,
+                    model=model,
+                    schema_path=schema_path,
+                    output_path=output_path,
+                    model_provider=self.model_provider,
+                    codex_model_provider=self.codex_model_provider,
+                    thinking_effort=thinking_effort,
+                    allow_tools=allow_tools,
+                    max_subagents=self.max_subagents if allow_tools else None,
                 )
-            started_at = time.time()
-            proc = _run_process(cmd, prompt, repo_dir, self.timeout_seconds, env=actual_env)
-            output_files = {}
-            raw_output_file = _read_output_file(output_path)
-            if raw_output_file is not None:
-                output_files["output.json"] = raw_output_file
-            process_output = _process_output(proc, output_files)
-            usage, thread_id = _usage_from_codex_jsonl(proc.stdout)
-            payload_error: Exception | None = None
-            parsed_payload = None
-            try:
-                if not os.path.exists(output_path):
-                    raise HarnessError("codex did not write the structured output file")
-                parsed_payload = _extract_json_from_output_file(output_path)
-            except (HarnessError, json.JSONDecodeError) as exc:
-                payload_error = _harness_error_with_output(exc, process_output)
-                parsed_payload = _extract_json_from_codex_jsonl(proc.stdout)
-                if parsed_payload is None and allow_tools:
-                    session_result = _extract_json_from_codex_session_files(actual_env.get("CODEX_HOME"), started_at)
-                    if session_result is not None:
-                        parsed_payload = session_result.payload
-                        usage = usage or session_result.usage
-                        thread_id = thread_id or session_result.thread_id
-                        if session_result.source_text is not None:
-                            source_name = f"session-{Path(session_result.source_file or 'codex-session.jsonl').name}"
-                            process_output = _add_output_file(process_output, source_name, session_result.source_text)
-                if parsed_payload is None and thread_id and allow_tools:
-                    try:
-                        resume_result = self._resume_for_json(
-                            session_id=thread_id,
-                            schema=schema,
-                            schema_path=schema_path,
-                            output_path=os.path.join(tmp, "resume-output.json"),
-                            repo_dir=repo_dir,
-                            model=model,
-                            thinking_effort=thinking_effort,
-                            env=actual_env,
-                            runner_image=runner_image,
-                        )
-                        parsed_payload = resume_result.payload
-                        usage = resume_result.usage or usage
-                        thread_id = resume_result.codex_session_id or thread_id
-                        if resume_result.output is not None:
-                            process_output = _combine_harness_outputs(
-                                process_output, resume_result.output, secondary_name="resume"
+                # xAI-only: wrap through the Responses rewrite proxy. Other providers
+                # keep the bare `codex` argv and talk to their own base URLs.
+                if is_xai:
+                    from .xai_codex_compat import wrap_codex_command_for_xai
+
+                    cmd = wrap_codex_command_for_xai(cmd, codex_home=actual_env.get("CODEX_HOME"))
+                if allow_tools:
+                    cmd = (
+                        _scan_docker_command(cmd, repo_dir, actual_env, runner_image=runner_image)
+                        if runner_image
+                        else _scan_docker_command(cmd, repo_dir, actual_env)
+                    )
+                started_at = time.time()
+                proc = _run_process(cmd, active_prompt, repo_dir, self.timeout_seconds, env=actual_env)
+                output_files = {}
+                raw_output_file = _read_output_file(output_path)
+                if raw_output_file is not None:
+                    output_files["output.json"] = raw_output_file
+                process_output = _process_output(proc, output_files)
+                usage, thread_id = _usage_from_codex_jsonl(proc.stdout)
+                payload_error: Exception | None = None
+                parsed_payload = None
+                try:
+                    if not os.path.exists(output_path):
+                        raise HarnessError("codex did not write the structured output file")
+                    parsed_payload = _extract_json_from_output_file(output_path)
+                except (HarnessError, json.JSONDecodeError) as exc:
+                    payload_error = _harness_error_with_output(exc, process_output)
+                    parsed_payload = _extract_json_from_codex_jsonl(proc.stdout)
+                    if parsed_payload is None and allow_tools:
+                        session_result = _extract_json_from_codex_session_files(actual_env.get("CODEX_HOME"), started_at)
+                        if session_result is not None:
+                            parsed_payload = session_result.payload
+                            usage = usage or session_result.usage
+                            thread_id = thread_id or session_result.thread_id
+                            if session_result.source_text is not None:
+                                source_name = f"session-{Path(session_result.source_file or 'codex-session.jsonl').name}"
+                                process_output = _add_output_file(
+                                    process_output, source_name, session_result.source_text
+                                )
+                    if parsed_payload is None and thread_id and allow_tools:
+                        try:
+                            resume_result = self._resume_for_json(
+                                session_id=thread_id,
+                                schema=schema,
+                                schema_path=schema_path,
+                                output_path=os.path.join(tmp, f"resume-output-{attempt}.json"),
+                                repo_dir=repo_dir,
+                                model=model,
+                                thinking_effort=thinking_effort,
+                                env=actual_env,
+                                runner_image=runner_image,
                             )
-                    except (HarnessError, json.JSONDecodeError) as resume_exc:
-                        resume_error = _harness_error_with_output(resume_exc, process_output)
-                        combined_output = (
-                            _combine_harness_outputs(process_output, resume_error.output, secondary_name="resume")
-                            if resume_error.output is not None and resume_error.output is not process_output
-                            else process_output
-                        )
-                        process_output = combined_output
-                        payload_error = (
-                            HarnessError(
-                                f"{payload_error}; resume failed: {resume_exc}",
-                                output=combined_output,
-                                code="invalid_output",
-                                harness="codex",
+                            parsed_payload = resume_result.payload
+                            usage = resume_result.usage or usage
+                            thread_id = resume_result.codex_session_id or thread_id
+                            if resume_result.output is not None:
+                                process_output = _combine_harness_outputs(
+                                    process_output, resume_result.output, secondary_name="resume"
+                                )
+                        except (HarnessError, json.JSONDecodeError) as resume_exc:
+                            resume_error = _harness_error_with_output(resume_exc, process_output)
+                            combined_output = (
+                                _combine_harness_outputs(
+                                    process_output, resume_error.output, secondary_name="resume"
+                                )
+                                if resume_error.output is not None and resume_error.output is not process_output
+                                else process_output
                             )
-                            if payload_error
-                            else resume_error
-                        )
-            if parsed_payload is None:
-                raise _classified_harness_error(
-                    proc.stdout,
-                    harness="codex",
-                    default_code="invalid_output",
-                    output_artifact=process_output,
-                    provider="openrouter" if normalize_model_provider(self.model_provider) == "openrouter" else None,
-                ) from payload_error
-            return HarnessResult(payload=parsed_payload, usage=usage, codex_session_id=thread_id, output=process_output)
+                            process_output = combined_output
+                            payload_error = (
+                                HarnessError(
+                                    f"{payload_error}; resume failed: {resume_exc}",
+                                    output=combined_output,
+                                    code="invalid_output",
+                                    harness="codex",
+                                )
+                                if payload_error
+                                else resume_error
+                            )
+                if parsed_payload is None:
+                    raise _classified_harness_error(
+                        proc.stdout,
+                        harness="codex",
+                        default_code="invalid_output",
+                        output_artifact=process_output,
+                        provider="openrouter"
+                        if normalize_model_provider(self.model_provider) == "openrouter"
+                        else None,
+                    ) from payload_error
+
+                result = HarnessResult(
+                    payload=parsed_payload, usage=usage, codex_session_id=thread_id, output=process_output
+                )
+                last_result = result
+                if not (is_xai and allow_tools):
+                    return result
+
+                from .xai_codex_compat import premature_xai_stub_reason, xai_premature_stub_retry_prompt
+
+                last_premature_reason = premature_xai_stub_reason(
+                    parsed_payload, proc.stdout, usage if isinstance(usage, dict) else None
+                )
+                if last_premature_reason is None:
+                    return result
+                if attempt + 1 < max_attempts:
+                    active_prompt = f"{prompt.rstrip()}\n\n{xai_premature_stub_retry_prompt(last_premature_reason)}"
+                    if is_xai and allow_tools:
+                        from .xai_codex_compat import augment_xai_scan_prompt
+
+                        active_prompt = augment_xai_scan_prompt(active_prompt, model=model)
+                    continue
+                break
+
+            # Exhausted xAI premature-stub retries: fail retryably so the worker
+            # can schedule another attempt rather than storing a fake stub.
+            raise HarnessError(
+                f"xAI model returned a premature stub: {last_premature_reason}",
+                output=last_result.output if last_result is not None else None,
+                code="invalid_output",
+                harness="codex",
+                retryable=True,
+            )
 
     def _resume_for_json(
         self,
