@@ -91,16 +91,17 @@ router.patch('/:id', async (req, res, next) => {
         return tx.vulnerability.update({
           where: { id },
           data: patch.data,
-          select: { id: true, interesting: true, comments: true },
+          select: { id: true, scanId: true, interesting: true, comments: true },
         });
       }
       return tx.vulnerability.findUnique({
         where: { id },
-        select: { id: true, interesting: true, comments: true },
+        select: { id: true, scanId: true, interesting: true, comments: true },
       });
     });
     res.json({
       id: updated.id.toString(),
+      scanId: updated.scanId.toString(),
       interesting:
         updated.interesting === null || updated.interesting === undefined ? null : Number(updated.interesting),
       comments: updated.comments ?? null,
