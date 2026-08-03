@@ -649,6 +649,32 @@ export function validateScanJobLimit(value, field = 'jobLimit') {
   return limit;
 }
 
+const MAX_DATABASE_ID = 9_223_372_036_854_775_807n;
+
+function validateDatabaseId(value, field, label, push) {
+  if (value === undefined || value === null || (typeof value === 'string' && !value.trim())) {
+    push(field, `${label} is required.`);
+    return null;
+  }
+
+  let text = '';
+  if (typeof value === 'string') text = value.trim();
+  else if (typeof value === 'number' && Number.isSafeInteger(value)) text = `${value}`;
+  else if (typeof value === 'bigint') text = value.toString();
+
+  if (!/^\d+$/.test(text)) {
+    push(field, `${label} must be a positive integer ID.`);
+    return null;
+  }
+
+  const id = BigInt(text);
+  if (id < 1n || id > MAX_DATABASE_ID) {
+    push(field, `${label} must be a positive integer ID.`);
+    return null;
+  }
+  return id.toString();
+}
+
 // Normalize + validate a single repo reference (the scan target or a dependency).
 // `localNames` is a Set of available local repo folder names (or null to skip the
 // existence check). Pushes precise field errors under `prefix`.
@@ -680,12 +706,13 @@ export function validateScan(body, { localNames = null } = {}) {
   const errors = [];
   const push = (field, message) => errors.push({ field, message });
 
-  const workflowId = body?.workflowId ?? body?.workflow_id;
-  if (workflowId === undefined || workflowId === null || `${workflowId}`.trim() === '')
-    push('workflowId', 'A workflow is required.');
-  const postScriptId = body?.postScriptId ?? body?.post_script_id;
-  if (postScriptId === undefined || postScriptId === null || `${postScriptId}`.trim() === '')
-    push('postScriptId', 'A post-script is required.');
+  const workflowId = validateDatabaseId(body?.workflowId ?? body?.workflow_id, 'workflowId', 'A workflow', push);
+  const postScriptId = validateDatabaseId(
+    body?.postScriptId ?? body?.post_script_id,
+    'postScriptId',
+    'A post-script',
+    push
+  );
   let jobLimit = null;
   try {
     jobLimit = validateScanJobLimit(body?.jobLimit ?? body?.job_limit);

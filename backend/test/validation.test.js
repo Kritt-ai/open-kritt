@@ -463,6 +463,46 @@ test('validateScan requires a non-empty severity ranker', () => {
   assert.equal(v.severityRanker, 'A\n\nB');
 });
 
+test('validateScan requires workflow and post-script ids to be positive database ids', () => {
+  const base = {
+    workflowId: '1',
+    postScriptId: '1',
+    repo_kind: 'remote',
+    repo_full: 'https://github.com/org/repo',
+    commit_sha: 'HEAD',
+    model: 'gpt-5.5',
+    harness: 'codex',
+    severity_ranker: 'Rank by impact.',
+  };
+
+  assert.equal(validateScan({ ...base, workflowId: '0002', postScriptId: 3 }).workflowId, '2');
+  assert.equal(validateScan({ ...base, workflowId: '0002', postScriptId: 3 }).postScriptId, '3');
+
+  for (const [field, value] of [
+    ['workflowId', true],
+    ['workflowId', '1.5'],
+    ['workflowId', '-1'],
+    ['workflowId', '0'],
+    ['workflowId', {}],
+    ['workflowId', '9223372036854775808'],
+    ['postScriptId', false],
+    ['postScriptId', '1.5'],
+    ['postScriptId', '-1'],
+    ['postScriptId', '0'],
+    ['postScriptId', {}],
+    ['postScriptId', '9223372036854775808'],
+  ]) {
+    assert.throws(
+      () => validateScan({ ...base, [field]: value }),
+      (error) =>
+        error instanceof ValidationError &&
+        error.errors.some(
+          (item) => item.field === field && item.message.includes('must be a positive integer ID')
+        )
+    );
+  }
+});
+
 test('validateScan labels local repository contents as a snapshot, not a Git revision', () => {
   const valid = validateScan(
     {
