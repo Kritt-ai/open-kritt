@@ -396,6 +396,13 @@ class Worker:
             maximum=5,
         )
 
+    def runtime_codex_fast_mode(self) -> bool:
+        return runtime_bool(
+            "ENGINE_CODEX_FAST_MODE",
+            bool(getattr(self.config, "codex_fast_mode", False)),
+            data_dir=getattr(self.config, "data_dir", None),
+        )
+
     def runtime_min_free_storage_bytes(self) -> int:
         configured_default = max(0, int(getattr(self.config, "min_free_storage_bytes", 0) or 0))
         data_dir = getattr(self.config, "data_dir", None)
@@ -428,6 +435,7 @@ class Worker:
             codex_model_provider=getattr(self.config, "codex_model_provider", None),
             codex_cli_gate=self.codex_cli_gate,
             codex_max_subagents=self.runtime_codex_max_subagents(),
+            codex_fast_mode=self.runtime_codex_fast_mode(),
         )
 
     def recover_orphaned_metadata(self, engine_started_at):

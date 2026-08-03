@@ -10,6 +10,7 @@ RUNTIME_ENV_ALIASES = {
     "ENGINE_WORKERS_PER_ACCOUNT": ("ENGINE_WORKERS_PER_ACCOUNT",),
     "ENGINE_AUTOSCALE_SCAN_WORKERS_ON_PROVIDER_CAPACITY": ("ENGINE_AUTOSCALE_SCAN_WORKERS_ON_PROVIDER_CAPACITY",),
     "ENGINE_CODEX_MAX_SUBAGENTS_PER_SESSION": ("ENGINE_CODEX_MAX_SUBAGENTS_PER_SESSION",),
+    "ENGINE_CODEX_FAST_MODE": ("ENGINE_CODEX_FAST_MODE",),
     "ENGINE_MIN_FREE_STORAGE_GB": ("ENGINE_MIN_FREE_STORAGE_GB",),
     "ENGINE_IGNORE_LOW_STORAGE": ("ENGINE_IGNORE_LOW_STORAGE",),
     "ENGINE_CODEX_HOME": ("ENGINE_CODEX_HOME", "CODEX_HOME"),
@@ -44,6 +45,7 @@ def ensure_runtime_config_file(data_dir: str | None = None) -> Path:
         )
         or "true",
         "ENGINE_CODEX_MAX_SUBAGENTS_PER_SESSION": os.getenv("ENGINE_CODEX_MAX_SUBAGENTS_PER_SESSION") or "5",
+        "ENGINE_CODEX_FAST_MODE": os.getenv("ENGINE_CODEX_FAST_MODE") or "false",
         "ENGINE_MIN_FREE_STORAGE_GB": os.getenv("ENGINE_MIN_FREE_STORAGE_GB") or "20",
         "ENGINE_IGNORE_LOW_STORAGE": os.getenv("ENGINE_IGNORE_LOW_STORAGE") or "false",
         "ENGINE_CODEX_HOME": os.getenv("ENGINE_CODEX_HOME") or os.getenv("CODEX_HOME") or "/root/.codex",
@@ -65,6 +67,7 @@ def ensure_runtime_config_file(data_dir: str | None = None) -> Path:
         "# ENGINE_WORKERS_PER_ACCOUNT caps concurrent root model calls assigned to one provider account.",
         "# ENGINE_AUTOSCALE_SCAN_WORKERS_ON_PROVIDER_CAPACITY lowers only the affected scan's cap after provider throttles.",
         "# Codex scan sessions may run up to ENGINE_CODEX_MAX_SUBAGENTS_PER_SESSION child agents.",
+        "# ENGINE_CODEX_FAST_MODE requests Codex Fast service tier for native Codex scan calls.",
         "# ENGINE_MIN_FREE_STORAGE_GB pauses new scan containers below the configured free-space floor.",
         "# ENGINE_IGNORE_LOW_STORAGE disables that safety floor and can allow the host disk to fill.",
         "# ENGINE_RETRY_COUNT and ENGINE_HARNESS_TIMEOUT_SECONDS apply to future model calls.",

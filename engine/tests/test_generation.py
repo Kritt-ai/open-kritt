@@ -487,6 +487,7 @@ def test_tool_free_codex_command_disables_search_and_execution_features():
         model_provider="codex",
         thinking_effort="medium",
         allow_tools=False,
+        fast_mode=True,
     )
     scan_mode = codex_exec_command(
         repo_dir="/tmp/repo",
@@ -497,6 +498,7 @@ def test_tool_free_codex_command_disables_search_and_execution_features():
         thinking_effort="medium",
         allow_tools=True,
         max_subagents=5,
+        fast_mode=True,
     )
 
     assert "--search" not in tool_free
@@ -510,6 +512,10 @@ def test_tool_free_codex_command_disables_search_and_execution_features():
     assert "--search" in scan_mode
     assert "--dangerously-bypass-approvals-and-sandbox" in scan_mode
     assert "agents.max_concurrent_threads_per_session=5" in scan_mode
+    assert "features.fast_mode=true" in scan_mode
+    assert 'service_tier="fast"' in scan_mode
+    assert "features.fast_mode=true" not in tool_free
+    assert 'service_tier="fast"' not in tool_free
     assert not any(value.startswith("model_provider=") for value in scan_mode)
 
     provider_default = codex_exec_command(
@@ -569,6 +575,7 @@ def test_scan_codex_provider_mapping_preserves_custom_openrouter_config():
         "thinking_effort": None,
         "allow_tools": True,
         "codex_model_provider": "private-openrouter",
+        "fast_mode": True,
     }
     codex = codex_exec_command(**common, model_provider="codex")
     openrouter = codex_exec_command(**common, model_provider="openrouter")
@@ -578,6 +585,9 @@ def test_scan_codex_provider_mapping_preserves_custom_openrouter_config():
     assert 'model_provider="private-openrouter"' in openrouter
     assert 'model_provider="private-openrouter"' in legacy
     assert not any(value.startswith("model_providers.") for value in openrouter)
+    assert 'service_tier="fast"' in codex
+    assert 'service_tier="fast"' not in openrouter
+    assert 'service_tier="fast"' not in legacy
     assert codex[codex.index("-m") + 1] == "glm-5.2"
     assert openrouter[openrouter.index("-m") + 1] == "z-ai/glm-5.2"
 

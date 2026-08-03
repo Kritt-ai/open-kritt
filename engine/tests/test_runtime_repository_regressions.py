@@ -204,6 +204,8 @@ def test_engine_uses_conservative_worker_default(monkeypatch, tmp_path):
     runtime_values = parse_env_text((tmp_path / "engine-runtime.env").read_text(encoding="utf-8"))
     assert runtime_values["ENGINE_WORKER_COUNT"] == "2"
     assert runtime_values["ENGINE_WORKERS_PER_ACCOUNT"] == "15"
+    assert runtime_values["ENGINE_CODEX_FAST_MODE"] == "false"
+    assert config.codex_fast_mode is False
     assert runtime_bool("ENGINE_AUTOSCALE_SCAN_WORKERS_ON_PROVIDER_CAPACITY", True, data_dir=str(tmp_path))
 
 
@@ -241,7 +243,12 @@ def test_worker_and_post_processor_read_live_retry_and_timeout_settings(monkeypa
     monkeypatch.delenv("ENGINE_RUNTIME_CONFIG_PATH", raising=False)
     runtime_path = tmp_path / "engine-runtime.env"
     runtime_path.write_text(
-        "ENGINE_WORKER_COUNT=3\nENGINE_RETRY_COUNT=5\nENGINE_HARNESS_TIMEOUT_SECONDS=1800\n",
+        (
+            "ENGINE_WORKER_COUNT=3\n"
+            "ENGINE_CODEX_FAST_MODE=true\n"
+            "ENGINE_RETRY_COUNT=5\n"
+            "ENGINE_HARNESS_TIMEOUT_SECONDS=1800\n"
+        ),
         encoding="utf-8",
     )
     config = SimpleNamespace(
@@ -256,6 +263,7 @@ def test_worker_and_post_processor_read_live_retry_and_timeout_settings(monkeypa
     post_processor.config = config
 
     assert worker.runtime_worker_count() == 3
+    assert worker.runtime_codex_fast_mode() is True
     assert worker.runtime_retry_count() == 5
     assert worker.runtime_harness_timeout_seconds() == 1800
     assert post_processor._retry_count() == 5
