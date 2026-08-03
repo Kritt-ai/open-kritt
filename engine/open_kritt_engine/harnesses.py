@@ -1373,7 +1373,7 @@ def codex_exec_command(
     if allow_tools:
         command.append("--dangerously-bypass-approvals-and-sandbox")
         if max_subagents is not None:
-            command.extend(["-c", f"agents.max_concurrent_threads_per_session={max_subagents}"])
+            command.extend(["-c", f"agents.max_threads={max_subagents}"])
     else:
         command.extend(
             [
@@ -1571,7 +1571,7 @@ class CodexHarness:
             model,
             "--dangerously-bypass-approvals-and-sandbox",
             "-c",
-            f"agents.max_concurrent_threads_per_session={self.max_subagents}",
+            f"agents.max_threads={self.max_subagents}",
             "-o",
             output_path,
         ]
