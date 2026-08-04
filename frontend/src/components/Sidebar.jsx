@@ -71,7 +71,17 @@ export function CommunityLinks() {
   );
 }
 
-export default function Sidebar() {
+export function CommunityShareButton({ onClick }) {
+  return (
+    <button type="button" className="sidebar-community-share" onClick={onClick}>
+      <span className="sidebar-community-share-long">Give back to the community by sharing</span>
+      <span className="sidebar-community-share-short">Share open·kritt</span>
+      <span aria-hidden="true">↗</span>
+    </button>
+  );
+}
+
+export default function Sidebar({ onShareCommunity }) {
   const { pathname } = useLocation();
   const { theme, toggle } = useTheme();
 
@@ -157,6 +167,7 @@ export default function Sidebar() {
         <div className="mono sidebar-community-label" style={GROUP_LABEL}>
           COMMUNITY
         </div>
+        <CommunityShareButton onClick={onShareCommunity} />
         <CommunityLinks />
       </div>
 

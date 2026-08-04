@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Link, useParams, useNavigate } from 'react-router-dom';
+import { Link, useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { api, ApiError } from '../api/client.js';
 import { useFetch } from '../lib/useFetch.js';
 import { usePageChrome } from '../context/ui.jsx';
@@ -25,6 +25,8 @@ import WorkflowModelConfiguration, {
 import { modelOverridesDraft, modelOverridesEqual, reconcileModelOverrides } from '../lib/modelOverrides.js';
 import { usePagination } from '../lib/usePagination.js';
 import Pagination from '../components/Pagination.jsx';
+import ShareResultDialog from '../components/ShareResultDialog.jsx';
+import { canShareScanResult, highestShareSeverity, sharePromptStore } from '../lib/shareResult.js';
 
 export function scanActions(status) {
   const active = ['prewarming_cache', 'running', 'post_processing'].includes(status);
@@ -59,10 +61,12 @@ export async function loadModelReferences(fetchProviders, fetchCatalog) {
 export default function ScanDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState(null);
   const [extrasOpen, setExtrasOpen] = useState(false);
   const [reviewError, setReviewError] = useState(null);
+  const [shareDialog, setShareDialog] = useState(null);
   const reviewMutations = useRef(createLatestFieldMutationQueue());
   const { data: scan, loading, error, reload } = useFetch(() => api.scan(id), [id], { pollMs: 1000 });
   const {
@@ -99,7 +103,37 @@ export default function ScanDetail() {
     return () => queue.dispose();
   }, [id]);
 
+  useEffect(() => setShareDialog(null), [id]);
+
+  const shareFindingsLoaded = scan?.id === id && Array.isArray(vulns) && !vulnsLoading && !vulnsError;
+  const shareEligible = canShareScanResult({
+    status: scan?.status,
+    findingsLoaded: shareFindingsLoaded,
+    findingCount: vulns?.length || 0,
+  });
+  const shareRequested = searchParams.get('share') === 'result';
+
+  useEffect(() => {
+    if (!shareEligible) return;
+    if (shareRequested) {
+      setShareDialog({ automatic: false });
+      return;
+    }
+    const shouldPrompt = sharePromptStore.evaluate({
+      scanId: id,
+      status: scan.status,
+      findingsLoaded: shareFindingsLoaded,
+      findingCount: vulns.length,
+    });
+    if (shouldPrompt) setShareDialog({ automatic: true });
+  }, [id, scan?.status, shareEligible, shareFindingsLoaded, shareRequested, vulns?.length]);
+
   const findingPages = usePagination(vulns || [], { pageSize: 20, resetKey: id });
+
+  const closeShareDialog = ({ disableAutomaticPrompts = false } = {}) => {
+    if (disableAutomaticPrompts) sharePromptStore.disableAutomaticPrompts();
+    setShareDialog(null);
+  };
 
   const setStatus = async (status) => {
     setBusy(true);
@@ -192,6 +226,7 @@ export default function ScanDetail() {
   if (!scan) return null;
 
   const list = vulns || [];
+  const shareSeverity = highestShareSeverity(list.map(findingSeverity));
   const extraEntries = scan.extra && typeof scan.extra === 'object' ? Object.entries(scan.extra) : [];
   const actions = scanActions(scan.status);
   const agentSkills =
@@ -217,6 +252,9 @@ export default function ScanDetail() {
         overflow: 'hidden',
       }}
     >
+      {shareDialog && scan.id === id && (
+        <ShareResultDialog severity={shareSeverity} automatic={shareDialog.automatic} onClose={closeShareDialog} />
+      )}
       <div
         style={{
           height: '100%',
@@ -226,10 +264,12 @@ export default function ScanDetail() {
         }}
       >
         <div
+          className="scan-detail-heading"
           style={{
             display: 'flex',
             alignItems: 'flex-start',
             justifyContent: 'space-between',
+            gap: 16,
           }}
         >
           <div>
@@ -261,7 +301,17 @@ export default function ScanDetail() {
               · {scan.repoKind === 'local' ? 'local snapshot' : `@${scan.commitShort}`}
             </div>
           </div>
-          <div style={{ display: 'flex', gap: 8 }}>
+          <div className="scan-detail-actions" style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {shareEligible && (
+              <Button
+                variant="subtle"
+                style={{ height: 32 }}
+                onClick={() => setShareDialog({ automatic: false })}
+                title="Create a sanitized image without repository or vulnerability details"
+              >
+                Share result
+              </Button>
+            )}
             <Button
               variant="ghost"
               style={{ height: 32 }}
