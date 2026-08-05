@@ -51,17 +51,91 @@ python -m open_kritt_engine                # run the worker
 
 ## House rules (do)
 
+- **Keep changes focused.** Keep unrelated edits out of the diff; add or update tests
+  and documentation whenever behavior or configuration changes.
 - **Conventional Commits** for every commit: `feat:`, `fix:`, `docs:`, `refactor:`,
-  `test:`, `chore:`, `ci:`. Scope optional (`feat(frontend): …`).
+  `test:`, `chore:`, `ci:`. Scope is optional (`feat(frontend): …`), but an empty
+  scope is invalid: use `feat:` or `feat(frontend):`, never `feat():`. Mark breaking
+  changes with `!` or a `BREAKING CHANGE:` footer. Release effects are:
+  - `feat` → minor release (patch while the project is pre-1.0)
+  - `fix` → patch release
+  - breaking change → minor release while pre-1.0
+  - `docs`, `chore`, `refactor`, `test`, `ci` → no release on their own
 - **Lint & format before proposing changes** (ESLint/Prettier for JS, Ruff for
   Python). Match the existing style; don't reformat unrelated code.
+- **Never commit secrets or local data:** credentials, tokens, `.env`, provider login
+  data, or scan outputs. Use the provided `gitleaks` pre-commit hook.
 - **DB changes are additive, idempotent, forward-only**: a new
   `database/init/NNN_*.sql` using `CREATE ... IF NOT EXISTS` / `ADD COLUMN IF NOT
-  EXISTS`, then update `backend/prisma/schema.prisma` to match. CI runs `migrate.js`
-  twice to prove idempotency.
-- **One version, one source of truth**: change [`VERSION`](VERSION), then run
-  `node scripts/sync-version.mjs`. Never hand-edit a component's version.
+  EXISTS`, then update `backend/prisma/schema.prisma` to match and run the migration
+  twice. CI also runs `migrate.js` twice to prove idempotency.
+- **One version, one source of truth**: normal contributions do not bump versions. If
+  a manual version change is explicitly required, change [`VERSION`](VERSION), then
+  run `node scripts/sync-version.mjs`. Never hand-edit a component's version.
 - **Pin Docker image tags** (never `:latest`).
+
+## Contribution workflow
+
+Before starting:
+
+- Search existing issues before filing a bug or feature request.
+- Use GitHub Discussions for questions, ideas, and larger proposals to avoid
+  duplicated work.
+- Never report a vulnerability publicly. Use the private reporting flow in
+  [`SECURITY.md`](SECURITY.md); if that is unavailable, open a public issue containing
+  no vulnerability details and ask for a private channel.
+- External contributors should fork the repository and work on a branch. Branch names
+  such as `feat/my-change` are examples, not a required naming scheme.
+
+Before proposing a change, run the checks for every area touched:
+
+| Area | Required local checks |
+| ---- | --------------------- |
+| Frontend | `cd frontend && npm install && npm run lint && npm run format:check && npm test && npm run build` |
+| Backend | `cd backend && npm install && npx prisma generate && npx prisma validate && npm run lint && npm run format:check && npm test` |
+| Engine | `cd engine && pip install -r requirements.txt && ruff check . && ruff format --check . && pytest` |
+| CLI | `node --test scripts/kritt.test.mjs scripts/kritt-ui.test.mjs` |
+| Documentation | `cd docs-site && npm run check-links` |
+
+Engine tests are currently local-only; CI does not run them. For changes crossing
+component boundaries, also run the recommended full-stack smoke test:
+
+```bash
+docker compose up --build
+```
+
+Open pull requests against `main`. Keep them small and complete the pull request
+template: explain what changed and why, link the related issue (for example,
+`Closes #123`), identify the change type and affected components, list checks run,
+include screenshots for visible UI changes, call out breaking changes, and leave useful
+reviewer notes. The PR type should match the Conventional Commit type. CI must pass
+before merge.
+
+The repository provides optional pre-commit automation:
+
+```bash
+pipx install pre-commit
+pre-commit install
+pre-commit run --all-files
+```
+
+It checks common file hygiene, merge-conflict markers, files over 512 KiB, YAML/JSON,
+LF line endings, secrets, Ruff, Prettier, ESLint, and version synchronization.
+
+## Contribution terms (read before submitting)
+
+Any intentional authenticated submission for inclusion in the official repository —
+including a pull request, commit, patch, or issue — constitutes agreement to the
+legally binding [`CONTRIBUTION_TERMS.md`](CONTRIBUTION_TERMS.md). No DCO sign-off, CLA
+trailer, separate signature, or special legal commit syntax is required.
+
+In summary, contributors assign their transferable contribution rights jointly to
+Harel Rom and Gabriel Balko and grant/waive the additional rights described in those
+terms. Submission remains effective if the contribution is later rejected, closed, or
+withdrawn. Only submit work you have authority to contribute; do not submit work owned
+or restricted by an employer, client, university, or another agreement. Identify all
+third-party material, its source, and its license. Contributions are distributed with
+the project under the GNU AGPL v3.0. This summary does not replace reading the terms.
 
 ## Gotchas (don't get bitten)
 
