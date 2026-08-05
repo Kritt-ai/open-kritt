@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from './ui.jsx';
 import { useModalDialog } from '../lib/useModalDialog.js';
 import {
+  GITHUB_DESTINATION,
   SHARE_CARD_HEIGHT,
   SHARE_CARD_WIDTH,
   SHARE_IMAGE_FILENAME,
@@ -151,11 +152,11 @@ export default function ShareResultDialog({ severity = null, mode = 'result', on
         <div className="share-result-header">
           <div>
             <div id="share-result-title" className="share-result-title">
-              It’s open source. Give back to the community.
+              {communityMode ? 'Support the open-source community.' : 'It’s open source. Give back to the community.'}
             </div>
             <div className="share-result-subtitle">
               {communityMode
-                ? 'Help more security researchers discover, use, and improve open·kritt.'
+                ? 'Share open·kritt with other researchers or star it on GitHub. Both help more people discover, use, and improve the project.'
                 : 'Share what open·kritt helped you accomplish - never the classified vulnerability details.'}
             </div>
           </div>
@@ -165,6 +166,17 @@ export default function ShareResultDialog({ severity = null, mode = 'result', on
         </div>
 
         <div className="share-result-body">
+          {communityMode && (
+            <div className="share-result-star-support">
+              <span>
+                <strong>Prefer not to post?</strong> A GitHub star is a quick way to help open·kritt grow.
+              </span>
+              <a href={GITHUB_DESTINATION} target="_blank" rel="noreferrer">
+                Star on GitHub ↗
+              </a>
+            </div>
+          )}
+
           <canvas
             ref={canvasRef}
             className="share-result-preview"

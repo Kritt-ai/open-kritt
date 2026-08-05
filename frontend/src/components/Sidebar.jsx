@@ -69,7 +69,7 @@ export function CommunityLinks() {
 export function CommunityShareButton({ onClick }) {
   return (
     <button type="button" className="sidebar-community-share" onClick={onClick}>
-      Share open·kritt
+      Support open·kritt
     </button>
   );
 }

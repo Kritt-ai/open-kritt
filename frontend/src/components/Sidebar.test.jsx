@@ -19,7 +19,7 @@ describe('sidebar community links', () => {
   it('renders the persistent community sharing call to action', () => {
     const html = renderToStaticMarkup(<CommunityShareButton onClick={() => {}} />);
 
-    expect(html).toContain('Share open·kritt');
+    expect(html).toContain('Support open·kritt');
     expect(html).toContain('type="button"');
     expect(html).not.toContain('↗');
   });
