@@ -10,6 +10,7 @@ import {
   modelCatalogIsReady,
   modelForCatalogChange,
   modelsForModelProvider,
+  providerLabel,
   thinkingEffortForModelChange,
   thinkingEffortsForModel,
   usesFreeTextModelInput,
@@ -27,11 +28,11 @@ export function modelConfigurationForCatalog(current, providers, catalog) {
   const previousProvider = current?.model_provider || '';
   const modelProvider = providers.includes(previousProvider)
     ? previousProvider
-    : MODEL_PROVIDER_IDS.find((provider) => providers.includes(provider)) || '';
+    : MODEL_PROVIDER_IDS.find((provider) => providers.includes(provider)) || providers[0] || '';
   const model = modelForCatalogChange(current?.model || '', previousProvider, modelProvider, catalog);
-  const harness = harnessesForModelProvider(modelProvider).includes(current?.harness)
+  const harness = harnessesForModelProvider(modelProvider, catalog).includes(current?.harness)
     ? current.harness
-    : defaultHarnessForModelProvider(modelProvider);
+    : defaultHarnessForModelProvider(modelProvider, catalog);
   const thinkingEffort = thinkingEffortForModelChange(
     current?.thinking_effort || 'medium',
     thinkingEffortsForModel(catalog, modelProvider, model, THINKING_EFFORTS, harness)
@@ -45,7 +46,7 @@ export function modelConfigurationForCatalog(current, providers, catalog) {
 }
 
 export function modelConfigurationIsValid(value, providers, catalog) {
-  const compatibleHarnesses = harnessesForModelProvider(value.model_provider);
+  const compatibleHarnesses = harnessesForModelProvider(value.model_provider, catalog);
   const efforts = thinkingEffortsForModel(catalog, value.model_provider, value.model, THINKING_EFFORTS, value.harness);
   return (
     providers.includes(value.model_provider) &&
@@ -65,7 +66,7 @@ export default function ModelConfiguration({
   showAvailabilityHelp = true,
 }) {
   const providerConfigured = providers.includes(value.model_provider);
-  const compatibleHarnesses = harnessesForModelProvider(value.model_provider);
+  const compatibleHarnesses = harnessesForModelProvider(value.model_provider, catalog);
   const selectableModels = modelsForModelProvider(catalog, value.model_provider);
   const selectedModel = selectableModels.find((model) => model.id === value.model);
   const providerCatalog = modelCatalogForProvider(catalog, value.model_provider);
@@ -79,7 +80,7 @@ export default function ModelConfiguration({
     THINKING_EFFORTS,
     value.harness
   );
-  const providerName = PROVIDER_LABELS[value.model_provider] || 'selected provider';
+  const providerName = providerLabel(value.model_provider, catalog) || 'selected provider';
   let catalogMessage = '';
   if (providerConfigured && freeTextModel && !suggestionsReady) {
     if (catalogError) {
@@ -101,10 +102,14 @@ export default function ModelConfiguration({
           : `${providerName} model catalog is unavailable.`;
   }
   const unavailableProviders = MODEL_PROVIDER_IDS.filter((provider) => !providers.includes(provider));
+  const providerOptions = [
+    ...MODEL_PROVIDER_IDS,
+    ...providers.filter((provider) => !MODEL_PROVIDER_IDS.includes(provider)),
+  ];
 
   const changeProvider = (modelProvider) => {
     const model = modelForCatalogChange(value.model, value.model_provider, modelProvider, catalog);
-    const harness = defaultHarnessForModelProvider(modelProvider);
+    const harness = defaultHarnessForModelProvider(modelProvider, catalog);
     onChange({
       ...value,
       model_provider: modelProvider,
@@ -153,6 +158,8 @@ export default function ModelConfiguration({
               value={value.model_provider}
               onChange={(event) => changeProvider(event.target.value)}
               configuredProviders={providers}
+              catalog={catalog}
+              providers={providerOptions}
               disabled={disabled}
             />
           )}
@@ -300,7 +307,7 @@ function Field({ label, children }) {
   );
 }
 
-function ProviderSelect({ id, value, onChange, configuredProviders, disabled }) {
+function ProviderSelect({ id, value, onChange, configuredProviders, catalog, providers, disabled }) {
   return (
     <select
       id={id}
@@ -322,11 +329,11 @@ function ProviderSelect({ id, value, onChange, configuredProviders, disabled }) 
       }}
     >
       {!value && <option value="">No configured providers</option>}
-      {MODEL_PROVIDER_IDS.map((provider) => {
+      {providers.map((provider) => {
         const configured = configuredProviders.includes(provider);
         return (
           <option key={provider} value={provider} disabled={!configured}>
-            {PROVIDER_LABELS[provider]}
+            {providerLabel(provider, catalog)}
             {configured ? '' : ' — add in Accounts'}
           </option>
         );

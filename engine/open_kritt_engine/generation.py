@@ -5,6 +5,8 @@ does not create workflow or post-script rows; the normal backend save routes own
 that final persistence step.
 """
 
+import json
+import logging
 import os
 import re
 from dataclasses import dataclass
@@ -13,11 +15,22 @@ from typing import Any
 from jsonschema import Draft202012Validator
 
 from .codex_auth import preserve_codex_auth_metadata
-from .harnesses import HarnessError, harness_for, normalize_harness_name
+from .harnesses import HarnessError, HarnessOutput, harness_for, normalize_harness_name
+from .model_output_artifacts import record_model_error_output
 from .prompting import append_schema_prompt
-from .provider_credentials import provider_environment
+from .provider_credentials import (
+    CUSTOM_PROVIDER_API_KEY_ENV,
+    CUSTOM_PROVIDER_BASE_URL_ENV,
+    CUSTOM_PROVIDER_HEADERS_ENV,
+    CUSTOM_PROVIDER_NAME_ENV,
+    CUSTOM_PROVIDER_ORG_ENV,
+    custom_provider_settings,
+    provider_environment,
+)
 from .schema import EXTRACTOR_HELPER_FIELD
 from .workspace import codex_home_for_job, provider_account_lease
+
+LOGGER = logging.getLogger("open_kritt_engine")
 
 BUILTIN_KEYS = (
     "repo_full",
@@ -66,6 +79,7 @@ MODEL_PROVIDER_HARNESSES = {
 HARNESS_THINKING_EFFORTS = {
     "codex": frozenset({"default", "low", "medium", "high", "xhigh", "max", "ultra"}),
     "claude-code": frozenset({"default", "low", "medium", "high", "xhigh", "max"}),
+    "openai-compatible": frozenset({"default", "low", "medium", "high", "xhigh", "max", "ultra"}),
 }
 
 IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
@@ -101,6 +115,15 @@ GENERATION_PROVIDER_ENV_KEYS = {
     "claude": frozenset({"ANTHROPIC_API_KEY"}),
     "openrouter": frozenset({"OPENROUTER_API_KEY"}),
 }
+GENERATION_CUSTOM_PROVIDER_ENV_KEYS = frozenset(
+    {
+        CUSTOM_PROVIDER_API_KEY_ENV,
+        CUSTOM_PROVIDER_BASE_URL_ENV,
+        CUSTOM_PROVIDER_NAME_ENV,
+        CUSTOM_PROVIDER_ORG_ENV,
+        CUSTOM_PROVIDER_HEADERS_ENV,
+    }
+)
 
 
 class GenerationValidationError(ValueError):
@@ -255,6 +278,18 @@ def generation_environment(
 
     source_env = provider_environment() if source is None else source
     allowed = GENERATION_COMMON_ENV_KEYS | GENERATION_PROVIDER_ENV_KEYS.get(provider, frozenset())
+    custom_provider = custom_provider_settings(provider, source_env)
+    if custom_provider is not None:
+        allowed |= GENERATION_CUSTOM_PROVIDER_ENV_KEYS
+        source_env = dict(source_env)
+        source_env[CUSTOM_PROVIDER_API_KEY_ENV] = str(custom_provider["api_key"])
+        source_env[CUSTOM_PROVIDER_BASE_URL_ENV] = str(custom_provider["base_url"])
+        source_env[CUSTOM_PROVIDER_NAME_ENV] = str(custom_provider["label"])
+        if custom_provider.get("organization"):
+            source_env[CUSTOM_PROVIDER_ORG_ENV] = str(custom_provider["organization"])
+        headers = custom_provider.get("extra_headers") or {}
+        if headers:
+            source_env[CUSTOM_PROVIDER_HEADERS_ENV] = json.dumps(headers, sort_keys=True)
     env = {key: value for key in allowed if isinstance((value := source_env.get(key)), str) and value}
     if provider == "codex":
         if not env.get("CODEX_API_KEY") and env.get("OPENAI_API_KEY"):
@@ -607,13 +642,16 @@ def validate_generation_job(job: dict[str, Any]) -> dict[str, str]:
     elif len(model.strip()) > MODEL_ID_MAX_LENGTH:
         _error(errors, "model", f"Model must be {MODEL_ID_MAX_LENGTH} characters or fewer.")
     provider = job.get("model_provider")
-    if not isinstance(provider, str) or provider not in MODEL_PROVIDERS:
+    custom_provider = isinstance(provider, str) and custom_provider_settings(provider) is not None
+    if not isinstance(provider, str) or (provider not in MODEL_PROVIDERS and not custom_provider):
         _error(errors, "model_provider", "Model provider is not supported.")
     raw_harness = job.get("harness")
     harness = normalize_harness_name(raw_harness) if isinstance(raw_harness, str) else ""
     if not harness:
         _error(errors, "harness", "Harness is required.")
-    elif isinstance(provider, str) and harness not in MODEL_PROVIDER_HARNESSES.get(provider, frozenset()):
+    elif custom_provider and harness != "openai-compatible":
+        _error(errors, "harness", f'Harness "{harness}" is not compatible with model provider "{provider}".')
+    elif isinstance(provider, str) and provider in MODEL_PROVIDERS and harness not in MODEL_PROVIDER_HARNESSES.get(provider, frozenset()):
         _error(errors, "harness", f'Harness "{harness}" is not compatible with model provider "{provider}".')
     thinking_effort = job.get("thinking_effort")
     if not isinstance(thinking_effort, str) or thinking_effort not in THINKING_EFFORTS:
@@ -746,6 +784,42 @@ class GenerationRunner:
             )
         return max(0, min(int(configured), GENERATION_RETRY_COUNT_CAP))
 
+    def _record_failure_artifacts(
+        self,
+        job: dict[str, Any],
+        attempt: int,
+        error: BaseException,
+        output: Any,
+        *,
+        validation_errors: list[dict[str, str]] | None = None,
+    ) -> None:
+        """Save model-error diagnostics without exposing anything through the UI."""
+        data_dir = getattr(self.config, "data_dir", None)
+        if not data_dir or output is None:
+            return
+        if validation_errors:
+            files = dict(getattr(output, "files", None) or {})
+            files["schema-validation-errors.json"] = json.dumps(validation_errors, indent=2)
+            output = HarnessOutput(
+                stdout=getattr(output, "stdout", "") or "",
+                stderr=getattr(output, "stderr", "") or "",
+                returncode=getattr(output, "returncode", None),
+                files=files,
+            )
+        try:
+            generation_id = int(job.get("id") or 0)
+        except (TypeError, ValueError):
+            generation_id = 0
+        record_model_error_output(
+            data_dir,
+            scan_id=0,
+            metadata_id=generation_id,
+            attempt=attempt,
+            error=error,
+            output=output,
+            kind="generation",
+        )
+
     def generate(self, job: dict[str, Any]) -> GenerationRunResult:
         request = validate_generation_job(job)
         schema = generation_response_schema(request["kind"])
@@ -767,6 +841,7 @@ class GenerationRunner:
         last_error: Exception | None = None
         feedback = ""
         for attempt in range(1, attempts + 1):
+            result = None
             try:
                 with provider_account_lease(
                     request["model_provider"],
@@ -784,6 +859,13 @@ class GenerationRunner:
                             allow_tools=False,
                         )
                 artifact = validate_generation_payload(request["kind"], result.payload)
+                LOGGER.debug(
+                    "generation schema validation succeeded: kind=%s provider=%s model=%s harness=%s",
+                    request["kind"],
+                    request["model_provider"],
+                    request["model"],
+                    request["harness"],
+                )
                 return GenerationRunResult(
                     artifact=artifact,
                     usage=result.usage,
@@ -791,6 +873,21 @@ class GenerationRunner:
                 )
             except GenerationValidationError as exc:
                 last_error = exc
+                self._record_failure_artifacts(
+                    job,
+                    attempt,
+                    exc,
+                    getattr(result, "output", None),
+                    validation_errors=exc.errors,
+                )
+                LOGGER.debug(
+                    "generation schema validation failed: kind=%s provider=%s model=%s harness=%s errors=%s",
+                    request["kind"],
+                    request["model_provider"],
+                    request["model"],
+                    request["harness"],
+                    [item["field"] for item in exc.errors[:5]],
+                )
                 details = "\n".join(f"- {item['field']}: {item['message']}" for item in exc.errors[:8])
                 feedback = (
                     "\n\nYour previous JSON draft failed validation. Correct every issue below and return a new "
@@ -799,6 +896,7 @@ class GenerationRunner:
             except HarnessError as exc:
                 exc.attempts = attempt
                 last_error = exc
+                self._record_failure_artifacts(job, attempt, exc, getattr(exc, "output", None))
                 if not exc.retryable:
                     break
             except ValueError as exc:

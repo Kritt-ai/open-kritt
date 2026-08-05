@@ -1,6 +1,7 @@
 import { prisma } from '../db.js';
 import { modelCatalogEntry } from './modelCatalog.js';
 import { isModelProviderConfigured } from './modelProviders.js';
+import { customProviderDefinition } from './providerCredentials.js';
 import { ValidationError } from './validation.js';
 
 async function findCatalog(provider) {
@@ -15,7 +16,7 @@ export async function assertModelSelectionAvailable(
     throw new ValidationError([{ field: 'model_provider', message: 'The selected model provider is not configured.' }]);
   }
 
-  if (modelProvider === 'openrouter') return;
+  if (modelProvider === 'openrouter' || customProviderDefinition(modelProvider)) return;
 
   const catalog = modelCatalogEntry(modelProvider, await getCatalog(modelProvider));
   if (catalog.status !== 'ready') {

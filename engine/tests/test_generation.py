@@ -1333,3 +1333,133 @@ def test_generation_validation_errors_are_bounded_and_strip_controls():
     assert all("\x00" not in item["field"] for item in sanitized)
     assert all("\n" not in item["message"] and "\t" not in item["message"] for item in sanitized)
     assert all("\x1b" not in item["message"] for item in sanitized)
+
+
+def test_generation_runner_records_schema_validation_failure_artifacts(caplog, monkeypatch, tmp_path):
+    class InvalidHarness:
+        def __init__(self):
+            self.calls = 0
+
+        def run(self, **_kwargs):
+            self.calls += 1
+            return HarnessResult(
+                payload=marked({"results": [raw_workflow(line_type="string")]}),
+                usage={"total_tokens": 3},
+                codex_session_id="thread-1",
+                output=harnesses.HarnessOutput(
+                    stdout="raw model text",
+                    stderr="",
+                    returncode=0,
+                    files={
+                        "chat.completions.plain-request.json": '{"model":"gpt-test","max_tokens":8000}',
+                        "chat.completions.plain-raw-response.txt": "raw model text",
+                    },
+                ),
+            )
+
+    fake_harness = InvalidHarness()
+    monkeypatch.setattr(generation_module, "harness_for", lambda *_args, **_kwargs: fake_harness)
+    monkeypatch.setattr(generation_module, "codex_home_for_job", lambda *_args, **_kwargs: "/runtime-codex")
+    monkeypatch.setenv("CODEX_API_KEY", "codex-secret")
+    config = SimpleNamespace(
+        data_dir=str(tmp_path),
+        harness_timeout_seconds=5,
+        retry_count=1,
+        codex_model_provider=None,
+    )
+
+    with caplog.at_level("DEBUG", logger="open_kritt_engine"):
+        with pytest.raises(GenerationValidationError):
+            GenerationRunner(config).generate(generation_job())
+
+    assert fake_harness.calls == 2
+    assert "generation schema validation failed" in caplog.text
+    assert "provider=codex" in caplog.text
+    assert "model=gpt-test" in caplog.text
+
+    artifact_root = tmp_path / "model-error-outputs"
+    dirs = sorted(path for path in artifact_root.iterdir() if path.is_dir())
+    assert len(dirs) == 2
+    for directory in dirs:
+        assert "generation" in directory.name
+        assert "metadata-41" in directory.name
+        assert (directory / "schema-validation-errors.json").exists()
+        assert (directory / "chat.completions.plain-request.json").exists()
+        assert (directory / "chat.completions.plain-raw-response.txt").read_text(encoding="utf-8") == "raw model text"
+        assert (directory / "stdout.txt").read_text(encoding="utf-8") == "raw model text"
+        validation_errors = json.loads((directory / "schema-validation-errors.json").read_text(encoding="utf-8"))
+        assert any(item["field"] == "terminal.outputFormat" for item in validation_errors)
+
+
+def test_generation_runner_records_harness_failure_artifacts(monkeypatch, tmp_path):
+    class FailingHarness:
+        def __init__(self):
+            self.calls = 0
+
+        def run(self, **_kwargs):
+            self.calls += 1
+            raise harnesses.HarnessError(
+                "OpenAI-compatible provider did not return a usable structured response.",
+                code="invalid_output",
+                harness="openai-compatible",
+                output=harnesses.HarnessOutput(
+                    stdout="no json here",
+                    stderr="",
+                    returncode=200,
+                    files={
+                        "chat.completions.plain-request.json": '{"model":"gpt-test"}',
+                        "chat.completions.plain-raw-response.txt": "no json here",
+                        "chat.completions.plain-parse-error.txt": "Expecting value: line 1",
+                    },
+                ),
+            )
+
+    fake_harness = FailingHarness()
+    monkeypatch.setattr(generation_module, "harness_for", lambda *_args, **_kwargs: fake_harness)
+    monkeypatch.setattr(generation_module, "codex_home_for_job", lambda *_args, **_kwargs: "/runtime-codex")
+    monkeypatch.setenv("CODEX_API_KEY", "codex-secret")
+    config = SimpleNamespace(
+        data_dir=str(tmp_path),
+        harness_timeout_seconds=5,
+        retry_count=0,
+        codex_model_provider=None,
+    )
+
+    with pytest.raises(harnesses.HarnessError) as exc_info:
+        GenerationRunner(config).generate(generation_job())
+
+    assert exc_info.value.code == "invalid_output"
+    assert fake_harness.calls == 1
+
+    artifact_root = tmp_path / "model-error-outputs"
+    dirs = sorted(path for path in artifact_root.iterdir() if path.is_dir())
+    assert len(dirs) == 1
+    directory = dirs[0]
+    assert "generation" in directory.name
+    assert "metadata-41" in directory.name
+    assert "attempt-1" in directory.name
+    assert (directory / "chat.completions.plain-request.json").exists()
+    assert (directory / "chat.completions.plain-raw-response.txt").read_text(encoding="utf-8") == "no json here"
+    assert (directory / "chat.completions.plain-parse-error.txt").read_text(encoding="utf-8") == "Expecting value: line 1"
+
+
+def test_generation_runner_skips_artifacts_without_harness_output(monkeypatch, tmp_path):
+    class InvalidHarness:
+        def run(self, **_kwargs):
+            return HarnessResult(payload=marked({"results": [raw_workflow(line_type="string")]}))
+
+    monkeypatch.setattr(generation_module, "harness_for", lambda *_args, **_kwargs: InvalidHarness())
+    monkeypatch.setattr(generation_module, "codex_home_for_job", lambda *_args, **_kwargs: "/runtime-codex")
+    monkeypatch.setenv("CODEX_API_KEY", "codex-secret")
+    config = SimpleNamespace(
+        data_dir=str(tmp_path),
+        harness_timeout_seconds=5,
+        retry_count=0,
+        codex_model_provider=None,
+    )
+
+    with pytest.raises(GenerationValidationError):
+        GenerationRunner(config).generate(generation_job())
+
+    artifact_root = tmp_path / "model-error-outputs"
+    assert not artifact_root.exists() or not any(path.is_dir() for path in artifact_root.iterdir())

@@ -3,9 +3,9 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    container_name: open-kritt-frontend
+    container_name: open-kritt-custom-frontend
     ports:
-      - '${FRONTEND_BIND_ADDRESS:-127.0.0.1}:${FRONTEND_PORT:-5173}:5173'
+      - '${FRONTEND_BIND_ADDRESS:-127.0.0.1}:${FRONTEND_PORT:-5174}:5173'
     environment:
       # Browser uses relative /api (proxied). Vite proxies it to the backend service.
       VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
@@ -20,9 +20,9 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: open-kritt-backend
+    container_name: open-kritt-custom-backend
     ports:
-      - '${BACKEND_BIND_ADDRESS:-127.0.0.1}:${BACKEND_PORT:-3002}:3002'
+      - '${BACKEND_BIND_ADDRESS:-127.0.0.1}:${BACKEND_PORT:-3003}:3002'
     environment:
       NODE_ENV: ${NODE_ENV:-development}
       # The process must listen on the container interface. Host exposure is
@@ -83,7 +83,7 @@ services:
       context: ./engine
       dockerfile: Dockerfile
     image: ${ENGINE_SCAN_RUNNER_IMAGE:-open-kritt-engine:local}
-    container_name: open-kritt-engine
+    container_name: open-kritt-custom-engine
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql://open_kritt:open_kritt_password@db:5432/open_kritt?schema=public}
       ENGINE_DATA_DIR: ${ENGINE_DATA_DIR:-/data}
@@ -163,9 +163,9 @@ services:
     build:
       context: ./executor-view
       dockerfile: Dockerfile
-    container_name: open-kritt-executor-view
+    container_name: open-kritt-executor-custom-view
     ports:
-      - '${EXECUTOR_VIEW_BIND_ADDRESS:-127.0.0.1}:${EXECUTOR_VIEW_PORT:-8090}:8090'
+      - '${EXECUTOR_VIEW_BIND_ADDRESS:-127.0.0.1}:${EXECUTOR_VIEW_PORT:-8091}:8090'
     environment:
       EXECUTOR_VIEW_DATABASE_URL: ${EXECUTOR_VIEW_DATABASE_URL:-postgresql://open_kritt:open_kritt_password@db:5432/open_kritt}
       EXECUTOR_VIEW_HOST: 0.0.0.0
@@ -214,10 +214,10 @@ services:
     build:
       context: ./database
       dockerfile: Dockerfile
-    container_name: open-kritt-db
+    container_name: open-kritt-custom-db
     restart: unless-stopped
     ports:
-      - '${POSTGRES_BIND_ADDRESS:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432'
+      - '${POSTGRES_BIND_ADDRESS:-127.0.0.1}:${POSTGRES_PORT:-5435}:5432'
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-open_kritt}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-open_kritt_password}

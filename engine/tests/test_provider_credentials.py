@@ -1,7 +1,11 @@
 import json
 
 from open_kritt_engine.provider_credentials import (
+    CUSTOM_PROVIDER_API_KEY_ENV,
+    CUSTOM_PROVIDER_BASE_URL_ENV,
+    CUSTOM_PROVIDER_HEADERS_ENV,
     bootstrap_managed_provider_credentials,
+    custom_provider_settings,
     job_environment,
     provider_environment,
     read_managed_provider_credentials,
@@ -127,3 +131,34 @@ def test_job_environment_only_includes_selected_provider_and_harness_credentials
     for env in (codex, openrouter_claude, openrouter_cursor):
         assert "DATABASE_URL" not in env
         assert "GITHUB_TOKEN" not in env
+
+
+def test_custom_provider_settings_are_loaded_from_managed_store(tmp_path):
+    credential_path = tmp_path / "providers.json"
+    credential_path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "customProviders": [
+                    {
+                        "id": "my-gateway",
+                        "label": "My Gateway",
+                        "baseUrl": "https://gateway.example/v1/",
+                        "apiKey": "gateway-secret",
+                        "model": "gateway-model",
+                        "extraHeaders": {"X-Gateway": "yes"},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    source = {"OPEN_KRITT_PROVIDER_CREDENTIALS_PATH": str(credential_path), "OPENAI_API_KEY": "ambient-secret"}
+
+    assert custom_provider_settings("my-gateway", source)["base_url"] == "https://gateway.example/v1/"
+    env = job_environment("my-gateway", "openai-compatible", source)
+
+    assert env[CUSTOM_PROVIDER_API_KEY_ENV] == "gateway-secret"
+    assert env[CUSTOM_PROVIDER_BASE_URL_ENV] == "https://gateway.example/v1/"
+    assert json.loads(env[CUSTOM_PROVIDER_HEADERS_ENV]) == {"X-Gateway": "yes"}

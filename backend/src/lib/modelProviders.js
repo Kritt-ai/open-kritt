@@ -1,11 +1,22 @@
 import { MODEL_PROVIDERS } from './constants.js';
-import { PROVIDER_CREDENTIALS_PATH, readManagedCredentialStateSync } from './providerCredentials.js';
+import {
+  PROVIDER_CREDENTIALS_PATH,
+  customProviderDefinition,
+  customProviderStatuses,
+  readManagedCredentialStateSync,
+} from './providerCredentials.js';
 import { providerLoginIsConfigured } from './providerLogins.js';
 
 const PROVIDER_CREDENTIALS = {
   codex: ['CODEX_API_KEY', 'OPENAI_API_KEY'],
   claude: ['ANTHROPIC_API_KEY'],
   openrouter: ['OPENROUTER_API_KEY'],
+};
+
+const BUILTIN_PROVIDER_HARNESSES = {
+  codex: ['codex'],
+  claude: ['claude-code'],
+  openrouter: ['codex', 'claude-code'],
 };
 
 function hasValue(value) {
@@ -30,12 +41,19 @@ export function configuredModelProviders({
   const store = readManagedCredentialStateSync(credentialsPath);
   const managed = store.credentials;
   const disabledEnvironmentProviders = new Set(store.disabledEnvironmentProviders);
-  return MODEL_PROVIDERS.filter((provider) => {
+  const builtins = MODEL_PROVIDERS.filter((provider) => {
     if (hasValue(managed[provider])) return true;
     if (providerLoginIsConfigured(provider, { env, ...loginOptions })) return true;
     if (disabledEnvironmentProviders.has(provider)) return false;
     return PROVIDER_CREDENTIALS[provider].some((key) => credentialIsConfigured(env, key));
   });
+  return [...builtins, ...customProviderStatuses({ credentialsPath }).map((provider) => provider.id)];
+}
+
+export function modelProviderHarnesses(provider, { credentialsPath = PROVIDER_CREDENTIALS_PATH } = {}) {
+  const builtin = BUILTIN_PROVIDER_HARNESSES[provider];
+  if (builtin) return [...builtin];
+  return customProviderDefinition(provider, credentialsPath)?.harnesses || [];
 }
 
 export function isModelProviderConfigured(provider, options) {
