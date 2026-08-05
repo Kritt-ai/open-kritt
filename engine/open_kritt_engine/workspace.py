@@ -52,6 +52,9 @@ LOGGER = logging.getLogger("open_kritt_engine.workspace")
 SCAN_RUNNER_WORKDIR = "/workspace"
 SELECTED_AGENT_SKILLS_SLUG = "open-kritt-selected-skills"
 OPENROUTER_CODEX_BASE_URL = "https://openrouter.ai/api/v1"
+# Public upstream; scan jobs route through the xAI Codex compat proxy (see
+# open_kritt_engine.xai_codex_compat) so other providers stay on their own URLs.
+XAI_CODEX_BASE_URL = "https://api.x.ai/v1"
 JOB_UID_BASE = 100_000
 JOB_UID_SPAN = 2_000_000_000
 _SHARED_WORKSPACE_LOCKS: dict[str, threading.Lock] = {}
@@ -164,6 +167,8 @@ def prepare_job_workspace(
     )
     if needs_codex_home and codex_source:
         _copy_credential_files(Path(codex_source), codex_home, ("auth.json",))
+    elif needs_codex_home and selected_provider == "xai":
+        _prepare_xai_codex_home(codex_home)
     elif needs_codex_home:
         _prepare_openrouter_codex_home(codex_home)
     if needs_claude_home and selected_provider == "claude":
@@ -174,7 +179,7 @@ def prepare_job_workspace(
         )
         _prepare_claude_config(claude_home)
     elif needs_claude_home:
-        # OpenRouter uses an API key and must not inherit Anthropic OAuth,
+        # OpenRouter / xAI use API keys and must not inherit Anthropic OAuth,
         # project settings, hooks, or MCP servers from the operator's profile.
         _prepare_claude_config(claude_home)
     if needs_codex_home:
@@ -267,6 +272,47 @@ def _prepare_openrouter_codex_home(codex_home: Path):
                 'env_key = "OPENROUTER_API_KEY"',
                 'wire_api = "responses"',
                 "",
+            ]
+        ),
+    )
+    config.chmod(0o600)
+
+
+def _prepare_xai_codex_home(codex_home: Path):
+    """Create the minimum Codex config needed for a direct xAI (Grok) scan.
+
+    Provider-specific only: OpenRouter/Codex OAuth homes are prepared by other
+    helpers and never load this config. Web search is left enabled; the xAI
+    Codex compat proxy rewrites OpenAI-only tool fields into native
+    ``web_search`` for api.x.ai.
+    """
+
+    from .xai_codex_compat import XAI_CODEX_DISABLED_FEATURES, install_compat_script
+
+    codex_home.mkdir(parents=True, exist_ok=True)
+    install_compat_script(codex_home)
+    config = codex_home / "config.toml"
+    # Codex requires wire_api=responses. Disable multi-agent / browser surfaces
+    # that emit Responses tool types xAI rejects (e.g. ``namespace``). Web
+    # search stays on; open_kritt_engine.xai_codex_compat rewrites the request.
+    feature_lines = ["[features]"]
+    for feature in XAI_CODEX_DISABLED_FEATURES:
+        feature_lines.append(f"{feature} = false")
+    feature_lines.append("")
+    _atomic_write_text(
+        config,
+        "\n".join(
+            [
+                "[model_providers.xai]",
+                'name = "xAI"',
+                f'base_url = "{XAI_CODEX_BASE_URL}"',
+                'env_key = "XAI_API_KEY"',
+                'wire_api = "responses"',
+                "",
+                # Native xAI web_search is supported via the compat proxy. Do not
+                # set web_search="disabled" here — that blocks internet research.
+                "",
+                *feature_lines,
             ]
         ),
     )

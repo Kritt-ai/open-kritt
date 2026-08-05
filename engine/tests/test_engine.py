@@ -1331,6 +1331,61 @@ def test_claude_harness_can_route_glm_through_openrouter(monkeypatch, tmp_path):
     assert harnesses.claude_model_provider("glm-5.2", captured["env"]) == "openrouter"
 
 
+def test_claude_harness_routes_grok_4_5_through_openrouter(monkeypatch, tmp_path):
+    """Grok 4.5 short alias expands to the full OpenRouter model ID."""
+    captured = {}
+    payload = marked({"stub": True, "stub_explanation": "No matching records.", "results": []})
+
+    def fake_run_process(cmd, prompt, cwd, timeout, env=None):
+        captured["cmd"] = cmd
+        captured["env"] = env
+        return SimpleNamespace(
+            stdout="\n".join(
+                [
+                    json.dumps(
+                        {
+                            "type": "assistant",
+                            "message": {"content": [{"type": "text", "text": json.dumps(payload)}]},
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "type": "result",
+                            "result": json.dumps(payload),
+                            "usage": {"input_tokens": 1},
+                            "modelUsage": {"x-ai/grok-4.5": {"inputTokens": 1}},
+                        }
+                    ),
+                ]
+            ),
+            stderr="",
+            returncode=0,
+        )
+
+    monkeypatch.setattr(harnesses, "_run_process", fake_run_process)
+
+    result = ClaudeHarness(timeout_seconds=5, model_provider="openrouter").run(
+        prompt="prompt",
+        schema=output_schema('{"thing":"string"}', multi_output=False),
+        repo_dir="/tmp",
+        model="grok-4.5",
+        thinking_effort="medium",
+        env={
+            "HOME": str(tmp_path / "home"),
+            "CLAUDE_HOME": str(tmp_path / "home" / ".claude"),
+            "CLAUDE_CONFIG_DIR": str(tmp_path / "home" / ".claude"),
+            "OPENROUTER_API_KEY": "or-key",
+        },
+    )
+
+    assert result.payload == payload
+    assert captured["cmd"][captured["cmd"].index("--model") + 1] == "x-ai/grok-4.5"
+    assert harnesses._claude_model_name("grok-4.5", captured["env"], "openrouter") == "x-ai/grok-4.5"
+    assert harnesses._claude_model_name("grok", captured["env"], "openrouter") == "x-ai/grok-4.5"
+    assert harnesses._claude_model_name("x-ai/grok-4.5", captured["env"], "openrouter") == "x-ai/grok-4.5"
+    assert harnesses.OPENROUTER_MODEL_ALIASES["grok-4.5"] == "x-ai/grok-4.5"
+
+
 def test_claude_openrouter_parse_error_carries_raw_output(monkeypatch, tmp_path):
     raw_stdout = "\n".join(
         [

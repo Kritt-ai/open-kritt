@@ -8,6 +8,7 @@ import { usePagination } from '../lib/usePagination.js';
 
 const PROVIDER_LINKS = {
   openrouter: 'https://openrouter.ai/settings/keys',
+  xai: 'https://console.x.ai/team/default/api-keys',
 };
 
 const WEEKLY_WINDOW_MINUTES = 7 * 24 * 60;

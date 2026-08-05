@@ -51,6 +51,12 @@ Exact custom model IDs remain accepted so existing configurations and models omi
 the cached catalog continue to work. OpenRouter and the selected harness ultimately decide
 whether an ID is available and compatible when the run starts.
 
+### Grok via OpenRouter (optional)
+
+OpenRouter can still route Grok when you set `model` to `x-ai/grok-4.5` (or the short
+alias `grok-4.5`, which expands to that OpenRouter ID). For **direct** Grok 4.5 without
+OpenRouter, use the [xAI provider](/ai-provider-setup/xai) and `XAI_API_KEY` instead.
+
 Whether selected from the catalog or entered manually, the model must support the agent
 behavior needed by the chosen harness, including a large code context, tool use for scans,
 and reliable structured output.

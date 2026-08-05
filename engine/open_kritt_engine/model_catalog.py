@@ -24,6 +24,29 @@ LOGGER = logging.getLogger("open_kritt_engine")
 ANTHROPIC_MODELS_URL = "https://api.anthropic.com/v1/models"
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models/user"
 OPENROUTER_DEFAULT_MODEL_ID = "z-ai/glm-5.2"
+XAI_DEFAULT_MODEL_ID = "grok-4.5"
+XAI_MODELS_URL = "https://api.x.ai/v1/models"
+# Fallback when the live xAI catalog is unavailable or filtered.
+XAI_CURATED_MODELS = (
+    {
+        "model": "grok-4.5",
+        "displayName": "Grok 4.5",
+        "supportedReasoningEfforts": ["default", "low", "medium", "high", "xhigh", "max"],
+        "isDefault": True,
+    },
+    {
+        "model": "grok-4.5-latest",
+        "displayName": "Grok 4.5 (latest)",
+        "supportedReasoningEfforts": ["default", "low", "medium", "high", "xhigh", "max"],
+        "isDefault": False,
+    },
+    {
+        "model": "grok-4.3",
+        "displayName": "Grok 4.3",
+        "supportedReasoningEfforts": ["default", "low", "medium", "high", "xhigh", "max"],
+        "isDefault": False,
+    },
+)
 CATALOG_REFRESH_ERROR = "Unable to refresh the provider model catalog."
 MAX_CATALOG_MODELS = 500
 MAX_CATALOG_PAGES = 10
@@ -394,6 +417,64 @@ def fetch_anthropic_models(api_key: str, timeout_seconds: float) -> tuple[list[d
     return models, default_model
 
 
+def fetch_xai_models(api_key: str, timeout_seconds: float) -> tuple[list[dict[str, Any]], str]:
+    """List Grok models available under the configured xAI API key (direct api.x.ai)."""
+
+    request = Request(
+        XAI_MODELS_URL,
+        headers={"Authorization": f"Bearer {api_key}"},
+    )
+    try:
+        with urlopen(request, timeout=max(1.0, timeout_seconds)) as response:  # noqa: S310 - fixed provider URL
+            raw_payload = response.read(MAX_HTTP_CATALOG_BYTES + 1)
+        if len(raw_payload) > MAX_HTTP_CATALOG_BYTES:
+            raise ModelCatalogError("xAI model catalog response was too large")
+        payload = json.loads(raw_payload)
+    except (HTTPError, URLError, OSError, TimeoutError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        # Prefer a curated Grok list over failing catalog refresh for xAI.
+        LOGGER.warning("xAI model catalog fetch failed; using curated Grok models: %s", exc)
+        models, default_model = normalize_catalog_models(list(XAI_CURATED_MODELS))
+        return models, default_model or XAI_DEFAULT_MODEL_ID
+
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, list):
+        models, default_model = normalize_catalog_models(list(XAI_CURATED_MODELS))
+        return models, default_model or XAI_DEFAULT_MODEL_ID
+
+    entries: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for raw in data:
+        if not isinstance(raw, Mapping):
+            continue
+        model_id = _clean_text(raw.get("id") or raw.get("name"))
+        if not model_id or model_id in seen_ids:
+            continue
+        # Prefer Grok language models; skip image/video-only IDs when obvious.
+        lowered = model_id.lower()
+        if any(token in lowered for token in ("imagine", "image", "video", "voice", "audio")):
+            continue
+        seen_ids.add(model_id)
+        efforts = ["default", "low", "medium", "high", "xhigh", "max"]
+        entries.append(
+            {
+                "model": model_id,
+                "displayName": raw.get("name") or model_id,
+                "supportedReasoningEfforts": efforts,
+                "isDefault": model_id == XAI_DEFAULT_MODEL_ID,
+            }
+        )
+        if len(entries) > MAX_CATALOG_MODELS:
+            break
+
+    if not any(entry["model"] == XAI_DEFAULT_MODEL_ID for entry in entries):
+        entries.insert(0, dict(XAI_CURATED_MODELS[0]))
+
+    models, default_model = normalize_catalog_models(entries)
+    if not models:
+        models, default_model = normalize_catalog_models(list(XAI_CURATED_MODELS))
+    return models, default_model or XAI_DEFAULT_MODEL_ID
+
+
 def fetch_openrouter_models(api_key: str, timeout_seconds: float) -> tuple[list[dict[str, Any]], str]:
     """List text models available under the configured OpenRouter account policy."""
 
@@ -489,6 +570,11 @@ class ModelCatalogRefresher:
                 lambda: fetch_openrouter_models(env["OPENROUTER_API_KEY"], self.timeout_seconds)
             )
             outcomes["openrouter"] = self._refresh_provider("openrouter", fetch_openrouter)
+        if _clean_text(env.get("XAI_API_KEY")):
+            fetch_xai = getattr(self, "fetch_xai", None) or (
+                lambda: fetch_xai_models(env["XAI_API_KEY"], self.timeout_seconds)
+            )
+            outcomes["xai"] = self._refresh_provider("xai", fetch_xai)
         return outcomes
 
     def _refresh_provider(self, provider: str, fetcher: CatalogFetcher) -> bool:

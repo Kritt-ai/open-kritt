@@ -6,6 +6,7 @@ import {
   CLAUDE_LOGIN,
   CODEX_LOGIN,
   ENVIRONMENT_ITEMS,
+  PROVIDER_KEYS,
   disableManagedProviderCredential,
   UserCancelledError,
   ensureEnvFile,
@@ -384,16 +385,23 @@ function statusDetails(status) {
     ),
   ];
   details.push(
-    ...ENVIRONMENT_ITEMS.slice(0, 4).map((item) => {
+    ...ENVIRONMENT_ITEMS.filter((item) => PROVIDER_KEYS.includes(item.key)).map((item) => {
       const present =
         status.valuesPresent[item.key] ||
-        (item.key === 'OPENROUTER_API_KEY' && status.managedProviders.includes('openrouter'));
+        (item.key === 'OPENROUTER_API_KEY' && status.managedProviders.includes('openrouter')) ||
+        (item.key === 'XAI_API_KEY' && status.managedProviders.includes('xai'));
       return modelAccessDetail(`${present ? '✓' : '○'} ${item.label} ${present ? 'present' : 'not set'}`, present);
     })
   );
+  const managedProviderLabels = {
+    codex: 'Codex',
+    claude: 'Anthropic',
+    openrouter: 'OpenRouter',
+    xai: 'xAI',
+  };
   details.push(
     ...(status.managedProviders || []).map((provider) => ({
-      text: `✓ ${provider === 'codex' ? 'Codex' : provider === 'claude' ? 'Anthropic' : 'OpenRouter'} API key present (managed from Accounts)`,
+      text: `✓ ${managedProviderLabels[provider] || provider} API key present (managed from Accounts)`,
       tone: 'success',
     }))
   );
@@ -690,12 +698,13 @@ async function runSetupScreen(terminal, context) {
           label: 'Claude login',
           description: status.claudeLoginPresent ? 'present' : 'sign in with a Claude subscription',
         },
-        ...ENVIRONMENT_ITEMS.slice(0, 4).map((item) => ({
+        ...ENVIRONMENT_ITEMS.filter((item) => PROVIDER_KEYS.includes(item.key)).map((item) => ({
           id: item.key,
           label: item.label,
           description:
             status.valuesPresent[item.key] ||
-            (item.key === 'OPENROUTER_API_KEY' && status.managedProviders.includes('openrouter'))
+            (item.key === 'OPENROUTER_API_KEY' && status.managedProviders.includes('openrouter')) ||
+            (item.key === 'XAI_API_KEY' && status.managedProviders.includes('xai'))
               ? 'present'
               : 'not set',
         })),

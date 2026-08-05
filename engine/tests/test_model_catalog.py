@@ -295,7 +295,7 @@ def test_fetch_openrouter_models_uses_account_catalog_and_keeps_all_text_models(
         entries = [
             _openrouter_model("vendor/general-chat", name="General Chat"),
             _openrouter_model("openai/gpt-model", name="OpenAI through OpenRouter"),
-            _openrouter_model("z-ai/glm-5.2", name=" Z.ai GLM 5.2 "),
+            _openrouter_model("x-ai/grok-4.5", name=" xAI Grok 4.5 "),
             _openrouter_model("anthropic/claude-model", name="Claude through OpenRouter"),
             _openrouter_model("vendor/image-only", output_modalities=["image"]),
             _openrouter_model(
@@ -311,14 +311,14 @@ def test_fetch_openrouter_models_uses_account_catalog_and_keeps_all_text_models(
     assert [model["id"] for model in models] == [
         "vendor/general-chat",
         "openai/gpt-model",
-        "z-ai/glm-5.2",
+        "x-ai/grok-4.5",
         "anthropic/claude-model",
         "vendor/reasoning-model",
     ]
-    assert models[2]["label"] == "Z.ai GLM 5.2"
+    assert models[2]["label"] == "xAI Grok 4.5"
     assert models[2]["isDefault"] is True
     assert models[4]["thinkingEfforts"] == ["low", "medium", "high"]
-    assert default_model == "z-ai/glm-5.2"
+    assert default_model == "x-ai/grok-4.5"
     request, timeout = requests[0]
     assert request.full_url == "https://openrouter.ai/api/v1/models/user"
     assert request.get_header("Authorization") == "Bearer openrouter-test-key"
@@ -355,7 +355,7 @@ def test_fetch_openrouter_models_caps_the_sanitized_catalog(monkeypatch):
         _openrouter_model(f"vendor/model-{index}", name=f"Model {index}")
         for index in range(model_catalog.MAX_CATALOG_MODELS + 25)
     ]
-    entries.append(_openrouter_model("z-ai/glm-5.2", name="Preferred Default"))
+    entries.append(_openrouter_model("x-ai/grok-4.5", name="Preferred Default"))
     monkeypatch.setattr(
         model_catalog,
         "urlopen",
@@ -365,8 +365,8 @@ def test_fetch_openrouter_models_caps_the_sanitized_catalog(monkeypatch):
 
     assert len(models) == model_catalog.MAX_CATALOG_MODELS
     assert models[0]["id"] == "vendor/model-0"
-    assert models[-1]["id"] == "z-ai/glm-5.2"
-    assert default_model == "z-ai/glm-5.2"
+    assert models[-1]["id"] == "x-ai/grok-4.5"
+    assert default_model == "x-ai/grok-4.5"
 
 
 def test_fetch_openrouter_models_rejects_oversized_or_invalid_responses(monkeypatch):
