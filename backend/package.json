@@ -19,7 +19,7 @@
     "test": "node --test"
   },
   "dependencies": {
-    "@prisma/client": "^5.22.0",
+    "@prisma/client": "^7.9.1",
     "cors": "^2.8.5",
     "express": "^5.2.1",
     "pino": "^10.3.1",
