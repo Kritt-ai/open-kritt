@@ -34,18 +34,21 @@ def test_docker_builder_prune_is_optional_when_docker_is_unavailable(monkeypatch
     assert storage_cleanup.prune_docker_build_cache(keep_storage_bytes=0) is None
 
 
-def test_unused_image_prune_removes_tagged_and_untagged_images(monkeypatch):
+def test_unused_image_prune_keeps_tagged_images(monkeypatch):
+    """Auto-prune must not pass --all, so a tagged scan runner image survives (issue #43)."""
     calls = []
 
     def run(command, **kwargs):
         calls.append((command, kwargs))
-        return SimpleNamespace(returncode=0, stdout="Total reclaimed space: 3GB\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout="Total reclaimed space: 1GB\n", stderr="")
 
     monkeypatch.setattr(storage_cleanup.shutil, "which", lambda _binary: "/usr/bin/docker")
     monkeypatch.setattr(storage_cleanup.subprocess, "run", run)
 
-    assert storage_cleanup.prune_unused_docker_images() == "Total reclaimed space: 3GB"
-    assert calls[0][0] == ["/usr/bin/docker", "image", "prune", "--all", "--force"]
+    assert storage_cleanup.prune_unused_docker_images() == "Total reclaimed space: 1GB"
+
+    assert "--all" not in calls[0][0]
+    assert calls[0][0] == ["/usr/bin/docker", "image", "prune", "--force"]
 
 
 def test_stopped_container_prune_is_scoped_to_scan_runner_label(monkeypatch):
