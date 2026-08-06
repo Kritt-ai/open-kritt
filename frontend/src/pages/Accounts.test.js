@@ -19,6 +19,20 @@ import {
   startCodexWeeklyUsageUntilStarted,
 } from './Accounts.jsx';
 
+describe('API-key managed providers', () => {
+  it('names the specific provider when offering to add its key', () => {
+    expect(
+      providerActionLabel({ id: 'openrouter', label: 'OpenRouter', management: 'api_key', configured: false })
+    ).toBe('Add OpenRouter key');
+    expect(
+      providerActionLabel({ id: 'opencode', label: 'OpenCode Zen', management: 'api_key', configured: false })
+    ).toBe('Add OpenCode Zen key');
+    expect(
+      providerActionLabel({ id: 'opencode', label: 'OpenCode Zen', management: 'api_key', configured: true })
+    ).toBe('Add or replace key');
+  });
+});
+
 describe('expired Codex login', () => {
   it('explains that authentication, not usage, needs attention', () => {
     const html = renderToStaticMarkup(createElement(CodexSignInRequired));

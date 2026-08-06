@@ -52,6 +52,11 @@ LOGGER = logging.getLogger("open_kritt_engine.workspace")
 SCAN_RUNNER_WORKDIR = "/workspace"
 SELECTED_AGENT_SKILLS_SLUG = "open-kritt-selected-skills"
 OPENROUTER_CODEX_BASE_URL = "https://openrouter.ai/api/v1"
+OPENCODE_CODEX_BASE_URL = "https://opencode.ai/zen/v1"
+GATEWAY_CODEX_PROVIDERS = {
+    "openrouter": {"name": "OpenRouter", "base_url": OPENROUTER_CODEX_BASE_URL, "env_key": "OPENROUTER_API_KEY"},
+    "opencode": {"name": "OpenCode Zen", "base_url": OPENCODE_CODEX_BASE_URL, "env_key": "OPENCODE_API_KEY"},
+}
 JOB_UID_BASE = 100_000
 JOB_UID_SPAN = 2_000_000_000
 _SHARED_WORKSPACE_LOCKS: dict[str, threading.Lock] = {}
@@ -165,7 +170,7 @@ def prepare_job_workspace(
     if needs_codex_home and codex_source:
         _copy_credential_files(Path(codex_source), codex_home, ("auth.json",))
     elif needs_codex_home:
-        _prepare_openrouter_codex_home(codex_home)
+        _prepare_gateway_codex_home(codex_home, selected_provider)
     if needs_claude_home and selected_provider == "claude":
         claude_oauth_expires_at_ms = prepare_claude_job_credentials(
             Path(claude_source or os.getenv("CLAUDE_HOME", "/root/.claude")),
@@ -252,19 +257,20 @@ def _secure_job_tree(root: Path, uid: int, gid: int):
             continue
 
 
-def _prepare_openrouter_codex_home(codex_home: Path):
-    """Create the minimum Codex config needed for an OpenRouter scan."""
+def _prepare_gateway_codex_home(codex_home: Path, provider: str):
+    """Create the minimum Codex config needed for an OpenRouter/OpenCode Zen scan."""
 
+    gateway = GATEWAY_CODEX_PROVIDERS.get(provider, GATEWAY_CODEX_PROVIDERS["openrouter"])
     codex_home.mkdir(parents=True, exist_ok=True)
     config = codex_home / "config.toml"
     _atomic_write_text(
         config,
         "\n".join(
             [
-                "[model_providers.openrouter]",
-                'name = "OpenRouter"',
-                f'base_url = "{OPENROUTER_CODEX_BASE_URL}"',
-                'env_key = "OPENROUTER_API_KEY"',
+                f"[model_providers.{provider}]",
+                f'name = "{gateway["name"]}"',
+                f'base_url = "{gateway["base_url"]}"',
+                f'env_key = "{gateway["env_key"]}"',
                 'wire_api = "responses"',
                 "",
             ]

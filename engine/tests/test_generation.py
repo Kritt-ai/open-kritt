@@ -314,6 +314,17 @@ def test_generation_job_rejects_effort_the_selected_harness_cannot_pass():
     )
 
 
+def test_generation_job_accepts_opencode_provider_with_either_harness():
+    for harness in ("claude-code", "codex"):
+        job = generation_job()
+        job.update({"model": "claude-opus-5", "model_provider": "opencode", "harness": harness})
+
+        validated = validate_generation_job(job)
+
+        assert validated["model_provider"] == "opencode"
+        assert validated["harness"] == harness
+
+
 def test_generation_environment_contains_only_selected_provider_credentials():
     source = {
         "PATH": "/bin",
@@ -322,19 +333,23 @@ def test_generation_environment_contains_only_selected_provider_credentials():
         "OPENAI_API_KEY": "openai-secret",
         "ANTHROPIC_API_KEY": "anthropic-secret",
         "OPENROUTER_API_KEY": "openrouter-secret",
+        "OPENCODE_API_KEY": "opencode-secret",
         "GITHUB_TOKEN": "github-secret",
         "DATABASE_URL": "database-secret",
     }
 
     codex_env = generation_environment("codex", source)
     openrouter_env = generation_environment("openrouter", source)
+    opencode_env = generation_environment("opencode", source)
 
     assert codex_env["CODEX_API_KEY"] == "openai-secret"
     assert codex_env["CODEX_HOME"] == "/codex-a"
     assert "ANTHROPIC_API_KEY" not in codex_env
     assert "OPENROUTER_API_KEY" not in codex_env
     assert openrouter_env["OPENROUTER_API_KEY"] == "openrouter-secret"
-    for env in (codex_env, openrouter_env):
+    assert opencode_env["OPENCODE_API_KEY"] == "opencode-secret"
+    assert "OPENROUTER_API_KEY" not in opencode_env
+    for env in (codex_env, openrouter_env, opencode_env):
         assert "GITHUB_TOKEN" not in env
         assert "DATABASE_URL" not in env
 

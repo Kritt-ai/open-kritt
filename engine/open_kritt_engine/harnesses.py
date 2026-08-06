@@ -160,6 +160,8 @@ TOOL_FREE_CODEX_DISABLED_FEATURES = (
 OPENROUTER_CLAUDE_BASE_URL = "https://openrouter.ai/api"
 OPENROUTER_CURSOR_BASE_URL = "https://openrouter.ai/api/v1/cursor"
 OPENROUTER_CODEX_BASE_URL = "https://openrouter.ai/api/v1"
+OPENCODE_CLAUDE_BASE_URL = "https://opencode.ai/zen"
+OPENCODE_CODEX_BASE_URL = "https://opencode.ai/zen/v1"
 OPENROUTER_MODEL_ALIASES = {
     "glm-5.2": "z-ai/glm-5.2",
     "grok-4.5": "x-ai/grok-4.5",
@@ -168,8 +170,20 @@ CLAUDE_MODEL_ALIASES = {
     "opus-4.7": "claude-opus-4-7",
     "opus-4.8": "claude-opus-4-8",
 }
+# OpenCode Zen has no single unified gateway: its Anthropic-compatible endpoint
+# only serves claude-*/qwen* ids, and its OpenAI Responses-API endpoint only
+# serves gpt-* ids. Harness and model family are coupled for this provider,
+# unlike OpenRouter which translates any model for either harness.
+CLAUDE_GATEWAY_PROVIDERS = {
+    "openrouter": ("OPENROUTER_API_KEY", OPENROUTER_CLAUDE_BASE_URL),
+    "opencode": ("OPENCODE_API_KEY", OPENCODE_CLAUDE_BASE_URL),
+}
+CODEX_GATEWAY_PROVIDERS = {
+    "openrouter": {"name": "OpenRouter", "base_url": OPENROUTER_CODEX_BASE_URL, "env_key": "OPENROUTER_API_KEY"},
+    "opencode": {"name": "OpenCode Zen", "base_url": OPENCODE_CODEX_BASE_URL, "env_key": "OPENCODE_API_KEY"},
+}
 DEFAULT_MODEL_PROVIDER = "openrouter"
-MODEL_PROVIDERS = {"codex", "claude", "openrouter"}
+MODEL_PROVIDERS = {"codex", "claude", "openrouter", "opencode"}
 CLAUDE_WORKSPACE_SYSTEM_PROMPT = (
     "Use only files under the current working directory and dependency paths listed in WORKSPACE.json. "
     "Do not search from filesystem root (/), /data, /root, /home, or other global paths. "
@@ -504,7 +518,8 @@ def _classify_harness_output(output: str, *, provider: str | None = None) -> str
             "quota temporarily exceeded",
         )
     )
-    if rate_limit_signal or _has_http_status(normalized, 429) or (provider == "openrouter" and quota_signal):
+    gateway_quota_signal = provider in {"openrouter", "opencode"} and quota_signal
+    if rate_limit_signal or _has_http_status(normalized, 429) or gateway_quota_signal:
         return "rate_limited"
     if quota_signal:
         return "quota_exceeded"
@@ -609,12 +624,16 @@ def _classified_harness_error(
     )
 
 
-def _uses_openrouter(cmd: list[str], env: dict[str, str]) -> bool:
+def _gateway_provider(cmd: list[str], env: dict[str, str]) -> str | None:
     base_urls = (env.get("ANTHROPIC_BASE_URL"), env.get("OPENAI_BASE_URL"))
-    if any("openrouter.ai" in str(value).lower() for value in base_urls if value):
-        return True
+    for provider, host in (("openrouter", "openrouter.ai"), ("opencode", "opencode.ai")):
+        if any(host in str(value).lower() for value in base_urls if value):
+            return provider
     command = " ".join(str(part) for part in cmd).lower()
-    return "openrouter.ai" in command or 'model_provider="openrouter"' in command
+    for provider, host in (("openrouter", "openrouter.ai"), ("opencode", "opencode.ai")):
+        if host in command or f'model_provider="{provider}"' in command:
+            return provider
+    return None
 
 
 def _run_process(cmd, prompt, cwd, timeout, env=None):
@@ -657,7 +676,7 @@ def _run_process(cmd, prompt, cwd, timeout, env=None):
             harness=harness,
             exit_code=proc.returncode,
             output_artifact=_process_output(proc),
-            provider="openrouter" if _uses_openrouter(cmd, process_env) else None,
+            provider=_gateway_provider(cmd, process_env),
         )
     return proc
 
@@ -832,6 +851,7 @@ def _scan_docker_command(
         "CODEX_API_KEY",
         "OPENAI_API_KEY",
         "OPENROUTER_API_KEY",
+        "OPENCODE_API_KEY",
         "ANTHROPIC_BASE_URL",
         "ANTHROPIC_AUTH_TOKEN",
         "ANTHROPIC_API_KEY",
@@ -922,8 +942,8 @@ def codex_cli_model_provider(
     configured = normalize_model_provider(codex_model_provider)
     if selected == "codex":
         return None
-    if selected == "openrouter":
-        return (configured or "openrouter") if allow_tools else "openrouter"
+    if selected in CODEX_GATEWAY_PROVIDERS:
+        return (configured or selected) if allow_tools else selected
     return selected or configured
 
 
@@ -940,8 +960,8 @@ def claude_model_provider(
     model: str, env: dict[str, str] | None = None, model_provider: str | None = None
 ) -> str | None:
     requested_provider = normalize_model_provider(model_provider)
-    if requested_provider == "openrouter":
-        return "openrouter"
+    if requested_provider in CLAUDE_GATEWAY_PROVIDERS:
+        return requested_provider
     if requested_provider:
         return None
     actual_env = env or os.environ
@@ -963,7 +983,7 @@ def _claude_model_name(model: str, env: dict[str, str], model_provider: str | No
 
 def _apply_claude_host_auth_home(env: dict[str, str], provider: str | None) -> dict[str, str]:
     auth_home = env.get("ENGINE_CLAUDE_AUTH_HOME") or os.getenv("ENGINE_CLAUDE_AUTH_HOME")
-    if provider == "openrouter" or not auth_home or _env_enabled("ENGINE_CLAUDE_DOCKER_RUNNER"):
+    if provider in CLAUDE_GATEWAY_PROVIDERS or not auth_home or _env_enabled("ENGINE_CLAUDE_DOCKER_RUNNER"):
         return env
     actual_env = dict(env)
     auth_home = str(Path(auth_home).expanduser())
@@ -982,11 +1002,20 @@ def _apply_claude_host_auth_home(env: dict[str, str], provider: str | None) -> d
 
 def _claude_env(env: dict[str, str], model: str, model_provider: str | None = None) -> dict[str, str]:
     actual_env = dict(env)
-    if claude_model_provider(model, actual_env, model_provider) == "openrouter":
-        if not actual_env.get("OPENROUTER_API_KEY"):
-            raise HarnessError("OPENROUTER_API_KEY is required when model provider is openrouter")
-        actual_env["ANTHROPIC_BASE_URL"] = actual_env.get("ANTHROPIC_BASE_URL") or OPENROUTER_CLAUDE_BASE_URL
-        actual_env["ANTHROPIC_AUTH_TOKEN"] = actual_env.get("ANTHROPIC_AUTH_TOKEN") or actual_env["OPENROUTER_API_KEY"]
+    provider = claude_model_provider(model, actual_env, model_provider)
+    gateway = CLAUDE_GATEWAY_PROVIDERS.get(provider) if provider else None
+    if gateway:
+        env_key, base_url = gateway
+        if not actual_env.get(env_key):
+            raise HarnessError(f"{env_key} is required when model provider is {provider}")
+        if provider == "opencode" and model.lower().startswith("gpt-"):
+            raise HarnessError(
+                f'Model "{model}" is not reachable through the Claude Code harness on OpenCode Zen; '
+                "use the Codex harness for GPT models.",
+                code="configuration_error",
+            )
+        actual_env["ANTHROPIC_BASE_URL"] = actual_env.get("ANTHROPIC_BASE_URL") or base_url
+        actual_env["ANTHROPIC_AUTH_TOKEN"] = actual_env.get("ANTHROPIC_AUTH_TOKEN") or actual_env[env_key]
         actual_env["ANTHROPIC_API_KEY"] = ""
     return actual_env
 
@@ -1376,6 +1405,12 @@ def codex_exec_command(
     )
     if normalize_model_provider(model_provider) == "openrouter":
         model = OPENROUTER_MODEL_ALIASES.get(model, model)
+    if cli_model_provider == "opencode" and not model.lower().startswith("gpt-"):
+        raise HarnessError(
+            f'Model "{model}" is not reachable through the Codex harness on OpenCode Zen; '
+            "use the Claude Code harness for Claude/Qwen models.",
+            code="configuration_error",
+        )
     command = ["codex"]
     if allow_tools:
         command.append("--search")
@@ -1398,14 +1433,15 @@ def codex_exec_command(
         for feature in TOOL_FREE_CODEX_DISABLED_FEATURES:
             command.extend(["--disable", feature])
     command.extend(["--output-schema", schema_path, "-o", output_path])
-    if not allow_tools and cli_model_provider == "openrouter":
+    gateway = CODEX_GATEWAY_PROVIDERS.get(cli_model_provider) if cli_model_provider else None
+    if not allow_tools and gateway:
         # `--ignore-user-config` removes custom providers along with user
-        # settings. Recreate only OpenRouter's non-secret definition; Codex
+        # settings. Recreate only the gateway's non-secret definition; Codex
         # reads the actual credential from the named environment variable.
-        command.extend(["-c", 'model_providers.openrouter.name="OpenRouter"'])
-        command.extend(["-c", f'model_providers.openrouter.base_url="{OPENROUTER_CODEX_BASE_URL}"'])
-        command.extend(["-c", 'model_providers.openrouter.env_key="OPENROUTER_API_KEY"'])
-        command.extend(["-c", 'model_providers.openrouter.wire_api="responses"'])
+        command.extend(["-c", f'model_providers.{cli_model_provider}.name="{gateway["name"]}"'])
+        command.extend(["-c", f'model_providers.{cli_model_provider}.base_url="{gateway["base_url"]}"'])
+        command.extend(["-c", f'model_providers.{cli_model_provider}.env_key="{gateway["env_key"]}"'])
+        command.extend(["-c", f'model_providers.{cli_model_provider}.wire_api="responses"'])
     if cli_model_provider:
         command.extend(["-c", f"model_provider={json.dumps(cli_model_provider)}"])
     if thinking_effort and thinking_effort != "default":
@@ -1562,7 +1598,11 @@ class CodexHarness:
                     harness="codex",
                     default_code="invalid_output",
                     output_artifact=process_output,
-                    provider="openrouter" if normalize_model_provider(self.model_provider) == "openrouter" else None,
+                    provider=(
+                        normalize_model_provider(self.model_provider)
+                        if normalize_model_provider(self.model_provider) in CODEX_GATEWAY_PROVIDERS
+                        else None
+                    ),
                 ) from payload_error
             return HarnessResult(payload=parsed_payload, usage=usage, codex_session_id=thread_id, output=process_output)
 
@@ -1644,7 +1684,11 @@ class CodexHarness:
                 harness="codex",
                 default_code="invalid_output",
                 output_artifact=process_output,
-                provider="openrouter" if normalize_model_provider(self.model_provider) == "openrouter" else None,
+                provider=(
+                    normalize_model_provider(self.model_provider)
+                    if normalize_model_provider(self.model_provider) in CODEX_GATEWAY_PROVIDERS
+                    else None
+                ),
             ) from payload_error
         return HarnessResult(
             payload=parsed_payload, usage=usage, codex_session_id=thread_id or session_id, output=process_output
@@ -1692,7 +1736,7 @@ class ClaudeHarness:
             "--input-format",
             "text",
             "--output-format",
-            "stream-json" if provider == "openrouter" else "json",
+            "stream-json" if provider in CLAUDE_GATEWAY_PROVIDERS else "json",
             "--append-system-prompt",
             CLAUDE_WORKSPACE_SYSTEM_PROMPT if allow_tools else CLAUDE_GENERATION_SYSTEM_PROMPT,
         ]
@@ -1702,7 +1746,7 @@ class ClaudeHarness:
             # No tools, MCP configuration, or user/project settings are loaded for
             # untrusted generation requests. The response is schema-only text.
             cmd.extend(["--tools", "", "--permission-mode", "dontAsk", "--strict-mcp-config", "--setting-sources", ""])
-        if provider != "openrouter":
+        if provider not in CLAUDE_GATEWAY_PROVIDERS:
             cmd.extend(["--json-schema", json.dumps(_claude_json_schema(schema))])
         else:
             cmd.extend(["--include-partial-messages", "--verbose"])
@@ -1721,14 +1765,14 @@ class ClaudeHarness:
             else cmd
         )
         timeout_seconds = self.timeout_seconds
-        if provider != "openrouter":
+        if provider not in CLAUDE_GATEWAY_PROVIDERS:
             timeout_seconds = claude_oauth_timeout_seconds(
                 actual_env.get(CLAUDE_OAUTH_EXPIRY_ENV),
                 timeout_seconds,
             )
         proc = _run_process(run_cmd, prompt, repo_dir, timeout_seconds, env=actual_env)
         process_output = _process_output(proc)
-        if provider == "openrouter":
+        if provider in CLAUDE_GATEWAY_PROVIDERS:
             try:
                 payload, usage = _extract_json_from_claude_stream(proc.stdout, provider=provider)
             except HarnessError as exc:

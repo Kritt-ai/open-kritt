@@ -1390,6 +1390,98 @@ def test_claude_openrouter_stream_rate_limit_is_preserved(monkeypatch, tmp_path)
     assert raised.value.output.stdout == raw_stdout
 
 
+def test_claude_harness_routes_opencode_claude_model_through_anthropic_endpoint(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_run_process(cmd, prompt, cwd, timeout, env=None):
+        captured["cmd"] = cmd
+        captured["env"] = env
+        payload = marked({"stub": True, "stub_explanation": "No matching records.", "results": []})
+        return SimpleNamespace(
+            stdout="\n".join(
+                [
+                    json.dumps(
+                        {
+                            "type": "assistant",
+                            "message": {"content": [{"type": "text", "text": json.dumps(payload)}]},
+                        }
+                    ),
+                    json.dumps({"type": "result", "result": json.dumps(payload), "usage": {"input_tokens": 1}}),
+                ]
+            ),
+            stderr="",
+            returncode=0,
+        )
+
+    monkeypatch.setattr(harnesses, "_run_process", fake_run_process)
+
+    result = ClaudeHarness(timeout_seconds=5, model_provider="opencode").run(
+        prompt="prompt",
+        schema=output_schema('{"thing":"string"}', multi_output=False),
+        repo_dir="/tmp",
+        model="claude-opus-5",
+        env={
+            "HOME": str(tmp_path / "home"),
+            "OPENCODE_API_KEY": "oc-key",
+        },
+    )
+
+    assert result.payload == marked({"stub": True, "stub_explanation": "No matching records.", "results": []})
+    assert captured["cmd"][captured["cmd"].index("--model") + 1] == "claude-opus-5"
+    assert captured["env"]["ANTHROPIC_BASE_URL"] == "https://opencode.ai/zen"
+    assert captured["env"]["ANTHROPIC_AUTH_TOKEN"] == "oc-key"
+    assert captured["env"]["ANTHROPIC_API_KEY"] == ""
+    assert captured["cmd"][captured["cmd"].index("--output-format") + 1] == "stream-json"
+    assert "--include-partial-messages" in captured["cmd"]
+    assert "--json-schema" not in captured["cmd"]
+
+
+def test_claude_harness_rejects_gpt_model_on_opencode(tmp_path):
+    with pytest.raises(HarnessError) as raised:
+        ClaudeHarness(timeout_seconds=5, model_provider="opencode").run(
+            prompt="prompt",
+            schema=output_schema('{"thing":"string"}', multi_output=False),
+            repo_dir="/tmp",
+            model="gpt-5.1-codex",
+            env={"HOME": str(tmp_path / "home"), "OPENCODE_API_KEY": "oc-key"},
+        )
+
+    assert raised.value.code == "configuration_error"
+
+
+def test_codex_exec_command_injects_opencode_gateway_provider(tmp_path):
+    cmd = harnesses.codex_exec_command(
+        repo_dir="/tmp",
+        model="gpt-5.1-codex",
+        schema_path=str(tmp_path / "schema.json"),
+        output_path=str(tmp_path / "output.json"),
+        model_provider="opencode",
+        thinking_effort=None,
+        allow_tools=False,
+    )
+
+    assert 'model_providers.opencode.name="OpenCode Zen"' in cmd
+    assert 'model_providers.opencode.base_url="https://opencode.ai/zen/v1"' in cmd
+    assert 'model_providers.opencode.env_key="OPENCODE_API_KEY"' in cmd
+    assert 'model_providers.opencode.wire_api="responses"' in cmd
+    assert 'model_provider="opencode"' in cmd
+
+
+def test_codex_exec_command_rejects_non_gpt_model_on_opencode(tmp_path):
+    with pytest.raises(HarnessError) as raised:
+        harnesses.codex_exec_command(
+            repo_dir="/tmp",
+            model="claude-opus-5",
+            schema_path=str(tmp_path / "schema.json"),
+            output_path=str(tmp_path / "output.json"),
+            model_provider="opencode",
+            thinking_effort=None,
+            allow_tools=False,
+        )
+
+    assert raised.value.code == "configuration_error"
+
+
 def test_native_claude_json_rate_limit_is_preserved(monkeypatch, tmp_path):
     raw_stdout = json.dumps({"is_error": True, "result": "rate limit exceeded", "status": 429})
     monkeypatch.setattr(
@@ -1691,6 +1783,37 @@ def test_openrouter_credit_limits_are_classified_as_rate_limited(monkeypatch, pr
             "/tmp",
             1,
             env={"OPENROUTER_API_KEY": "secret"},
+        )
+
+    assert exc_info.value.code == "rate_limited"
+    assert exc_info.value.retryable is True
+
+
+@pytest.mark.parametrize(
+    "provider_output",
+    [
+        '{"error":{"code":"insufficient_quota"}}',
+        '{"error":"requires more credits"}',
+    ],
+)
+def test_opencode_credit_limits_are_classified_as_rate_limited(monkeypatch, provider_output):
+    monkeypatch.setattr(
+        harnesses.subprocess,
+        "run",
+        lambda *_args, **_kwargs: type(
+            "Process",
+            (),
+            {"stdout": provider_output, "stderr": "", "returncode": 1},
+        )(),
+    )
+
+    with pytest.raises(harnesses.HarnessError) as exc_info:
+        harnesses._run_process(
+            ["codex", "exec", "-c", 'model_provider="opencode"'],
+            "prompt",
+            "/tmp",
+            1,
+            env={"OPENCODE_API_KEY": "secret"},
         )
 
     assert exc_info.value.code == "rate_limited"

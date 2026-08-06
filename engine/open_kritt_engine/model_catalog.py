@@ -24,6 +24,14 @@ LOGGER = logging.getLogger("open_kritt_engine")
 ANTHROPIC_MODELS_URL = "https://api.anthropic.com/v1/models"
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models/user"
 OPENROUTER_DEFAULT_MODEL_ID = "z-ai/glm-5.2"
+OPENCODE_MODELS_URL = "https://opencode.ai/zen/v1/models"
+OPENCODE_DEFAULT_MODEL_ID = "gpt-5.1-codex"
+# OpenCode Zen serves other model families (Grok, DeepSeek, GLM, Kimi, MiniMax,
+# Gemini, free-tier models) only over wire formats neither the Codex nor Claude
+# Code harness speaks. Filter the catalog down to the families that are
+# actually reachable: claude-*/qwen* via the Anthropic-compatible endpoint,
+# gpt-* via the OpenAI Responses-API endpoint.
+OPENCODE_SUPPORTED_MODEL_RE = re.compile(r"^(claude-|qwen|gpt-)", re.IGNORECASE)
 CATALOG_REFRESH_ERROR = "Unable to refresh the provider model catalog."
 MAX_CATALOG_MODELS = 500
 MAX_CATALOG_PAGES = 10
@@ -440,6 +448,64 @@ def fetch_openrouter_models(api_key: str, timeout_seconds: float) -> tuple[list[
     return models, default_model
 
 
+def _opencode_is_supported_model(model_id: str) -> bool:
+    return bool(OPENCODE_SUPPORTED_MODEL_RE.match(model_id))
+
+
+def _opencode_thinking_efforts(model_id: str) -> list[str]:
+    # OpenCode Zen's /v1/models exposes no reasoning metadata at all. Reuse the
+    # known Anthropic reasoning-effort table for ids that match Anthropic's own
+    # (OpenCode Zen's Claude ids are identical); everything else gets the
+    # engine's implicit default.
+    return list(CLAUDE_MODEL_THINKING_EFFORTS.get(model_id, ("default",)))
+
+
+def fetch_opencode_models(api_key: str, timeout_seconds: float) -> tuple[list[dict[str, Any]], str]:
+    """List the claude-*/qwen*/gpt-* models available on OpenCode Zen."""
+
+    request = Request(
+        OPENCODE_MODELS_URL,
+        headers={"Authorization": f"Bearer {api_key}"},
+    )
+    try:
+        with urlopen(request, timeout=max(1.0, timeout_seconds)) as response:  # noqa: S310 - fixed provider URL
+            raw_payload = response.read(MAX_HTTP_CATALOG_BYTES + 1)
+        if len(raw_payload) > MAX_HTTP_CATALOG_BYTES:
+            raise ModelCatalogError("OpenCode Zen model catalog response was too large")
+        payload = json.loads(raw_payload)
+    except (HTTPError, URLError, OSError, TimeoutError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ModelCatalogError("Could not read the OpenCode Zen model catalog") from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+        raise ModelCatalogError("OpenCode Zen model catalog response was invalid")
+
+    entries: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for raw in payload["data"]:
+        if not isinstance(raw, Mapping):
+            continue
+        model_id = _clean_text(raw.get("id"))
+        if not model_id or model_id in seen_ids or not _opencode_is_supported_model(model_id):
+            continue
+        seen_ids.add(model_id)
+        entries.append(
+            {
+                "model": model_id,
+                "displayName": None,
+                "supportedReasoningEfforts": _opencode_thinking_efforts(model_id),
+                "isDefault": model_id == OPENCODE_DEFAULT_MODEL_ID,
+            }
+        )
+        if len(entries) > MAX_CATALOG_MODELS:
+            candidate = entries.pop()
+            if candidate["isDefault"] and not any(entry["isDefault"] for entry in entries):
+                entries[-1] = candidate
+
+    models, default_model = normalize_catalog_models(entries)
+    if not models:
+        raise ModelCatalogError("OpenCode Zen model catalog was empty")
+    return models, default_model
+
+
 CatalogFetcher = Callable[[], tuple[list[dict[str, Any]], str]]
 
 
@@ -455,6 +521,7 @@ class ModelCatalogRefresher:
         fetch_codex: CatalogFetcher | None = None,
         fetch_anthropic: CatalogFetcher | None = None,
         fetch_openrouter: CatalogFetcher | None = None,
+        fetch_opencode: CatalogFetcher | None = None,
         codex_cli_gate: Any | None = None,
     ):
         self.db = db
@@ -463,6 +530,7 @@ class ModelCatalogRefresher:
         self.fetch_codex = fetch_codex
         self.fetch_anthropic = fetch_anthropic
         self.fetch_openrouter = fetch_openrouter
+        self.fetch_opencode = fetch_opencode
         self.codex_cli_gate = codex_cli_gate
 
     def refresh(self, env: Mapping[str, str] | None = None) -> dict[str, bool]:
@@ -489,6 +557,11 @@ class ModelCatalogRefresher:
                 lambda: fetch_openrouter_models(env["OPENROUTER_API_KEY"], self.timeout_seconds)
             )
             outcomes["openrouter"] = self._refresh_provider("openrouter", fetch_openrouter)
+        if _clean_text(env.get("OPENCODE_API_KEY")):
+            fetch_opencode = self.fetch_opencode or (
+                lambda: fetch_opencode_models(env["OPENCODE_API_KEY"], self.timeout_seconds)
+            )
+            outcomes["opencode"] = self._refresh_provider("opencode", fetch_opencode)
         return outcomes
 
     def _refresh_provider(self, provider: str, fetcher: CatalogFetcher) -> bool:

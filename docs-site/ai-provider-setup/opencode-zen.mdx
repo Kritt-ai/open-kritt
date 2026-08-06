@@ -1,0 +1,99 @@
+---
+title: "OpenCode Zen"
+description: "Create an OpenCode Zen API key and access its curated Claude and GPT-5.x-codex models."
+---
+
+The **OpenCode Zen** provider uses `OPENCODE_API_KEY` to route models through
+[OpenCode Zen](https://opencode.ai/docs/zen/), a curated AI gateway. Unlike OpenRouter,
+OpenCode Zen is not a single unified gateway: it exposes an Anthropic-compatible endpoint
+for its Claude and Qwen models, and a separate OpenAI Responses-API endpoint for its
+GPT-5.x/GPT-5.x-codex models. open·kritt routes each harness to the matching endpoint —
+see [Model compatibility](#model-compatibility) below before choosing a harness and model.
+
+After the key is configured, the engine periodically refreshes a searchable model catalog
+from OpenCode Zen's `/v1/models` endpoint. That endpoint returns only model IDs (no
+display names or reasoning metadata), so the cached catalog is a plainer list of exact
+IDs than OpenRouter's.
+
+## Create and configure the key
+
+<Steps>
+  <Step title="Create an OpenCode Zen account">
+    Sign in at [opencode.ai](https://opencode.ai/auth) and add billing details. OpenCode
+    Zen is pay-per-use; several models are free.
+  </Step>
+  <Step title="Copy your API key">
+    Copy the API key shown after sign-in.
+  </Step>
+  <Step title="Save it in open·kritt">
+    Run `./kritt setup`, choose **OpenCode Zen API key**, and paste the key into the
+    hidden input. The CLI writes it to `OPENCODE_API_KEY` in `.env`. You can also add or
+    replace it from the running application's **Accounts** page.
+  </Step>
+  <Step title="Start or recreate the stack">
+    ```bash
+    ./kritt start
+    ```
+
+    Stop an already-running attached stack with Ctrl+C first.
+  </Step>
+  <Step title="Choose a harness and model">
+    Pick the harness that matches the model family you want (see below), then search the
+    OpenCode Zen model picker in the scan or generation form, or enter an exact model ID
+    such as `claude-opus-5` or `gpt-5.1-codex` as a custom value.
+  </Step>
+</Steps>
+
+## Model compatibility
+
+OpenCode Zen's model families are split across two wire-incompatible endpoints, and
+open·kritt only speaks the two protocols its existing harnesses already support:
+
+- The **Claude Code** harness reaches OpenCode Zen's Anthropic-compatible endpoint, which
+  serves its `claude-*` and `qwen*` model IDs (for example `claude-opus-5`,
+  `claude-sonnet-5`, `qwen3.7-max`).
+- The **Codex** harness reaches OpenCode Zen's OpenAI Responses-API endpoint, which
+  serves its `gpt-*` model family — including the `gpt-5.x-codex` models OpenCode Zen
+  recommends for coding agents (for example `gpt-5.1-codex`, `gpt-5-codex`).
+
+Picking the wrong pair (for example the Claude Code harness with a `gpt-*` model, or the
+Codex harness with a `claude-*`/`qwen*` model) fails fast with a clear configuration
+error instead of an opaque upstream HTTP failure.
+
+OpenCode Zen also offers other model families — Grok, DeepSeek, GLM, Kimi, MiniMax,
+Gemini, and several free models — over its OpenAI-compatible `/v1/chat/completions`
+endpoint and Google-specific paths. Neither harness speaks those wire formats today, so
+those models are filtered out of the discovered catalog and are not usable through
+open·kritt yet.
+
+## Catalog refresh and fallback
+
+The engine refreshes the OpenCode Zen catalog in the background and stores only the
+model IDs from families listed above. While the first refresh is still running, the
+forms may show the catalog as loading. A successful refresh replaces the cached choices.
+
+If a later refresh fails, open·kritt keeps the last usable cached catalog. If no
+successful catalog has been cached yet, model discovery is shown as unavailable; check
+the engine logs and the configured key, then retry. You can still use an exact custom
+model ID as the compatibility escape hatch — the discovered catalog is a convenience,
+not an allow-list.
+
+## Verify and troubleshoot
+
+- `./kritt setup` should show **OpenCode Zen API key present**.
+- The create and generation forms should list **OpenCode Zen** and load a searchable
+  model catalog. An exact custom ID can also be entered when needed.
+- If the catalog remains in a loading or unavailable state, inspect
+  `docker compose logs engine` and confirm the configured API key can list models at
+  `https://opencode.ai/zen/v1/models`.
+- A `401` usually means the key is invalid or revoked.
+- A "not reachable through the Claude Code harness" or "not reachable through the Codex
+  harness" error means the selected model and harness are mismatched — see
+  [Model compatibility](#model-compatibility) above and switch either the model or the
+  harness.
+- A model-not-found error usually means the identifier is misspelled or belongs to one
+  of the unsupported model families listed above.
+
+Next: configure [Codex](/ai-provider-setup/codex), [Claude Code](/ai-provider-setup/claude-code),
+[OpenRouter](/ai-provider-setup/openrouter), or learn how to choose a
+[model and harness](/scans/model-and-harness).

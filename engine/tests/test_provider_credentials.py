@@ -25,6 +25,23 @@ def test_environment_key_bootstraps_managed_store_once(tmp_path):
     assert disabled == set()
 
 
+def test_opencode_environment_key_bootstraps_managed_store_once(tmp_path):
+    credential_path = tmp_path / "providers.json"
+
+    credentials, disabled = bootstrap_managed_provider_credentials(
+        {"OPENCODE_API_KEY": "initial-key"}, str(credential_path)
+    )
+    assert credentials == {"opencode": "initial-key"}
+    assert disabled == set()
+    assert json.loads(credential_path.read_text(encoding="utf-8"))["credentials"] == {"opencode": "initial-key"}
+
+    credentials, disabled = bootstrap_managed_provider_credentials(
+        {"OPENCODE_API_KEY": "changed-env-key"}, str(credential_path)
+    )
+    assert credentials == {"opencode": "initial-key"}
+    assert disabled == set()
+
+
 def test_disabled_environment_key_is_not_bootstrapped_again(tmp_path):
     credential_path = tmp_path / "providers.json"
     credential_path.write_text(
@@ -59,6 +76,7 @@ def test_provider_environment_reads_managed_credentials(tmp_path):
                     "codex": "codex-managed",
                     "claude": "claude-managed",
                     "openrouter": "openrouter-managed",
+                    "opencode": "opencode-managed",
                     "unknown": "ignored",
                 },
             }
@@ -77,6 +95,7 @@ def test_provider_environment_reads_managed_credentials(tmp_path):
     assert env["CODEX_API_KEY"] == "old-codex"
     assert "ANTHROPIC_API_KEY" not in env
     assert env["OPENROUTER_API_KEY"] == "openrouter-managed"
+    assert env["OPENCODE_API_KEY"] == "opencode-managed"
     assert env["UNRELATED"] == "keep"
     assert "unknown" not in env
 
@@ -110,12 +129,15 @@ def test_job_environment_only_includes_selected_provider_and_harness_credentials
         "OPENAI_API_KEY": "openai-secret",
         "ANTHROPIC_API_KEY": "anthropic-secret",
         "OPENROUTER_API_KEY": "openrouter-secret",
+        "OPENCODE_API_KEY": "opencode-secret",
         "CURSOR_API_KEY": "cursor-secret",
     }
 
     codex = job_environment("codex", "codex", source)
     openrouter_claude = job_environment("openrouter", "claude-code", source)
     openrouter_cursor = job_environment("openrouter", "cursor", source)
+    opencode_claude = job_environment("opencode", "claude-code", source)
+    opencode_codex = job_environment("opencode", "codex", source)
 
     assert codex == {"PATH": "/bin", "OPENAI_API_KEY": "openai-secret", "CODEX_API_KEY": "openai-secret"}
     assert openrouter_claude == {"PATH": "/bin", "OPENROUTER_API_KEY": "openrouter-secret"}
@@ -124,6 +146,8 @@ def test_job_environment_only_includes_selected_provider_and_harness_credentials
         "OPENROUTER_API_KEY": "openrouter-secret",
         "CURSOR_API_KEY": "cursor-secret",
     }
-    for env in (codex, openrouter_claude, openrouter_cursor):
+    assert opencode_claude == {"PATH": "/bin", "OPENCODE_API_KEY": "opencode-secret"}
+    assert opencode_codex == {"PATH": "/bin", "OPENCODE_API_KEY": "opencode-secret"}
+    for env in (codex, openrouter_claude, openrouter_cursor, opencode_claude, opencode_codex):
         assert "DATABASE_URL" not in env
         assert "GITHUB_TOKEN" not in env

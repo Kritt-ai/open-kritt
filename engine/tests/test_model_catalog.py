@@ -14,6 +14,7 @@ from open_kritt_engine.model_catalog import (
     codex_is_configured,
     fetch_anthropic_models,
     fetch_codex_models,
+    fetch_opencode_models,
     fetch_openrouter_models,
     normalize_catalog_models,
 )
@@ -385,6 +386,78 @@ def test_fetch_openrouter_models_rejects_oversized_or_invalid_responses(monkeypa
         fetch_openrouter_models("openrouter-test-key", 2)
 
 
+def _opencode_model(model_id):
+    return {"id": model_id, "object": "model", "created": 1785085813, "owned_by": "opencode"}
+
+
+def test_fetch_opencode_models_filters_to_supported_model_families(monkeypatch):
+    requests = []
+
+    def fake_urlopen(request, timeout):
+        requests.append((request, timeout))
+        entries = [
+            _opencode_model("claude-opus-5"),
+            _opencode_model("gpt-5.1-codex"),
+            _opencode_model("qwen3.7-max"),
+            _opencode_model("grok-4.5"),
+            _opencode_model("deepseek-v4-pro"),
+            _opencode_model("glm-5.2"),
+        ]
+        return io.BytesIO(json.dumps({"object": "list", "data": entries}).encode("utf-8"))
+
+    monkeypatch.setattr(model_catalog, "urlopen", fake_urlopen)
+    models, default_model = fetch_opencode_models("opencode-test-key", 2)
+
+    assert [model["id"] for model in models] == ["claude-opus-5", "gpt-5.1-codex", "qwen3.7-max"]
+    assert default_model == "gpt-5.1-codex"
+    assert next(model for model in models if model["id"] == "gpt-5.1-codex")["isDefault"] is True
+    assert next(model for model in models if model["id"] == "claude-opus-5")["thinkingEfforts"] == [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+    ]
+    assert next(model for model in models if model["id"] == "qwen3.7-max")["thinkingEfforts"] == ["default"]
+    request, timeout = requests[0]
+    assert request.full_url == "https://opencode.ai/zen/v1/models"
+    assert request.get_header("Authorization") == "Bearer opencode-test-key"
+    assert timeout == 2
+
+
+def test_fetch_opencode_models_rejects_oversized_or_invalid_responses(monkeypatch):
+    monkeypatch.setattr(model_catalog, "MAX_HTTP_CATALOG_BYTES", 32)
+    monkeypatch.setattr(
+        model_catalog,
+        "urlopen",
+        lambda *_args, **_kwargs: io.BytesIO(b'{"data":[{"id":"gpt-5.1-codex","padding":"too large"}]}'),
+    )
+    with pytest.raises(model_catalog.ModelCatalogError, match="response was too large"):
+        fetch_opencode_models("opencode-test-key", 2)
+
+    monkeypatch.setattr(model_catalog, "MAX_HTTP_CATALOG_BYTES", 1024)
+    monkeypatch.setattr(model_catalog, "urlopen", lambda *_args, **_kwargs: io.BytesIO(b"not-json"))
+    with pytest.raises(model_catalog.ModelCatalogError, match="Could not read the OpenCode Zen model catalog"):
+        fetch_opencode_models("opencode-test-key", 2)
+
+
+def test_refresher_never_persists_opencode_failure_details():
+    db = FakeDatabase()
+    secret = "opencode-secret"
+    refresher = ModelCatalogRefresher(
+        db,
+        env={"OPENCODE_API_KEY": secret},
+        fetch_opencode=lambda: (_ for _ in ()).throw(RuntimeError(f"upstream rejected {secret}")),
+    )
+
+    assert refresher.refresh() == {"opencode": False}
+    assert db.catalogs == []
+    assert db.errors == [
+        {"provider": "opencode", "error": "Unable to refresh the provider model catalog."},
+    ]
+    assert secret not in json.dumps(db.errors)
+
+
 def test_refresher_persists_only_configured_provider_catalogs():
     db = FakeDatabase()
     codex_models = [{"id": "gpt-5-codex", "label": "GPT-5 Codex", "thinkingEfforts": [], "isDefault": True}]
@@ -392,26 +465,32 @@ def test_refresher_persists_only_configured_provider_catalogs():
     openrouter_models = [
         {"id": "vendor/code-model", "label": "Code Model", "thinkingEfforts": ["medium"], "isDefault": True}
     ]
+    opencode_models = [
+        {"id": "gpt-5.1-codex", "label": "gpt-5.1-codex", "thinkingEfforts": ["default"], "isDefault": True}
+    ]
     refresher = ModelCatalogRefresher(
         db,
         env={
             "CODEX_API_KEY": "codex-key",
             "ANTHROPIC_API_KEY": "anthropic-key",
             "OPENROUTER_API_KEY": "openrouter-key",
+            "OPENCODE_API_KEY": "opencode-key",
         },
         fetch_codex=lambda: (codex_models, "gpt-5-codex"),
         fetch_anthropic=lambda: (claude_models, "claude-sonnet-4"),
         fetch_openrouter=lambda: (openrouter_models, "vendor/code-model"),
+        fetch_opencode=lambda: (opencode_models, "gpt-5.1-codex"),
     )
 
-    assert refresher.refresh() == {"codex": True, "claude": True, "openrouter": True}
+    assert refresher.refresh() == {"codex": True, "claude": True, "openrouter": True, "opencode": True}
     assert db.catalogs == [
         {"provider": "codex", "models": codex_models, "default_model": "gpt-5-codex"},
         {"provider": "claude", "models": claude_models, "default_model": "claude-sonnet-4"},
         {"provider": "openrouter", "models": openrouter_models, "default_model": "vendor/code-model"},
+        {"provider": "opencode", "models": opencode_models, "default_model": "gpt-5.1-codex"},
     ]
     assert db.errors == []
-    assert [conn.commits for conn in db.connections] == [1, 1, 1]
+    assert [conn.commits for conn in db.connections] == [1, 1, 1, 1]
 
 
 def test_refresher_preserves_existing_catalog_on_provider_failure():

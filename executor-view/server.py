@@ -315,7 +315,7 @@ def internal_request_path_allowed(method, path):
         method == "GET"
         and len(parts) == 3
         and parts[:2] == ["api", "accounts"]
-        and parts[2] in {"codex", "claude", "openrouter"}
+        and parts[2] in {"codex", "claude", "openrouter", "opencode"}
     ):
         return True
     return (
@@ -741,6 +741,7 @@ def accounts_for_state(force=False):
         empty_codex_accounts(),
         empty_claude_accounts(),
         fetch_openrouter_accounts(force=False),
+        fetch_opencode_accounts(force=False),
         fetched=False,
     )
 
@@ -1220,17 +1221,22 @@ def fetch_accounts(force=False):
         codex = fetch_codex_accounts(force=True)
         claude = fetch_claude_accounts(force=True)
         openrouter = fetch_openrouter_accounts(force=True)
-        data = build_account_overview(codex, claude, openrouter, fetched=True)
+        opencode = fetch_opencode_accounts(force=True)
+        data = build_account_overview(codex, claude, openrouter, opencode, fetched=True)
         ACCOUNT_OVERVIEW_CACHE["data"] = data
         ACCOUNT_OVERVIEW_CACHE["expires_at"] = now + ACCOUNT_OVERVIEW_CACHE_SECONDS
         return data
     codex = fetch_codex_accounts(force=force)
     claude = fetch_claude_accounts(force=force)
     openrouter = fetch_openrouter_accounts(force=force)
-    data = build_account_overview(codex, claude, openrouter, fetched=True)
+    opencode = fetch_opencode_accounts(force=force)
+    data = build_account_overview(codex, claude, openrouter, opencode, fetched=True)
     ACCOUNT_OVERVIEW_CACHE["data"] = data
     ACCOUNT_OVERVIEW_CACHE["expires_at"] = now + ACCOUNT_OVERVIEW_CACHE_SECONDS
     return data
+
+
+ACCOUNT_ONLY_STALE_PROVIDERS = {"codex", "claude"}
 
 
 def fetch_account_provider(kind, force=False):
@@ -1238,6 +1244,7 @@ def fetch_account_provider(kind, force=False):
         "codex": fetch_codex_accounts,
         "claude": fetch_claude_accounts,
         "openrouter": fetch_openrouter_accounts,
+        "opencode": fetch_opencode_accounts,
     }
     fetcher = fetchers.get(kind)
     if not fetcher:
@@ -1259,6 +1266,10 @@ def build_account_provider(kind, data):
             "OpenRouter",
             "Verified OpenRouter key status, credit usage, limits, and masked metadata.",
         ),
+        "opencode": (
+            "OpenCode Zen",
+            "OpenCode Zen API key configuration status.",
+        ),
     }
     label, description = metadata[kind]
     return {
@@ -1268,17 +1279,18 @@ def build_account_provider(kind, data):
         "active": data.get("active", 0),
         "total": data.get("total", 0),
         "limited": data.get("limited", 0),
-        "stale": data.get("stale", 0) if kind != "openrouter" else 0,
+        "stale": data.get("stale", 0) if kind in ACCOUNT_ONLY_STALE_PROVIDERS else 0,
         "accounts": data.get("accounts", []),
         "configuredRaw": data.get("configuredRaw"),
     }
 
 
-def build_account_overview(codex, claude, openrouter, fetched=True):
+def build_account_overview(codex, claude, openrouter, opencode, fetched=True):
     providers = [
         build_account_provider("codex", codex),
         build_account_provider("claude", claude),
         build_account_provider("openrouter", openrouter),
+        build_account_provider("opencode", opencode),
     ]
     return {
         "generatedAt": datetime.now(timezone.utc),
@@ -1298,6 +1310,7 @@ def build_account_overview(codex, claude, openrouter, fetched=True):
         "codex": codex,
         "claude": claude,
         "openrouter": openrouter,
+        "opencode": opencode,
         "providers": providers,
     }
 
@@ -1891,6 +1904,64 @@ def openrouter_base_details(model_provider):
     return details
 
 
+def empty_opencode_accounts():
+    return {
+        "generatedAt": datetime.now(timezone.utc),
+        "configuredRaw": "OPENCODE_API_KEY",
+        "active": 0,
+        "total": 0,
+        "limited": 0,
+        "accounts": [],
+    }
+
+
+def fetch_opencode_accounts(force=False):  # noqa: ARG001 - matches the other fetchers' shared call signature
+    # Unlike OpenRouter, OpenCode Zen does not publish a documented key-info
+    # endpoint, so this reports configuration status only, not live usage.
+    api_key = configured_secret("OPENCODE_API_KEY") or configured_secret(
+        "EXECUTOR_VIEW_OPENCODE_API_KEY"
+    )
+    if not api_key:
+        account = {
+            "provider": "OpenCode Zen",
+            "label": "OpenCode Zen API key",
+            "path": "OPENCODE_API_KEY",
+            "active": False,
+            "status": "missing key",
+            "statusKind": "missing",
+            "details": [],
+        }
+        return {
+            "generatedAt": datetime.now(timezone.utc),
+            "configuredRaw": "OPENCODE_API_KEY",
+            "active": 0,
+            "total": 0,
+            "limited": 0,
+            "accounts": [account],
+        }
+
+    details = []
+    add_detail(details, "OPENCODE_API_KEY", masked_secret(api_key), mono=True)
+    add_detail(details, "Key fingerprint", secret_fingerprint(api_key), mono=True)
+    account = {
+        "provider": "OpenCode Zen",
+        "label": "OpenCode Zen API key",
+        "path": "OPENCODE_API_KEY",
+        "active": True,
+        "status": "key configured",
+        "statusKind": "available",
+        "details": details,
+    }
+    return {
+        "generatedAt": datetime.now(timezone.utc),
+        "configuredRaw": "OPENCODE_API_KEY",
+        "active": 1,
+        "total": 1,
+        "limited": 0,
+        "accounts": [account],
+    }
+
+
 def openrouter_key_info_for_account(api_key, force=False):
     now = time.monotonic()
     credential = secret_fingerprint(api_key)
@@ -1962,13 +2033,20 @@ def fetch_openrouter_key_info(api_key):
         }
 
 
+MANAGED_ACCOUNT_PROVIDER_ENV_KEYS = {
+    "OPENROUTER_API_KEY": "openrouter",
+    "OPENCODE_API_KEY": "opencode",
+}
+
+
 def configured_secret(name):
-    if name == "OPENROUTER_API_KEY":
+    if name in MANAGED_ACCOUNT_PROVIDER_ENV_KEYS:
+        provider = MANAGED_ACCOUNT_PROVIDER_ENV_KEYS[name]
         state = managed_provider_credential_state()
-        managed = state["credentials"].get("openrouter")
+        managed = state["credentials"].get(provider)
         if managed:
             return managed
-        if "openrouter" in state["disabledEnvironmentProviders"]:
+        if provider in state["disabledEnvironmentProviders"]:
             return None
     value = os.getenv(name)
     value = value.strip() if isinstance(value, str) else ""
@@ -1986,19 +2064,21 @@ def managed_provider_credential_state():
     if not isinstance(payload, dict):
         return empty
 
+    known_providers = set(MANAGED_ACCOUNT_PROVIDER_ENV_KEYS.values())
     credentials = {}
     raw_credentials = payload.get("credentials")
     if isinstance(raw_credentials, dict):
-        value = raw_credentials.get("openrouter")
-        if isinstance(value, str) and value.strip():
-            credentials["openrouter"] = value.strip()
+        for provider in known_providers:
+            value = raw_credentials.get(provider)
+            if isinstance(value, str) and value.strip():
+                credentials[provider] = value.strip()
 
     raw_disabled = payload.get("disabledEnvironmentProviders")
     disabled = (
         {
             provider
             for provider in raw_disabled
-            if isinstance(provider, str) and provider == "openrouter"
+            if isinstance(provider, str) and provider in known_providers
         }
         if isinstance(raw_disabled, list)
         else set()
@@ -4345,7 +4425,7 @@ class Handler(BaseHTTPRequestHandler):
         if (
             len(parts) == 3
             and parts[:2] == ["api", "accounts"]
-            and parts[2] in {"codex", "claude", "openrouter"}
+            and parts[2] in {"codex", "claude", "openrouter", "opencode"}
         ):
             try:
                 query = parse_qs(parsed.query)

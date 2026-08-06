@@ -58,7 +58,7 @@ test('executor account integration loads each provider independently with the di
 
   assert.deepEqual(
     accounts.providers.map((provider) => provider.kind),
-    ['codex', 'claude', 'openrouter']
+    ['codex', 'claude', 'openrouter', 'opencode']
   );
   assert.deepEqual(
     requests.map((request) => request.url),
@@ -66,6 +66,7 @@ test('executor account integration loads each provider independently with the di
       'http://executor-view:8090/api/accounts/codex?refresh=1',
       'http://executor-view:8090/api/accounts/claude?refresh=1',
       'http://executor-view:8090/api/accounts/openrouter?refresh=1',
+      'http://executor-view:8090/api/accounts/opencode?refresh=1',
     ]
   );
   assert.ok(requests.every((request) => request.options.headers.Authorization === 'Bearer backend-only-token'));
