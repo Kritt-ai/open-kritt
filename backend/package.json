@@ -27,11 +27,11 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "eslint": "^10.7.0",
+    "eslint": "^10.8.0",
     "eslint-config-prettier": "^10.1.8",
-    "globals": "^17.7.0",
+    "globals": "^17.8.0",
     "pino-pretty": "^13.0.0",
-    "prettier": "^3.4.2",
+    "prettier": "^3.9.6",
     "prisma": "^5.22.0"
   }
 }
