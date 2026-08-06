@@ -291,3 +291,25 @@ export function normalizeOutputFormat(input) {
   }
   return out;
 }
+
+export function duplicateOutputFormatKeys(input) {
+  let value = input;
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(value)) return [];
+
+  const seen = new Set();
+  const duplicates = new Set();
+  for (const field of value) {
+    if (!field || typeof field !== 'object' || !('key' in field) || !field.key) continue;
+    const key = `${field.key}`;
+    if (seen.has(key)) duplicates.add(key);
+    else seen.add(key);
+  }
+  return [...duplicates];
+}

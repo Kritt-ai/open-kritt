@@ -304,6 +304,25 @@ test('validateWorkflow enforces canonical terminal vulnerability field types', (
   }
 });
 
+test('validateWorkflow rejects duplicate output keys before array formats are normalized', () => {
+  const outputFormat = [
+    ...Object.entries(terminalOutput).map(([key, type]) => ({ key, type })),
+    { key: 'confidence', type: 'string' },
+    { key: 'confidence', type: 'number' },
+  ];
+
+  assert.throws(
+    () => validateWorkflow(workflowWithTerminal(outputFormat)),
+    (error) =>
+      error instanceof ValidationError &&
+      error.errors.some(
+        (item) =>
+          item.field === 'levels[0].outputFormat' &&
+          item.message === '"confidence" is used more than once in this output format.'
+      )
+  );
+});
+
 test('validateWorkflow clears individual ancestor keys at a consumesAll boundary', () => {
   const workflow = {
     name: 'batched-workflow',
@@ -387,6 +406,22 @@ test('validatePostScript enforces reserved output conventions', () => {
       outputFormat: { _reserved_report: 'string', _reserved_poc: 'string', _chip_severity: 'string' },
     }).outputFormat,
     { _reserved_report: 'string', _reserved_poc: 'string', _chip_severity: 'string' }
+  );
+});
+
+test('validatePostScript rejects duplicate output keys before array formats are normalized', () => {
+  const outputFormat = JSON.stringify([
+    { key: '_chip_risk', type: 'string' },
+    { key: '_chip_risk', type: 'string' },
+  ]);
+
+  assert.throws(
+    () => validatePostScript({ name: 'duplicate-output', content: 'Analyze {{summary}}.', outputFormat }),
+    (error) =>
+      error instanceof ValidationError &&
+      error.errors.some(
+        (item) => item.field === 'outputFormat' && item.message === '"_chip_risk" is a duplicate output key.'
+      )
   );
 });
 
