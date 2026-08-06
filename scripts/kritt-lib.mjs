@@ -696,8 +696,13 @@ async function askLine(question, io) {
 }
 
 async function askSecret(question, io) {
+  // Some interactive terminals — notably Git Bash / MSYS on Windows — expose a
+  // stdin whose isTTY is undefined and cannot enter raw mode. Rather than crashing
+  // setup (issue #55), fall back to a visible line prompt so the value can still be
+  // entered, warning the user first that the input will not be hidden.
   if (!io.input.isTTY || typeof io.input.setRawMode !== 'function') {
-    throw new Error('Secret entry requires an interactive terminal.');
+    write(io, 'Warning: this terminal cannot hide input; the value will be visible as you type.');
+    return askLine(question, io);
   }
 
   io.output.write(question);
@@ -734,7 +739,7 @@ async function askSecret(question, io) {
   });
 }
 
-function createPrompter(io) {
+export function createPrompter(io) {
   return {
     ask: (question) => askLine(question, io),
     secret: (question) => askSecret(question, io),
