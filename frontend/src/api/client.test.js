@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { api, resolveApiBase } from './client.js';
+import { api, attachmentFilename, resolveApiBase } from './client.js';
 
 describe('resolveApiBase', () => {
   it('uses same-origin requests when no API base is configured', () => {
@@ -196,6 +196,41 @@ describe('scan lifecycle API', () => {
     }
     expect(request.url).toBe('/api/scans/58');
     expect(request.options.method).toBe('DELETE');
+  });
+
+  it('downloads a completed scan finding archive with the server filename', async () => {
+    const originalFetch = globalThis.fetch;
+    let request;
+    const blob = new Blob(['zip']);
+    globalThis.fetch = async (url, options) => {
+      request = { url, options };
+      return {
+        ok: true,
+        status: 200,
+        blob: async () => blob,
+        headers: new Headers({ 'Content-Disposition': 'attachment; filename="protocol-scan-58-findings.zip"' }),
+      };
+    };
+    let result;
+    try {
+      result = await api.exportScanFindings('58');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    expect(request.url).toBe('/api/scans/58/export');
+    expect(request.options.cache).toBe('no-store');
+    expect(result).toEqual({ blob, filename: 'protocol-scan-58-findings.zip' });
+  });
+});
+
+describe('attachmentFilename', () => {
+  it('supports encoded filenames and strips any archive path', () => {
+    expect(attachmentFilename("attachment; filename*=UTF-8''Protocol%20findings.zip")).toBe('Protocol findings.zip');
+    expect(attachmentFilename('attachment; filename="../unsafe/findings.zip"')).toBe('findings.zip');
+  });
+
+  it('falls back when the header has no filename', () => {
+    expect(attachmentFilename('', 'scan-findings.zip')).toBe('scan-findings.zip');
   });
 });
 

@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",
+    "archiver": "8.0.0",
     "cors": "^2.8.5",
     "express": "^5.2.1",
     "pino": "^10.3.1",

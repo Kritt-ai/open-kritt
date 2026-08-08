@@ -46,6 +46,8 @@ over their prompts, workflows, model providers, and infrastructure.
   or Claude Code.
 - **Verify findings** — use post-scripts to validate issues, build proofs of concept, and
   produce reports.
+- **Export scan results** — package canonical findings, structured data, post-processing
+  output, reports, and proofs of concept in one ZIP archive.
 - **Prioritize results** — apply custom severity rankers, a consistent finding schema,
   and automatic de-duplication.
 - **Bring your own model access** — use a Codex login or connect through OpenAI,

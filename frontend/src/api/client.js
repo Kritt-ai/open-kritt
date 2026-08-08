@@ -78,6 +78,52 @@ async function request(path, options = {}) {
   return data;
 }
 
+function safeAttachmentFilename(value, fallback) {
+  const filename = [...`${value || ''}`]
+    .filter((character) => {
+      const code = character.charCodeAt(0);
+      return code > 31 && code !== 127;
+    })
+    .join('')
+    .split(/[\\/]/)
+    .pop()
+    .trim();
+  return filename || fallback;
+}
+
+export function attachmentFilename(contentDisposition, fallback = 'download.zip') {
+  const header = `${contentDisposition || ''}`;
+  const encoded = header.match(/filename\*\s*=\s*UTF-8''([^;]+)/i)?.[1];
+  if (encoded) {
+    try {
+      return safeAttachmentFilename(decodeURIComponent(encoded.trim()), fallback);
+    } catch {
+      // Fall through to the plain filename parameter.
+    }
+  }
+  const quoted = header.match(/filename\s*=\s*"((?:[^"\\]|\\.)*)"/i)?.[1];
+  if (quoted) return safeAttachmentFilename(quoted.replace(/\\(["\\])/g, '$1'), fallback);
+  const plain = header.match(/filename\s*=\s*([^;]+)/i)?.[1];
+  return safeAttachmentFilename(plain?.trim(), fallback);
+}
+
+async function download(path, fallbackFilename) {
+  const res = await fetch(`${BASE}/api${path}`, { cache: 'no-store' });
+  if (!res.ok) {
+    let data = null;
+    try {
+      data = await res.json();
+    } catch {
+      /* no JSON error body */
+    }
+    throw new ApiError(data?.error || `Request failed (${res.status})`, res.status, data?.errors);
+  }
+  return {
+    blob: await res.blob(),
+    filename: attachmentFilename(res.headers.get('Content-Disposition'), fallbackFilename),
+  };
+}
+
 export const api = {
   // overview
   overview: () => request('/overview'),
@@ -101,6 +147,7 @@ export const api = {
   },
   scan: (id) => request(`/scans/${id}`),
   scanVulnerabilities: (id) => request(`/scans/${id}/vulnerabilities`),
+  exportScanFindings: (id) => download(`/scans/${id}/export`, `scan-${id}-findings.zip`),
   createScan: (body) => request('/scans', { method: 'POST', body }),
   updateScan: (id, body) => request(`/scans/${id}`, { method: 'PATCH', body }),
   // model providers currently configured for the engine

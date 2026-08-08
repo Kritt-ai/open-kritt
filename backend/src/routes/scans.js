@@ -1,4 +1,5 @@
 import { Prisma } from '@prisma/client';
+import { ZipArchive } from 'archiver';
 import { Router } from 'express';
 import { prisma } from '../db.js';
 import {
@@ -17,6 +18,7 @@ import { lockWorkflowForScan } from '../lib/workflowLocks.js';
 import { lockPostScriptForScan } from '../lib/postScriptLocks.js';
 import { lockAgentSkillForScan } from '../lib/agentSkillLocks.js';
 import { lockScanForMutation } from '../lib/scanLocks.js';
+import { createFindingExport, findingExportAvailability, FindingExportTooLargeError } from '../lib/findingExport.js';
 
 const router = Router();
 const DELETABLE_SCAN_STATUSES = new Set(['completed', 'stopped', 'failed', 'paused']);
@@ -99,6 +101,39 @@ export async function deleteScanOwnedData(tx, scanId) {
   await tx.vulnerability.deleteMany({ where: { scanId } });
   await tx.stepResult.deleteMany({ where: { scanId } });
   await tx.scan.delete({ where: { id: scanId } });
+}
+
+export async function serializedScanVulnerabilities(scanId, { includeDuplicates = false, db = prisma } = {}) {
+  const allVulns = await db.vulnerability.findMany({
+    where: { scanId },
+    orderBy: [{ rank: 'asc' }, { id: 'asc' }],
+  });
+  const vulns = includeDuplicates
+    ? allVulns
+    : allVulns.filter((vulnerability) => vulnerability.dedupeIsCanonical !== false);
+  const enrichments = await db.vulnerabilityEnrichment.findMany({
+    where: { scanId },
+    orderBy: [{ id: 'asc' }],
+  });
+  const enrichmentsByVulnerability = new Map();
+  for (const enrichment of enrichments) {
+    const key = enrichment.vulnerabilityId.toString();
+    if (!enrichmentsByVulnerability.has(key)) enrichmentsByVulnerability.set(key, []);
+    enrichmentsByVulnerability.get(key).push(enrichment);
+  }
+  const duplicateIdsByCanonical = new Map();
+  for (const vulnerability of allVulns) {
+    if (vulnerability.dedupeIsCanonical !== false || !vulnerability.dedupeCanonicalId) continue;
+    const key = vulnerability.dedupeCanonicalId.toString();
+    if (!duplicateIdsByCanonical.has(key)) duplicateIdsByCanonical.set(key, []);
+    duplicateIdsByCanonical.get(key).push(vulnerability.id);
+  }
+  return vulns.map((vulnerability) =>
+    serializeVulnerability(vulnerability, {
+      enrichments: enrichmentsByVulnerability.get(vulnerability.id.toString()) || [],
+      duplicateIds: duplicateIdsByCanonical.get(vulnerability.id.toString()) || [],
+    })
+  );
 }
 
 export async function lockScanConfigurationResources(tx, { workflowId, postScriptIds, agentSkillIds }) {
@@ -356,37 +391,53 @@ router.get('/:id/vulnerabilities', async (req, res, next) => {
     const scan = await prisma.scan.findUnique({ where: { id } });
     if (!scan) return res.status(404).json({ error: 'Scan not found.' });
     const includeDuplicates = req.query.includeDuplicates === '1' || req.query.includeDuplicates === 'true';
-    const allVulns = await prisma.vulnerability.findMany({
-      where: { scanId: id },
-      orderBy: [{ rank: 'asc' }, { id: 'asc' }],
-    });
-    const vulns = includeDuplicates ? allVulns : allVulns.filter((v) => v.dedupeIsCanonical !== false);
-    const enrichments = await prisma.vulnerabilityEnrichment.findMany({
-      where: { scanId: id },
-      orderBy: [{ id: 'asc' }],
-    });
-    const enrichmentsByVulnerability = new Map();
-    for (const e of enrichments) {
-      const key = e.vulnerabilityId.toString();
-      if (!enrichmentsByVulnerability.has(key)) enrichmentsByVulnerability.set(key, []);
-      enrichmentsByVulnerability.get(key).push(e);
-    }
-    const duplicateIdsByCanonical = new Map();
-    for (const v of allVulns) {
-      if (v.dedupeIsCanonical !== false || !v.dedupeCanonicalId) continue;
-      const key = v.dedupeCanonicalId.toString();
-      if (!duplicateIdsByCanonical.has(key)) duplicateIdsByCanonical.set(key, []);
-      duplicateIdsByCanonical.get(key).push(v.id);
-    }
-    res.json(
-      vulns.map((v) =>
-        serializeVulnerability(v, {
-          enrichments: enrichmentsByVulnerability.get(v.id.toString()) || [],
-          duplicateIds: duplicateIdsByCanonical.get(v.id.toString()) || [],
-        })
-      )
-    );
+    res.json(await serializedScanVulnerabilities(id, { includeDuplicates }));
   } catch (e) {
+    next(e);
+  }
+});
+
+// GET /api/scans/:id/export — complete canonical finding package for a completed scan.
+router.get('/:id/export', async (req, res, next) => {
+  try {
+    const id = BigInt(req.params.id);
+    const scan = await prisma.scan.findUnique({ where: { id } });
+    if (!scan) return res.status(404).json({ error: 'Scan not found.' });
+
+    const [assembledScan, findings] = await Promise.all([assembleScan(scan), serializedScanVulnerabilities(id)]);
+    const availability = findingExportAvailability(assembledScan, findings.length);
+    if (!availability.ready) return res.status(409).json({ error: availability.message });
+
+    const bundle = createFindingExport(assembledScan, findings);
+    const archiveDate = new Date(assembledScan.updatedAt || Date.now());
+    const archive = new ZipArchive({ zlib: { level: 6 } });
+    archive.on('warning', (warning) => {
+      if (warning.code !== 'ENOENT' && !res.destroyed) res.destroy(warning);
+    });
+    archive.on('error', (archiveError) => {
+      if (!res.destroyed) res.destroy(archiveError);
+    });
+    req.on('aborted', () => archive.abort());
+
+    res.status(200);
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${bundle.filename}"`);
+    res.setHeader('Cache-Control', 'no-store');
+    archive.pipe(res);
+    for (const file of bundle.files) {
+      archive.append(file.content, {
+        name: `${bundle.root}/${file.path}`,
+        date: archiveDate,
+        mode: 0o644,
+      });
+    }
+    try {
+      await archive.finalize();
+    } catch (archiveError) {
+      if (!res.destroyed) res.destroy(archiveError);
+    }
+  } catch (e) {
+    if (e instanceof FindingExportTooLargeError) return res.status(413).json({ error: e.message });
     next(e);
   }
 });

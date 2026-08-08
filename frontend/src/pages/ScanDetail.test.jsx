@@ -12,6 +12,7 @@ import {
   runSettingsDraft,
   runSettingsPayload,
   scanActions,
+  scanFindingExportAvailability,
   ScanStatusPanel,
 } from './ScanDetail.jsx';
 
@@ -206,6 +207,18 @@ describe('scan lifecycle actions', () => {
     expect(scanActions('completed')).toMatchObject({
       canResume: false,
       canDelete: true,
+    });
+  });
+
+  it('exports findings only after post-processing completes', () => {
+    expect(scanFindingExportAvailability({ status: 'completed', findings: 2 }).ready).toBe(true);
+    expect(scanFindingExportAvailability({ status: 'post_processing', findings: 2 })).toMatchObject({
+      ready: false,
+      message: expect.stringContaining('post-processing'),
+    });
+    expect(scanFindingExportAvailability({ status: 'completed', findings: 0 })).toMatchObject({
+      ready: false,
+      message: expect.stringContaining('no findings'),
     });
   });
 });
