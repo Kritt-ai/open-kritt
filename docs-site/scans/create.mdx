@@ -42,7 +42,8 @@ Then fill in or review each section:
   <Step title="Model and harness">
     The default [model, provider, harness, and thinking effort](/scans/model-and-harness)
     to run with. Keep one model for the whole workflow, or customize the complete tuple
-    for each workflow depth.
+    for each workflow depth. Post-processing can use the scan model or its own complete
+    model tuple.
   </Step>
   <Step title="Skills, post-scripts, rankers">
     Attach [skills](/scans/skills), [post-scripts](/scans/post-scripts), and
@@ -92,7 +93,11 @@ The create body accepts these fields:
 | `model_provider` | Yes | `codex`, `claude`, or `openrouter`. |
 | `harness` | Yes | Supported values are `codex` and `claude-code`; it must be compatible with the provider. |
 | `thinking_effort` | No | Model/harness-specific: `default`, `low`, `medium`, `high`, `xhigh`, `max`, or `ultra`; defaults to `medium`. |
-| `model_overrides` | No | Object keyed by workflow depth. Each value is a complete `{ "model", "model_provider", "harness", "thinking_effort" }` tuple. Missing depths use the top-level tuple; post-processing always uses the top-level tuple. |
+| `post_processing_model` | No | Independent model ID for deduplication, ranking, and post-scripts. Omit it to use the top-level scan model. |
+| `post_processing_model_provider` | With `post_processing_model` | Provider for the independent post-processing model. |
+| `post_processing_harness` | With `post_processing_model` | Compatible harness for the independent post-processing model. |
+| `post_processing_thinking_effort` | No | Independent effort for post-processing. It applies to either the scan model or the independent post-processing tuple. |
+| `model_overrides` | No | Object keyed by workflow depth. Each value is a complete `{ "model", "model_provider", "harness", "thinking_effort" }` tuple. Missing depths use the top-level tuple. |
 | `jobLimit` | No | Positive whole-number cap on logical workflow and post-processing model jobs. Internal retries do not consume another job. Omit or use `null` for unlimited. |
 | `severity_ranker` | Yes | Non-empty combined Markdown ranking rules, not a ranker ID. |
 | `extra` | As required by selected prompts | Object containing every `{{extra.<key>}}` referenced by the selected workflow or post-scripts. Unknown keys are discarded. |

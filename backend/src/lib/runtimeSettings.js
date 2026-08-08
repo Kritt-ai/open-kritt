@@ -74,6 +74,31 @@ export const RUNTIME_SETTING_DEFINITIONS = Object.freeze({
     type: 'boolean',
     apply: 'live',
   }),
+  memoryReserveGb: Object.freeze({
+    envKey: 'ENGINE_MEMORY_RESERVE_GB',
+    defaultValue: 2,
+    min: 0,
+    max: 1024,
+    step: 0.1,
+    type: 'number',
+    apply: 'live',
+  }),
+  scanRunnerMemoryMb: Object.freeze({
+    envKey: 'ENGINE_SCAN_RUNNER_MEMORY_MB',
+    defaultValue: 1536,
+    min: 0,
+    max: 1048576,
+    recommendedMax: 4096,
+    apply: 'live',
+  }),
+  scanRunnerMemoryReservationMb: Object.freeze({
+    envKey: 'ENGINE_SCAN_RUNNER_MEMORY_RESERVATION_MB',
+    defaultValue: 1536,
+    min: 0,
+    max: 1048576,
+    recommendedMax: 4096,
+    apply: 'live',
+  }),
   workspaceSetupConcurrency: Object.freeze({
     envKey: 'ENGINE_WORKSPACE_SETUP_CONCURRENCY',
     defaultValue: 2,
@@ -195,7 +220,10 @@ export function validateRuntimeSettingsPatch(body) {
 
   for (const key of Object.keys(body)) {
     if (!Object.prototype.hasOwnProperty.call(RUNTIME_SETTING_DEFINITIONS, key)) {
-      errors.push({ field: key, message: 'This runtime setting is not supported.' });
+      errors.push({
+        field: key,
+        message: 'This runtime setting is not supported.',
+      });
       continue;
     }
     const definition = RUNTIME_SETTING_DEFINITIONS[key];
@@ -240,7 +268,10 @@ export function validateRuntimeSettingsPatch(body) {
   }
 
   if (Object.keys(body).length === 0) {
-    errors.push({ field: 'settings', message: 'Provide at least one setting to update.' });
+    errors.push({
+      field: 'settings',
+      message: 'Provide at least one setting to update.',
+    });
   }
   if (errors.length) throw new ValidationError(errors);
   return values;
@@ -259,12 +290,16 @@ export async function updateRuntimeSettings(
     Object.entries(values).map(([key, value]) => [RUNTIME_SETTING_DEFINITIONS[key].envKey, `${value}`])
   );
 
-  const runtimeUpdate = await updateEnvironmentFile(environmentUpdates, { environmentFilePath: runtimeConfigPath });
+  const runtimeUpdate = await updateEnvironmentFile(environmentUpdates, {
+    environmentFilePath: runtimeConfigPath,
+  });
   try {
     await updateEnvironmentFile(environmentUpdates, { environmentFilePath });
   } catch (error) {
     if (runtimeUpdate?.changed) {
-      await updateEnvironmentFile(runtimeUpdate.previous, { environmentFilePath: runtimeConfigPath }).catch(() => {});
+      await updateEnvironmentFile(runtimeUpdate.previous, {
+        environmentFilePath: runtimeConfigPath,
+      }).catch(() => {});
     }
     throw error;
   }

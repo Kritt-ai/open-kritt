@@ -41,6 +41,12 @@ def codex_usage(primary=2, secondary=None):
         "manualResetCredits": {
             "availableCount": 3,
             "applicableAvailableCount": 0,
+            "credits": [
+                {
+                    "title": "Full reset",
+                    "expiresAt": "2026-08-12T18:07:27.165161Z",
+                }
+            ],
         },
         "primary": {
             "usedPercent": primary,
@@ -525,6 +531,9 @@ class ExecutorViewSummaryTests(unittest.TestCase):
         class Response:
             status = 200
 
+            def __init__(self, payload):
+                self.payload = payload
+
             def __enter__(self):
                 return self
 
@@ -532,52 +541,93 @@ class ExecutorViewSummaryTests(unittest.TestCase):
                 return False
 
             def read(self, _limit):
-                return json.dumps(
+                return json.dumps(self.payload).encode()
+
+        usage_response = Response(
+            {
+                "email": "researcher@example.test",
+                "plan_type": "pro",
+                "rate_limit_reached_type": None,
+                "rate_limit": {
+                    "allowed": True,
+                    "primary_window": {
+                        "used_percent": 2,
+                        "limit_window_seconds": 604800,
+                        "reset_at": 1784637600,
+                    },
+                    "secondary_window": None,
+                },
+                "rate_limit_reset_credits": {
+                    "available_count": 3,
+                    "applicable_available_count": 1,
+                    "secret": "aggregate-secret-must-not-leak",
+                },
+            }
+        )
+        credits_response = Response(
+            {
+                "available_count": 3,
+                "credits": [
                     {
-                        "email": "researcher@example.test",
-                        "plan_type": "pro",
-                        "rate_limit_reached_type": None,
-                        "rate_limit": {
-                            "allowed": True,
-                            "primary_window": {
-                                "used_percent": 2,
-                                "limit_window_seconds": 604800,
-                                "reset_at": 1784637600,
-                            },
-                            "secondary_window": None,
-                        },
-                        "rate_limit_reset_credits": {
-                            "available_count": 3,
-                            "applicable_available_count": 1,
-                            "secret": "must-not-leak",
-                        },
-                    }
-                ).encode()
+                        "id": "credit-id-must-not-leak",
+                        "title": "Full reset",
+                        "expires_at": "2026-08-12T18:07:27.165161Z",
+                        "status": "available",
+                        "secret": "credit-secret-must-not-leak",
+                    },
+                    {
+                        "id": "used-credit-id-must-not-leak",
+                        "title": "Used reset",
+                        "expires_at": "2026-08-10T18:07:27Z",
+                        "status": "redeemed",
+                    },
+                ],
+            }
+        )
 
         with patch.object(
-            server.urlrequest, "urlopen", return_value=Response()
+            server.urlrequest,
+            "urlopen",
+            side_effect=[usage_response, credits_response],
         ) as urlopen:
             usage = server.fetch_codex_usage(
                 "unit-test-access-token", "unit-test-account-id"
             )
 
-        request = urlopen.call_args.args[0]
-        self.assertEqual(
-            request.get_header("Authorization"), "Bearer unit-test-access-token"
-        )
-        self.assertEqual(
-            request.get_header("Chatgpt-account-id"), "unit-test-account-id"
-        )
+        usage_request = urlopen.call_args_list[0].args[0]
+        credits_request = urlopen.call_args_list[1].args[0]
+        self.assertEqual(usage_request.full_url, server.CODEX_USAGE_URL)
+        self.assertEqual(credits_request.full_url, server.CODEX_RESET_CREDITS_URL)
+        for request in (usage_request, credits_request):
+            self.assertEqual(
+                request.get_header("Authorization"),
+                "Bearer unit-test-access-token",
+            )
+            self.assertEqual(
+                request.get_header("Chatgpt-account-id"),
+                "unit-test-account-id",
+            )
         self.assertEqual(usage["primary"]["usedPercent"], 2)
         self.assertEqual(usage["primary"]["windowMinutes"], 10080)
         self.assertEqual(usage["planType"], "pro")
         self.assertEqual(
             usage["manualResetCredits"],
-            {"availableCount": 3, "applicableAvailableCount": 1},
+            {
+                "availableCount": 3,
+                "applicableAvailableCount": 1,
+                "credits": [
+                    {
+                        "title": "Full reset",
+                        "expiresAt": server.parse_datetime(
+                            "2026-08-12T18:07:27.165161Z"
+                        ),
+                    }
+                ],
+            },
         )
-        self.assertNotIn(
-            "unit-test-access-token", json.dumps(usage, default=server.encode)
-        )
+        serialized = json.dumps(usage, default=server.encode)
+        self.assertNotIn("unit-test-access-token", serialized)
+        self.assertNotIn("must-not-leak", serialized)
 
     def test_forced_codex_usage_refresh_bypasses_a_fresh_cache_entry(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -740,7 +790,18 @@ class ExecutorViewSummaryTests(unittest.TestCase):
         self.assertEqual(account["rateLimits"]["source"], "Codex account usage API")
         self.assertEqual(
             account["rateLimits"]["manualResetCredits"],
-            {"availableCount": 3, "applicableAvailableCount": 0},
+            {
+                "availableCount": 3,
+                "applicableAvailableCount": 0,
+                "credits": [
+                    {
+                        "title": "Full reset",
+                        "expiresAt": server.parse_datetime(
+                            "2026-08-12T18:07:27.165161Z"
+                        ),
+                    }
+                ],
+            },
         )
         self.assertNotIn(
             "unit-test-access-token", json.dumps(account, default=server.encode)

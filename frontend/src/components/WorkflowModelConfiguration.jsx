@@ -3,7 +3,7 @@ import ModelConfiguration, {
   modelConfigurationForCatalog,
   modelConfigurationIsValid,
 } from './ModelConfiguration.jsx';
-import { thinkingEffortForModelChange, thinkingEffortsForModel } from '../lib/modelProviders.js';
+import { thinkingEffortsForModel } from '../lib/modelProviders.js';
 import {
   enableModelOverrides,
   modelOverridesDraft,
@@ -12,21 +12,44 @@ import {
   resolvedModelConfiguration,
 } from '../lib/modelOverrides.js';
 
+function postProcessingOverrideEnabled(value = {}) {
+  return Boolean(value.post_processing_model_override ?? value.postProcessingModelOverride);
+}
+
+export function postProcessingModelConfiguration(value = {}) {
+  const override = postProcessingOverrideEnabled(value);
+  return {
+    model: override ? (value.post_processing_model ?? value.postProcessingModel ?? value.model) : value.model,
+    model_provider: override
+      ? (value.post_processing_model_provider ?? value.postProcessingModelProvider ?? value.model_provider)
+      : value.model_provider,
+    harness: override ? (value.post_processing_harness ?? value.postProcessingHarness ?? value.harness) : value.harness,
+    thinking_effort:
+      value.post_processing_thinking_effort ?? value.postProcessingThinkingEffort ?? value.thinking_effort,
+  };
+}
+
 export function workflowModelConfigurationForCatalog(current, providers, catalog) {
   const base = modelConfigurationForCatalog(current, providers, catalog);
-  const postProcessingEfforts = thinkingEffortsForModel(
-    catalog,
-    base.model_provider,
-    base.model,
-    THINKING_EFFORTS,
-    base.harness
+  const postProcessingModelOverride = postProcessingOverrideEnabled(current);
+  const postProcessing = modelConfigurationForCatalog(
+    postProcessingModelOverride
+      ? postProcessingModelConfiguration({ ...current, post_processing_model_override: true })
+      : {
+          ...base,
+          thinking_effort:
+            current?.post_processing_thinking_effort ?? current?.postProcessingThinkingEffort ?? base.thinking_effort,
+        },
+    providers,
+    catalog
   );
   return {
     ...base,
-    post_processing_thinking_effort: thinkingEffortForModelChange(
-      current?.post_processing_thinking_effort ?? current?.postProcessingThinkingEffort ?? base.thinking_effort,
-      postProcessingEfforts
-    ),
+    post_processing_model_override: postProcessingModelOverride,
+    post_processing_model: postProcessing.model,
+    post_processing_model_provider: postProcessing.model_provider,
+    post_processing_harness: postProcessing.harness,
+    post_processing_thinking_effort: postProcessing.thinking_effort,
     model_overrides: normalizeModelOverrides(current?.model_overrides ?? current?.modelOverrides, (configuration) =>
       modelConfigurationForCatalog(configuration, providers, catalog)
     ),
@@ -35,16 +58,7 @@ export function workflowModelConfigurationForCatalog(current, providers, catalog
 
 export function workflowModelConfigurationIsValid(value, depths, providers, catalog) {
   if (!modelConfigurationIsValid(value, providers, catalog)) return false;
-  const postProcessingEfforts = thinkingEffortsForModel(
-    catalog,
-    value.model_provider,
-    value.model,
-    THINKING_EFFORTS,
-    value.harness
-  );
-  const postProcessingThinkingEffort =
-    value?.post_processing_thinking_effort ?? value?.postProcessingThinkingEffort ?? value?.thinking_effort;
-  if (!postProcessingEfforts.includes(postProcessingThinkingEffort)) return false;
+  if (!modelConfigurationIsValid(postProcessingModelConfiguration(value), providers, catalog)) return false;
   const overrides = modelOverridesDraft(value?.model_overrides ?? value?.modelOverrides);
   const allowedDepths = new Set(depths.map(String));
   if (Object.keys(overrides).some((depth) => !allowedDepths.has(depth))) return false;
@@ -81,15 +95,15 @@ export default function WorkflowModelConfiguration({
   const customized = Object.keys(overrides).length > 0;
   const canCustomize = depths.length > 0;
   const depthLabels = new Map(depthChips.map((chip) => [chip.depth, chip]));
+  const postProcessingModelOverride = postProcessingOverrideEnabled(value);
+  const postProcessingConfiguration = postProcessingModelConfiguration(value);
   const postProcessingEfforts = thinkingEffortsForModel(
     catalog,
-    value.model_provider,
-    value.model,
+    postProcessingConfiguration.model_provider,
+    postProcessingConfiguration.model,
     THINKING_EFFORTS,
-    value.harness
+    postProcessingConfiguration.harness
   );
-  const postProcessingThinkingEffort =
-    value?.post_processing_thinking_effort ?? value?.postProcessingThinkingEffort ?? value?.thinking_effort;
 
   const useSingleModel = () => onChange({ ...value, model_overrides: {} });
   const customizeByDepth = () =>
@@ -148,10 +162,8 @@ export default function WorkflowModelConfiguration({
         />
       </div>
 
-      <label
+      <div
         style={{
-          display: 'block',
-          maxWidth: 280,
           marginTop: 12,
           border: '1px solid var(--border)',
           borderRadius: 9,
@@ -160,30 +172,97 @@ export default function WorkflowModelConfiguration({
         }}
       >
         <span className="mono" style={{ display: 'block', fontSize: 10.5, color: 'var(--text-3)', marginBottom: 7 }}>
-          POST-PROCESSING THINKING EFFORT
+          POST-PROCESSING MODEL
         </span>
-        <select
-          className="mono"
-          value={postProcessingThinkingEffort}
-          disabled={disabled || postProcessingEfforts.length === 0}
-          onChange={(event) => onChange({ ...value, post_processing_thinking_effort: event.target.value })}
-          style={{
-            width: '100%',
-            height: 36,
-            padding: '0 10px',
-            borderRadius: 7,
-            border: '1px solid var(--border)',
-            background: 'var(--surface)',
-            color: 'var(--text)',
-          }}
+        <div
+          role="group"
+          aria-label="Post-processing model strategy"
+          style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}
         >
-          {postProcessingEfforts.map((effort) => (
-            <option key={effort} value={effort}>
-              {effort}
-            </option>
-          ))}
-        </select>
-      </label>
+          <button
+            type="button"
+            aria-pressed={!postProcessingModelOverride}
+            disabled={disabled}
+            onClick={() =>
+              onChange({
+                ...value,
+                post_processing_model_override: false,
+                post_processing_model: value.model,
+                post_processing_model_provider: value.model_provider,
+                post_processing_harness: value.harness,
+              })
+            }
+            style={modeButtonStyle(!postProcessingModelOverride, disabled)}
+          >
+            Use scan model
+          </button>
+          <button
+            type="button"
+            aria-pressed={postProcessingModelOverride}
+            disabled={disabled}
+            onClick={() =>
+              onChange({
+                ...value,
+                post_processing_model_override: true,
+                post_processing_model: postProcessingConfiguration.model,
+                post_processing_model_provider: postProcessingConfiguration.model_provider,
+                post_processing_harness: postProcessingConfiguration.harness,
+              })
+            }
+            style={modeButtonStyle(postProcessingModelOverride, disabled)}
+          >
+            Use different model
+          </button>
+        </div>
+
+        {postProcessingModelOverride ? (
+          <ModelConfiguration
+            value={postProcessingConfiguration}
+            onChange={(configuration) =>
+              onChange({
+                ...value,
+                post_processing_model_override: true,
+                post_processing_model: configuration.model,
+                post_processing_model_provider: configuration.model_provider,
+                post_processing_harness: configuration.harness,
+                post_processing_thinking_effort: configuration.thinking_effort,
+              })
+            }
+            providers={providers}
+            catalog={catalog}
+            catalogError={catalogError}
+            disabled={disabled}
+            showAvailabilityHelp={false}
+          />
+        ) : (
+          <label style={{ display: 'block', maxWidth: 280 }}>
+            <span className="mono" style={{ display: 'block', fontSize: 10, color: 'var(--text-3)', marginBottom: 6 }}>
+              THINKING EFFORT
+            </span>
+            <select
+              className="mono"
+              value={postProcessingConfiguration.thinking_effort}
+              disabled={disabled || postProcessingEfforts.length === 0}
+              onChange={(event) => onChange({ ...value, post_processing_thinking_effort: event.target.value })}
+              style={{
+                width: '100%',
+                height: 36,
+                padding: '0 10px',
+                borderRadius: 7,
+                border: '1px solid var(--border)',
+                background: 'var(--surface)',
+                color: 'var(--text)',
+              }}
+            >
+              {postProcessingEfforts.map((effort) => (
+                <option key={effort} value={effort}>
+                  {effort}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+      </div>
 
       {customized && (
         <div style={{ display: 'grid', gap: 12, marginTop: 12 }}>

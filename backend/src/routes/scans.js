@@ -177,6 +177,9 @@ export async function validateScanRuntimeUpdate(body, current, { assertAvailable
   if (Object.prototype.hasOwnProperty.call(runtime.data, 'postProcessingThinkingEffort')) {
     data.postProcessingThinkingEffort = runtime.data.postProcessingThinkingEffort;
   }
+  for (const key of ['postProcessingModel', 'postProcessingModelProvider', 'postProcessingHarness']) {
+    if (Object.prototype.hasOwnProperty.call(runtime.data, key)) data[key] = runtime.data[key];
+  }
   if (runtime.modelOverrides !== null) {
     await assertModelOverridesAvailable(runtime.modelOverrides, assertAvailable);
     data.modelOverrides = runtime.modelOverrides;
@@ -244,14 +247,28 @@ export async function patchScanIfPresent(tx, scanId, body, { assertAvailable, av
     assertAvailable: availabilityChecker,
     allowedDepths,
   });
-  if (Object.prototype.hasOwnProperty.call(runtimeData, 'postProcessingThinkingEffort')) {
-    data.configuration = {
+  const postProcessingConfigurationKeys = {
+    postProcessingModel: 'post_processing_model',
+    postProcessingModelProvider: 'post_processing_model_provider',
+    postProcessingHarness: 'post_processing_harness',
+    postProcessingThinkingEffort: 'post_processing_thinking_effort',
+  };
+  if (
+    Object.keys(postProcessingConfigurationKeys).some((key) => Object.prototype.hasOwnProperty.call(runtimeData, key))
+  ) {
+    const configuration = {
       ...(existing.configuration && typeof existing.configuration === 'object' && !Array.isArray(existing.configuration)
         ? existing.configuration
         : {}),
-      post_processing_thinking_effort: runtimeData.postProcessingThinkingEffort,
     };
-    delete runtimeData.postProcessingThinkingEffort;
+    for (const [runtimeKey, configurationKey] of Object.entries(postProcessingConfigurationKeys)) {
+      if (!Object.prototype.hasOwnProperty.call(runtimeData, runtimeKey)) continue;
+      const value = runtimeData[runtimeKey];
+      if (value === null) delete configuration[configurationKey];
+      else configuration[configurationKey] = value;
+      delete runtimeData[runtimeKey];
+    }
+    data.configuration = configuration;
   }
   Object.assign(data, runtimeData);
   if (Object.keys(data).length === 0) {
@@ -379,10 +396,7 @@ router.post('/', async (req, res, next) => {
   try {
     const valid = validateScan(req.body, { localNames: localRepoNames() });
     await assertModelSelectionAvailable(valid);
-    await assertModelSelectionAvailable({
-      ...valid,
-      thinkingEffort: valid.postProcessingThinkingEffort,
-    });
+    await assertSelectionAvailable(assertModelSelectionAvailable, valid.postProcessingSelection, 'post_processing');
     const activeScanCount = await prisma.scan.count({ where: { status: { in: ACTIVE_SCAN_STATUSES } } });
     const launchDecision = scanLaunchDecision(req.body, activeScanCount);
     if (launchDecision.kind === 'choice-required') {
@@ -531,6 +545,13 @@ router.post('/', async (req, res, next) => {
             post_script_ids: configuredPostScriptIds,
             agent_skill_ids: configuredAgentSkillIds,
             post_processing_thinking_effort: valid.postProcessingThinkingEffort,
+            ...(valid.postProcessingModelOverride
+              ? {
+                  post_processing_model: valid.postProcessingSelection.model,
+                  post_processing_model_provider: valid.postProcessingSelection.modelProvider,
+                  post_processing_harness: valid.postProcessingSelection.harness,
+                }
+              : {}),
           },
           model: valid.model,
           modelProvider: valid.modelProvider,

@@ -42,6 +42,9 @@ test('settings API exposes the whitelisted runtime settings', async () => {
       'codexFastMode',
       'minFreeStorageGb',
       'ignoreLowStorage',
+      'memoryReserveGb',
+      'scanRunnerMemoryMb',
+      'scanRunnerMemoryReservationMb',
       'workspaceSetupConcurrency',
       'retryCount',
       'harnessTimeoutSeconds',
@@ -62,7 +65,10 @@ test('runtime settings expose only whitelisted effective values and their source
 
   const result = await readRuntimeSettings({
     ...paths,
-    env: { ENGINE_HARNESS_TIMEOUT_SECONDS: '3600', ENGINE_MIN_FREE_STORAGE_GB: '23.5' },
+    env: {
+      ENGINE_HARNESS_TIMEOUT_SECONDS: '3600',
+      ENGINE_MIN_FREE_STORAGE_GB: '23.5',
+    },
   });
 
   assert.equal(result.settings.workerCount.value, 6);
@@ -89,6 +95,9 @@ test('runtime settings expose only whitelisted effective values and their source
   assert.equal(result.settings.ignoreLowStorage.value, false);
   assert.equal(result.settings.ignoreLowStorage.source, 'default');
   assert.equal(result.settings.ignoreLowStorage.type, 'boolean');
+  assert.equal(result.settings.memoryReserveGb.value, 2);
+  assert.equal(result.settings.scanRunnerMemoryMb.value, 1536);
+  assert.equal(result.settings.scanRunnerMemoryReservationMb.value, 1536);
   assert.equal(result.capabilities.perScanConcurrency.available, true);
   assert.doesNotMatch(JSON.stringify(result), /must-not-leak|secret\/account|GITHUB_TOKEN|OPENROUTER_API_KEY/);
 });
@@ -108,6 +117,9 @@ test('runtime setting updates apply live and persist without overwriting unrelat
       codexFastMode: true,
       minFreeStorageGb: 18.5,
       ignoreLowStorage: true,
+      memoryReserveGb: 2.5,
+      scanRunnerMemoryMb: 1792,
+      scanRunnerMemoryReservationMb: 768,
     },
     {
       ...paths,
@@ -127,6 +139,9 @@ test('runtime setting updates apply live and persist without overwriting unrelat
   assert.equal(runtimeValues.ENGINE_CODEX_FAST_MODE, 'true');
   assert.equal(runtimeValues.ENGINE_MIN_FREE_STORAGE_GB, '18.5');
   assert.equal(runtimeValues.ENGINE_IGNORE_LOW_STORAGE, 'true');
+  assert.equal(runtimeValues.ENGINE_MEMORY_RESERVE_GB, '2.5');
+  assert.equal(runtimeValues.ENGINE_SCAN_RUNNER_MEMORY_MB, '1792');
+  assert.equal(runtimeValues.ENGINE_SCAN_RUNNER_MEMORY_RESERVATION_MB, '768');
   assert.equal(runtimeValues.ENGINE_CODEX_HOME, '/account');
   assert.equal(projectValues.ENGINE_WORKER_COUNT, '5');
   assert.equal(projectValues.ENGINE_WORKERS_PER_ACCOUNT, '12');
@@ -136,6 +151,9 @@ test('runtime setting updates apply live and persist without overwriting unrelat
   assert.equal(projectValues.ENGINE_CODEX_FAST_MODE, 'true');
   assert.equal(projectValues.ENGINE_MIN_FREE_STORAGE_GB, '18.5');
   assert.equal(projectValues.ENGINE_IGNORE_LOW_STORAGE, 'true');
+  assert.equal(projectValues.ENGINE_MEMORY_RESERVE_GB, '2.5');
+  assert.equal(projectValues.ENGINE_SCAN_RUNNER_MEMORY_MB, '1792');
+  assert.equal(projectValues.ENGINE_SCAN_RUNNER_MEMORY_RESERVATION_MB, '768');
   assert.equal(projectValues.KEEP, 'value');
   assert.match(runtimeText, /^# live settings$/m);
   assert.match(projectText, /^# project settings$/m);
@@ -148,11 +166,19 @@ test('runtime setting updates apply live and persist without overwriting unrelat
   assert.equal(result.settings.codexFastMode.value, true);
   assert.equal(result.settings.minFreeStorageGb.value, 18.5);
   assert.equal(result.settings.ignoreLowStorage.value, true);
+  assert.equal(result.settings.memoryReserveGb.value, 2.5);
+  assert.equal(result.settings.scanRunnerMemoryMb.value, 1792);
+  assert.equal(result.settings.scanRunnerMemoryReservationMb.value, 768);
 });
 
 test('runtime setting validation rejects unknown, fractional, and out-of-range values', () => {
   assert.throws(
-    () => validateRuntimeSettingsPatch({ workerCount: 1.5, retryCount: 11, secret: 'value' }),
+    () =>
+      validateRuntimeSettingsPatch({
+        workerCount: 1.5,
+        retryCount: 11,
+        secret: 'value',
+      }),
     (error) => {
       assert.ok(error instanceof ValidationError);
       assert.deepEqual(
@@ -163,15 +189,29 @@ test('runtime setting validation rejects unknown, fractional, and out-of-range v
     }
   );
   assert.throws(() => validateRuntimeSettingsPatch({}), ValidationError);
-  assert.deepEqual(validateRuntimeSettingsPatch({ workerCount: '0', harnessTimeoutSeconds: 60 }), {
-    workerCount: 0,
-    harnessTimeoutSeconds: 60,
-  });
-  assert.deepEqual(validateRuntimeSettingsPatch({ autoscaleScanWorkersOnProviderCapacity: true }), {
-    autoscaleScanWorkersOnProviderCapacity: true,
-  });
+  assert.deepEqual(
+    validateRuntimeSettingsPatch({
+      workerCount: '0',
+      harnessTimeoutSeconds: 60,
+    }),
+    {
+      workerCount: 0,
+      harnessTimeoutSeconds: 60,
+    }
+  );
+  assert.deepEqual(
+    validateRuntimeSettingsPatch({
+      autoscaleScanWorkersOnProviderCapacity: true,
+    }),
+    {
+      autoscaleScanWorkersOnProviderCapacity: true,
+    }
+  );
   assert.throws(
-    () => validateRuntimeSettingsPatch({ autoscaleScanWorkersOnProviderCapacity: 'true' }),
+    () =>
+      validateRuntimeSettingsPatch({
+        autoscaleScanWorkersOnProviderCapacity: 'true',
+      }),
     ValidationError
   );
   assert.deepEqual(validateRuntimeSettingsPatch({ codexMaxSubagentsPerSession: 5 }), {
@@ -195,6 +235,21 @@ test('runtime setting validation rejects unknown, fractional, and out-of-range v
   assert.throws(() => validateRuntimeSettingsPatch({ ignoreLowStorage: 'true' }), ValidationError);
   assert.throws(() => validateRuntimeSettingsPatch({ minFreeStorageGb: 'not-a-number' }), ValidationError);
   assert.throws(() => validateRuntimeSettingsPatch({ minFreeStorageGb: 1025 }), ValidationError);
+  assert.deepEqual(
+    validateRuntimeSettingsPatch({
+      memoryReserveGb: '2.5',
+      scanRunnerMemoryMb: 1536,
+      scanRunnerMemoryReservationMb: 768,
+    }),
+    {
+      memoryReserveGb: 2.5,
+      scanRunnerMemoryMb: 1536,
+      scanRunnerMemoryReservationMb: 768,
+    }
+  );
+  assert.throws(() => validateRuntimeSettingsPatch({ memoryReserveGb: -1 }), ValidationError);
+  assert.throws(() => validateRuntimeSettingsPatch({ scanRunnerMemoryMb: 1.5 }), ValidationError);
+  assert.throws(() => validateRuntimeSettingsPatch({ scanRunnerMemoryReservationMb: 1.5 }), ValidationError);
 });
 
 test('invalid persisted values fall back safely and are flagged', async (t) => {

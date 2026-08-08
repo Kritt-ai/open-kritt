@@ -194,7 +194,14 @@ def test_engine_startup_syncs_explicit_env_without_disabling_live_edits(monkeypa
 
 
 def test_engine_uses_conservative_worker_default(monkeypatch, tmp_path):
-    for name in ("ENGINE_WORKER_COUNT", "ENGINE_WORKERS", "ENGINE_RUNTIME_CONFIG_PATH"):
+    for name in (
+        "ENGINE_WORKER_COUNT",
+        "ENGINE_WORKERS",
+        "ENGINE_RUNTIME_CONFIG_PATH",
+        "ENGINE_MEMORY_RESERVE_GB",
+        "ENGINE_SCAN_RUNNER_MEMORY_MB",
+        "ENGINE_SCAN_RUNNER_MEMORY_RESERVATION_MB",
+    ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("ENGINE_DATA_DIR", str(tmp_path))
 
@@ -206,6 +213,9 @@ def test_engine_uses_conservative_worker_default(monkeypatch, tmp_path):
     assert runtime_values["ENGINE_WORKERS_PER_ACCOUNT"] == "15"
     assert runtime_values["ENGINE_CODEX_FAST_MODE"] == "false"
     assert config.codex_fast_mode is False
+    assert runtime_values["ENGINE_MEMORY_RESERVE_GB"] == "2"
+    assert runtime_values["ENGINE_SCAN_RUNNER_MEMORY_MB"] == "1536"
+    assert runtime_values["ENGINE_SCAN_RUNNER_MEMORY_RESERVATION_MB"] == "1536"
     assert runtime_bool("ENGINE_AUTOSCALE_SCAN_WORKERS_ON_PROVIDER_CAPACITY", True, data_dir=str(tmp_path))
 
 

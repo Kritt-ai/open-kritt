@@ -137,6 +137,62 @@ export function validatePostProcessingThinkingEffort(value, { harness, fallback 
   return effort;
 }
 
+export function validatePostProcessingModelSelection(value = {}, fallback = {}) {
+  const selection = modelSelectionValidation({
+    model: value.model ?? fallback.model,
+    model_provider: value.modelProvider ?? value.model_provider ?? fallback.modelProvider ?? fallback.model_provider,
+    harness: value.harness ?? fallback.harness,
+    thinking_effort:
+      value.thinkingEffort ?? value.thinking_effort ?? fallback.thinkingEffort ?? fallback.thinking_effort,
+  });
+  if (selection.errors.length) {
+    const fields = {
+      model: 'post_processing_model',
+      model_provider: 'post_processing_model_provider',
+      harness: 'post_processing_harness',
+      thinking_effort: 'post_processing_thinking_effort',
+    };
+    throw new ValidationError(
+      selection.errors.map((item) => ({
+        ...item,
+        field: fields[item.field] || `post_processing_${item.field}`,
+      }))
+    );
+  }
+  return selection.normalized;
+}
+
+function postProcessingRuntimeInput(body = {}, configuration = {}) {
+  const config =
+    configuration && typeof configuration === 'object' && !Array.isArray(configuration) ? configuration : {};
+  return {
+    model:
+      body.post_processing_model ??
+      body.postProcessingModel ??
+      config.post_processing_model ??
+      config.postProcessingModel,
+    modelProvider:
+      body.post_processing_model_provider ??
+      body.postProcessingModelProvider ??
+      config.post_processing_model_provider ??
+      config.postProcessingModelProvider,
+    harness:
+      body.post_processing_harness ??
+      body.postProcessingHarness ??
+      config.post_processing_harness ??
+      config.postProcessingHarness,
+    thinkingEffort:
+      body.post_processing_thinking_effort ??
+      body.postProcessingThinkingEffort ??
+      config.post_processing_thinking_effort ??
+      config.postProcessingThinkingEffort,
+  };
+}
+
+function hasPostProcessingModelOverride(value = {}) {
+  return [value.model, value.modelProvider, value.harness].some((item) => item !== undefined && item !== null);
+}
+
 export function validateModelOverrides(value, { allowedDepths = null, field = 'model_overrides' } = {}) {
   if (value === undefined || value === null) return {};
   if (!isObjectMap(value)) {
@@ -742,18 +798,14 @@ export function validateScan(body, { localNames = null } = {}) {
       push('configuration', 'Configuration is not valid JSON.');
     }
   }
-  let postProcessingThinkingEffort = selection.normalized.thinkingEffort;
+  const postProcessingInput = postProcessingRuntimeInput(body, configuration);
+  const postProcessingModelOverride = hasPostProcessingModelOverride(postProcessingInput);
+  let postProcessingSelection = {
+    ...selection.normalized,
+    thinkingEffort: postProcessingInput.thinkingEffort ?? selection.normalized.thinkingEffort,
+  };
   try {
-    const configuredPostProcessingThinkingEffort =
-      body?.post_processing_thinking_effort ??
-      body?.postProcessingThinkingEffort ??
-      (configuration && typeof configuration === 'object' && !Array.isArray(configuration)
-        ? (configuration.post_processing_thinking_effort ?? configuration.postProcessingThinkingEffort)
-        : undefined);
-    postProcessingThinkingEffort = validatePostProcessingThinkingEffort(configuredPostProcessingThinkingEffort, {
-      harness: selection.normalized.harness,
-      fallback: selection.normalized.thinkingEffort,
-    });
+    postProcessingSelection = validatePostProcessingModelSelection(postProcessingInput, selection.normalized);
   } catch (error) {
     if (error instanceof ValidationError) errors.push(...error.errors);
     else throw error;
@@ -787,7 +839,9 @@ export function validateScan(body, { localNames = null } = {}) {
     dependencies, // [{ kind, repoFull, commitSha }]
     configuration,
     ...selection.normalized,
-    postProcessingThinkingEffort,
+    postProcessingSelection,
+    postProcessingModelOverride,
+    postProcessingThinkingEffort: postProcessingSelection.thinkingEffort,
     modelOverrides,
     severityRanker,
     extra,
@@ -802,12 +856,22 @@ export function validateScanRuntimeSettings(body, current = {}, options = {}) {
 export function validateProspectiveScanRuntimeSettings(body, current = {}, { allowedDepths = null } = {}) {
   const data = {};
   const hasOwn = (key) => Object.prototype.hasOwnProperty.call(body || {}, key);
+  const bodyValue = (snakeKey, camelKey) => (hasOwn(snakeKey) ? body?.[snakeKey] : body?.[camelKey]);
   const hasModel = hasOwn('model');
   const hasProvider = hasOwn('model_provider') || hasOwn('modelProvider');
   const hasHarness = hasOwn('harness');
   const hasThinkingEffort = hasOwn('thinking_effort') || hasOwn('thinkingEffort');
+  const hasPostProcessingModel = hasOwn('post_processing_model') || hasOwn('postProcessingModel');
+  const hasPostProcessingModelProvider =
+    hasOwn('post_processing_model_provider') || hasOwn('postProcessingModelProvider');
+  const hasPostProcessingHarness = hasOwn('post_processing_harness') || hasOwn('postProcessingHarness');
   const hasPostProcessingThinkingEffort =
     hasOwn('post_processing_thinking_effort') || hasOwn('postProcessingThinkingEffort');
+  const hasPostProcessingRuntime =
+    hasPostProcessingModel ||
+    hasPostProcessingModelProvider ||
+    hasPostProcessingHarness ||
+    hasPostProcessingThinkingEffort;
   const hasModelOverrides = hasOwn('model_overrides') || hasOwn('modelOverrides');
 
   if (
@@ -815,7 +879,7 @@ export function validateProspectiveScanRuntimeSettings(body, current = {}, { all
     !hasProvider &&
     !hasHarness &&
     !hasThinkingEffort &&
-    !hasPostProcessingThinkingEffort &&
+    !hasPostProcessingRuntime &&
     !hasModelOverrides
   ) {
     return { data, selection: null, postProcessingSelection: null, modelOverrides: null };
@@ -842,25 +906,38 @@ export function validateProspectiveScanRuntimeSettings(body, current = {}, { all
     current.configuration && typeof current.configuration === 'object' && !Array.isArray(current.configuration)
       ? current.configuration
       : {};
-  const explicitCurrentPostProcessingThinkingEffort =
-    current.postProcessingThinkingEffort ??
-    currentConfiguration.post_processing_thinking_effort ??
-    currentConfiguration.postProcessingThinkingEffort;
-  const currentPostProcessingThinkingEffort =
-    explicitCurrentPostProcessingThinkingEffort ?? prospectiveSelection.thinkingEffort;
-  const postProcessingThinkingEffort = validatePostProcessingThinkingEffort(
-    hasPostProcessingThinkingEffort
-      ? (body?.post_processing_thinking_effort ?? body?.postProcessingThinkingEffort)
-      : currentPostProcessingThinkingEffort,
-    {
-      harness: prospectiveSelection.harness,
-      fallback: prospectiveSelection.thinkingEffort,
-    }
-  );
-  const postProcessingSelection =
-    selection || hasPostProcessingThinkingEffort
-      ? { ...prospectiveSelection, thinkingEffort: postProcessingThinkingEffort }
-      : null;
+  const currentPostProcessingInput = postProcessingRuntimeInput({}, currentConfiguration);
+  const clearPostProcessingModelOverride =
+    hasPostProcessingModel &&
+    hasPostProcessingModelProvider &&
+    hasPostProcessingHarness &&
+    [
+      bodyValue('post_processing_model', 'postProcessingModel'),
+      bodyValue('post_processing_model_provider', 'postProcessingModelProvider'),
+      bodyValue('post_processing_harness', 'postProcessingHarness'),
+    ].every((value) => value === null || value === '');
+  const nextPostProcessingInput = clearPostProcessingModelOverride
+    ? {
+        thinkingEffort: hasPostProcessingThinkingEffort
+          ? bodyValue('post_processing_thinking_effort', 'postProcessingThinkingEffort')
+          : currentPostProcessingInput.thinkingEffort,
+      }
+    : {
+        model: hasPostProcessingModel
+          ? bodyValue('post_processing_model', 'postProcessingModel')
+          : currentPostProcessingInput.model,
+        modelProvider: hasPostProcessingModelProvider
+          ? bodyValue('post_processing_model_provider', 'postProcessingModelProvider')
+          : currentPostProcessingInput.modelProvider,
+        harness: hasPostProcessingHarness
+          ? bodyValue('post_processing_harness', 'postProcessingHarness')
+          : currentPostProcessingInput.harness,
+        thinkingEffort: hasPostProcessingThinkingEffort
+          ? bodyValue('post_processing_thinking_effort', 'postProcessingThinkingEffort')
+          : currentPostProcessingInput.thinkingEffort,
+      };
+  const postProcessingSelection = validatePostProcessingModelSelection(nextPostProcessingInput, prospectiveSelection);
+  const postProcessingSelectionToCheck = selection || hasPostProcessingRuntime ? postProcessingSelection : null;
   const modelOverrides = hasModelOverrides
     ? validateModelOverrides(body?.model_overrides ?? body?.modelOverrides, { allowedDepths })
     : null;
@@ -869,8 +946,13 @@ export function validateProspectiveScanRuntimeSettings(body, current = {}, { all
   if (hasProvider) data.modelProvider = selection.modelProvider;
   if (hasHarness) data.harness = selection.harness;
   if (hasThinkingEffort) data.thinkingEffort = selection.thinkingEffort;
-  if (hasPostProcessingThinkingEffort) data.postProcessingThinkingEffort = postProcessingThinkingEffort;
+  if (hasPostProcessingModel || hasPostProcessingModelProvider || hasPostProcessingHarness) {
+    data.postProcessingModel = clearPostProcessingModelOverride ? null : postProcessingSelection.model;
+    data.postProcessingModelProvider = clearPostProcessingModelOverride ? null : postProcessingSelection.modelProvider;
+    data.postProcessingHarness = clearPostProcessingModelOverride ? null : postProcessingSelection.harness;
+  }
+  if (hasPostProcessingThinkingEffort) data.postProcessingThinkingEffort = postProcessingSelection.thinkingEffort;
   if (hasModelOverrides) data.modelOverrides = modelOverrides;
 
-  return { data, selection, postProcessingSelection, modelOverrides };
+  return { data, selection, postProcessingSelection: postProcessingSelectionToCheck, modelOverrides };
 }

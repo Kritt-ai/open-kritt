@@ -189,6 +189,12 @@ test('validateScan keeps post-processing thinking effort separate from workflow 
 
   assert.equal(valid.thinkingEffort, 'high');
   assert.equal(valid.postProcessingThinkingEffort, 'medium');
+  assert.deepEqual(valid.postProcessingSelection, {
+    model: 'test-model',
+    modelProvider: 'codex',
+    harness: 'codex',
+    thinkingEffort: 'medium',
+  });
   assert.equal(validateScan(base).postProcessingThinkingEffort, 'high');
   assert.throws(
     () =>
@@ -201,6 +207,21 @@ test('validateScan keeps post-processing thinking effort separate from workflow 
     (error) =>
       error instanceof ValidationError && error.errors.some((item) => item.field === 'post_processing_thinking_effort')
   );
+
+  const independent = validateScan({
+    ...base,
+    post_processing_model: 'claude-sonnet',
+    post_processing_model_provider: 'claude',
+    post_processing_harness: 'claude-code',
+    post_processing_thinking_effort: 'medium',
+  });
+  assert.equal(independent.postProcessingModelOverride, true);
+  assert.deepEqual(independent.postProcessingSelection, {
+    model: 'claude-sonnet',
+    modelProvider: 'claude',
+    harness: 'claude-code',
+    thinkingEffort: 'medium',
+  });
 });
 
 test('depth model overrides normalize complete tuples and enforce workflow depths', () => {

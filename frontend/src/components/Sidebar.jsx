@@ -59,19 +59,22 @@ export function CommunityLinks() {
           key={href}
           {...(external ? { target: '_blank', rel: 'noreferrer' } : {})}
         >
-          <span>{label}</span>
-          {external && (
-            <span className="sidebar-community-external" aria-hidden="true">
-              ↗
-            </span>
-          )}
+          {label}
         </a>
       ))}
     </nav>
   );
 }
 
-export default function Sidebar() {
+export function CommunityShareButton({ onClick }) {
+  return (
+    <button type="button" className="sidebar-community-share" onClick={onClick}>
+      Support open·kritt
+    </button>
+  );
+}
+
+export default function Sidebar({ onShareCommunity }) {
   const { pathname } = useLocation();
   const { theme, toggle } = useTheme();
 
@@ -157,7 +160,10 @@ export default function Sidebar() {
         <div className="mono sidebar-community-label" style={GROUP_LABEL}>
           COMMUNITY
         </div>
-        <CommunityLinks />
+        <div className="sidebar-community-actions">
+          <CommunityLinks />
+          <CommunityShareButton onClick={onShareCommunity} />
+        </div>
       </div>
 
       <div className="sidebar-footer" style={{ paddingTop: 12, borderTop: '1px solid var(--border)' }}>

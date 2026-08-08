@@ -99,6 +99,10 @@ export default function CreateScan() {
     model_provider: '',
     harness: '',
     thinking_effort: 'medium',
+    post_processing_model_override: false,
+    post_processing_model: '',
+    post_processing_model_provider: '',
+    post_processing_harness: '',
     post_processing_thinking_effort: 'medium',
     model_overrides: {},
     extra: {},
@@ -322,6 +326,10 @@ export default function CreateScan() {
         normalized.model === f.model &&
         normalized.model_provider === f.model_provider &&
         normalized.thinking_effort === f.thinking_effort &&
+        normalized.post_processing_model_override === f.post_processing_model_override &&
+        normalized.post_processing_model === f.post_processing_model &&
+        normalized.post_processing_model_provider === f.post_processing_model_provider &&
+        normalized.post_processing_harness === f.post_processing_harness &&
         normalized.post_processing_thinking_effort === f.post_processing_thinking_effort &&
         normalized.harness === f.harness &&
         modelOverridesEqual(normalized.model_overrides, f.model_overrides)
@@ -521,6 +529,13 @@ export default function CreateScan() {
       model_provider: form.model_provider,
       harness: form.harness,
       thinking_effort: form.thinking_effort,
+      ...(form.post_processing_model_override
+        ? {
+            post_processing_model: form.post_processing_model,
+            post_processing_model_provider: form.post_processing_model_provider,
+            post_processing_harness: form.post_processing_harness,
+          }
+        : {}),
       post_processing_thinking_effort: form.post_processing_thinking_effort,
       model_overrides: form.model_overrides,
       severity_ranker: combinedRanker,

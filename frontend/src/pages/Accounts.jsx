@@ -532,6 +532,7 @@ export function CodexWeeklyUsage({ usage, onStart, onReset, starting, resetting 
   const busy = starting || resetting;
   const hasManualReset = usage.manualResetsAvailable !== null && usage.manualResetsAvailable > 0;
   const resetEligible = usage.manualResetsApplicable === null || usage.manualResetsApplicable > 0;
+  const manualResetCredits = usage.manualResetCredits || [];
   return (
     <div
       className={`account-weekly-usage${usage.notStarted ? ' account-weekly-usage-warning' : ''}`}
@@ -553,9 +554,16 @@ export function CodexWeeklyUsage({ usage, onStart, onReset, starting, resetting 
           <span>{usage.resetRemaining || 'Time unavailable'}</span>
         </div>
         {usage.manualResetsAvailable !== null && (
-          <div className="account-weekly-stat">
+          <div className="account-weekly-stat account-manual-reset-stat">
             <span className="mono account-kicker">Manual resets</span>
-            <span>{usage.manualResetsAvailable} available</span>
+            <span className="account-manual-reset-details">
+              <span>{usage.manualResetsAvailable} available</span>
+              {manualResetCredits.map((credit, index) => (
+                <span className="account-manual-reset-expiry" key={`${credit.expiresAt}-${index}`}>
+                  {credit.title} · Expires {formatResetExpiryDate(credit.expiresAt)}
+                </span>
+              ))}
+            </span>
           </div>
         )}
       </div>
@@ -608,11 +616,20 @@ export function codexWeeklyUsage(account, now = Date.now()) {
     Number.isFinite(observedAt) &&
     Number.isFinite(resetsAt) &&
     Math.abs(resetsAt - observedAt - weeklyWindowMs) <= RESET_ALIGNMENT_TOLERANCE_MS;
+  const manualResetCredits = Array.isArray(account?.rateLimits?.manualResetCredits?.credits)
+    ? account.rateLimits.manualResetCredits.credits
+        .map((credit) => ({
+          title: typeof credit?.title === 'string' && credit.title.trim() ? credit.title.trim() : 'Usage reset',
+          expiresAt: credit?.expiresAt,
+        }))
+        .filter((credit) => Number.isFinite(new Date(credit.expiresAt).getTime()))
+    : [];
   return {
     notStarted: Boolean(account?.active && usedPercent !== null && usedPercent <= 0 && resetIsFullWindowAway),
     resetRemaining: formatResetRemaining(weeklyLimit.resetsAt, now),
     manualResetsAvailable: finiteNumber(account?.rateLimits?.manualResetCredits?.availableCount),
     manualResetsApplicable: finiteNumber(account?.rateLimits?.manualResetCredits?.applicableAvailableCount),
+    ...(manualResetCredits.length ? { manualResetCredits } : {}),
   };
 }
 
@@ -643,6 +660,16 @@ export function formatResetRemaining(value, now = Date.now()) {
   if (hours) return `${hours}h ${minutes}m remaining`;
   if (minutes) return `${minutes}m remaining`;
   return '<1m remaining';
+}
+
+export function formatResetExpiryDate(value, locale) {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return 'date unavailable';
+  return new Intl.DateTimeFormat(locale, {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  }).format(date);
 }
 
 function CreditUsage({ credit }) {
@@ -711,6 +738,7 @@ export function AccountRateLimits({ providerId, rateLimits, authenticated = true
 
 function RateLimit({ label, limit, unavailableNote = 'No recent limit data' }) {
   const used = Math.max(0, Math.min(100, Number(limit?.usedPercent) || 0));
+  const note = limit?.resetsAt ? formatUntil(limit.resetsAt, 'resets') : limit ? null : unavailableNote;
   return (
     <div>
       <div className="mono account-kicker">{label}</div>
@@ -726,9 +754,7 @@ function RateLimit({ label, limit, unavailableNote = 'No recent limit data' }) {
       >
         <div style={{ width: `${used}%`, background: used >= 90 ? 'var(--fail)' : 'var(--accent)' }} />
       </div>
-      <div style={{ fontSize: 10.5, color: 'var(--text-3)', marginTop: 5 }}>
-        {limit?.resetsAt ? formatUntil(limit.resetsAt, 'resets') : unavailableNote}
-      </div>
+      {note && <div style={{ fontSize: 10.5, color: 'var(--text-3)', marginTop: 5 }}>{note}</div>}
     </div>
   );
 }

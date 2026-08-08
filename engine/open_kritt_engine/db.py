@@ -13,7 +13,7 @@ from .models import Step, StepResultRow, Workflow
 
 RATE_LIMIT_RETRY_BASE_SECONDS = 60.0
 RATE_LIMIT_RETRY_MAX_SECONDS = 10 * 60.0
-QUOTA_RETRY_MAX_SECONDS = 8 * 24 * 60 * 60.0
+QUOTA_RETRY_MAX_SECONDS = 30 * 60.0
 QUEUED_SCAN_ADMISSION_LOCK = (0x6B726974, 0x71756575)
 
 
@@ -126,7 +126,13 @@ class Database:
                    OR (
                       status = 'rate_limited'
                       AND reasoning->>'retry_after' IS NOT NULL
-                      AND (reasoning->>'retry_after')::timestamptz <= now()
+                      AND (
+                          (reasoning->>'retry_after')::timestamptz <= now()
+                          OR (
+                              reasoning->>'limit_kind' IN ('account_quota_limited', 'subagent_limited')
+                              AND updated_at + make_interval(secs => %s::double precision) <= now()
+                          )
+                      )
                   )
                 ORDER BY inserted_at ASC
                 FOR UPDATE SKIP LOCKED
@@ -147,7 +153,8 @@ class Database:
             FROM next_scan
             WHERE s.id = next_scan.id
             RETURNING s.*
-            """
+            """,
+                (QUOTA_RETRY_MAX_SECONDS,),
             ).fetchone()
 
         if active_count == 0 and not admitted:
@@ -722,6 +729,21 @@ class Database:
 
     def load_claimed_metadata(self, conn, scan_id: int) -> set[tuple[int, int, str | None, int]]:
         return self.load_metadata_keys(conn, scan_id, ("completed", "running"))
+
+    def load_attempted_metadata(self, conn, scan_id: int) -> set[tuple[int, int, str | None, int]]:
+        rows = conn.execute(
+            """
+            SELECT step_id, coalesce(prev_id, 0) AS prev_id, prev_table, coalesce(repeat_run, 1) AS repeat_run
+            FROM workflows.step_metadata
+            WHERE scan_id = %s
+              AND coalesce(kind, 'step') = 'step'
+            """,
+            (scan_id,),
+        ).fetchall()
+        return {
+            (_to_int(row["step_id"]), _to_int(row["prev_id"]), row["prev_table"], int(row["repeat_run"]))
+            for row in rows
+        }
 
     def load_metadata_keys(
         self, conn, scan_id: int, statuses: tuple[str, ...]

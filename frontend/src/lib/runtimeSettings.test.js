@@ -13,6 +13,9 @@ const payload = {
     codexFastMode: { value: false, type: 'boolean', defaultValue: false },
     minFreeStorageGb: { value: 20, min: 0, max: 1024, step: 0.1, type: 'number' },
     ignoreLowStorage: { value: false, type: 'boolean', defaultValue: false },
+    memoryReserveGb: { value: 2, min: 0, max: 1024, step: 0.1, type: 'number' },
+    scanRunnerMemoryMb: { value: 1536, min: 0, max: 1048576 },
+    scanRunnerMemoryReservationMb: { value: 1536, min: 0, max: 1048576 },
     workspaceSetupConcurrency: { value: 2, min: 1, max: 32 },
     retryCount: { value: 2, min: 0, max: 10 },
     harnessTimeoutSeconds: { value: 7200, min: 60, max: 86400 },
@@ -31,6 +34,9 @@ describe('runtime settings form helpers', () => {
       codexFastMode: false,
       minFreeStorageGb: '20',
       ignoreLowStorage: false,
+      memoryReserveGb: '2',
+      scanRunnerMemoryMb: '1536',
+      scanRunnerMemoryReservationMb: '1536',
       workspaceSetupConcurrency: '2',
       retryCount: '2',
       harnessTimeoutSeconds: '7200',
@@ -70,8 +76,9 @@ describe('runtime settings form helpers', () => {
       runtimeSettingsPatch(payload, {
         ...runtimeSettingsDraft(payload),
         minFreeStorageGb: '17.5',
+        memoryReserveGb: '2.5',
       })
-    ).toEqual({ minFreeStorageGb: 17.5 });
+    ).toEqual({ minFreeStorageGb: 17.5, memoryReserveGb: 2.5 });
   });
 
   it('returns a changed low-storage safeguard override', () => {

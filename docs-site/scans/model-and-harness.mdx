@@ -10,7 +10,8 @@ runs your prompts and how.
 
 **One model for all depths** is the default. The provider, model, harness, and thinking
 effort selected in the main row run every workflow depth. That default tuple also runs
-deduplication, severity ranking, and post-scripts after the workflow finishes.
+deduplication, severity ranking, and post-scripts after the workflow finishes unless you
+select a separate post-processing model.
 
 Turn on **Customize by depth** when stages need different strengths or costs. The form
 creates a complete model tuple for every depth in the selected workflow. For example, a
@@ -18,12 +19,23 @@ fast model can enumerate entry points at depth 0, while a stronger model investi
 each candidate at depth 1. Sibling steps and repeat runs at the same depth use that
 depth's tuple.
 
-The main row remains the fallback and post-processing configuration. Turning customization
-off removes all depth overrides and returns the workflow to that one tuple.
+The main row remains the workflow fallback. Turning customization off removes all depth
+overrides and returns the workflow to that one tuple.
+
+## Post-processing model
+
+Post-processing uses the scan model by default, with an independently selectable thinking
+effort. Choose **Use different model** to configure a complete provider, model, harness,
+and effort tuple for deduplication, severity ranking, and every selected post-script. This
+is useful when the workflow should use a fast or economical model while final finding
+review uses a stronger one.
+
+Changing the scan model later does not change an explicit post-processing override. Switch
+back to **Use scan model** when post-processing should follow the scan default again.
 
 <Warning>
-  Every provider selected for a workflow depth can receive prompts and repository-derived
-  context from that depth. Review all configured providers before starting a scan.
+  Every provider selected for a workflow depth or post-processing can receive prompts and
+  repository-derived context. Review all configured providers before starting a scan.
 </Warning>
 
 <Note>

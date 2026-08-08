@@ -63,6 +63,24 @@ const PRESENTATION = {
     enabledDescription: 'The minimum free-storage threshold is not enforced.',
     disabledDescription: 'New containers pause below the configured threshold.',
   },
+  memoryReserveGb: {
+    label: 'Docker memory reserve',
+    unit: 'GiB',
+    description:
+      'Memory withheld from scan runners for the engine, database, API, and operating overhead. The worker ceiling is reduced automatically when the remaining budget cannot fit every runner.',
+  },
+  scanRunnerMemoryMb: {
+    label: 'Runner hard memory limit',
+    unit: 'MiB',
+    description:
+      'Docker hard limit for each tool-enabled model session. A runner that exceeds this limit is terminated; set 0 only to disable the hard cap.',
+  },
+  scanRunnerMemoryReservationMb: {
+    label: 'Runner memory reservation',
+    unit: 'MiB',
+    description:
+      'Soft memory reservation used for worker-capacity planning and live admission. It may be lower than the hard limit so idle runners share unused Docker memory.',
+  },
   workspaceSetupConcurrency: {
     label: 'Workspace setup concurrency',
     unit: 'setups',
@@ -224,34 +242,7 @@ export default function Settings() {
               </div>
             </div>
 
-            <div className="settings-grid">
-              {Object.entries(PRESENTATION).map(([key, presentation]) =>
-                data.settings[key]?.type === 'boolean' ? (
-                  <BooleanRuntimeSetting
-                    key={key}
-                    name={key}
-                    presentation={presentation}
-                    setting={data.settings[key]}
-                    value={draft[key]}
-                    issue={issues[key]}
-                    disabled={saving}
-                    onChange={(value) => set(key, value)}
-                  />
-                ) : (
-                  <RuntimeSetting
-                    key={key}
-                    name={key}
-                    presentation={presentation}
-                    setting={data.settings[key]}
-                    value={draft[key]}
-                    issue={issues[key]}
-                    disabled={saving}
-                    ignored={key === 'minFreeStorageGb' && draft.ignoreLowStorage}
-                    onChange={(value) => set(key, value)}
-                  />
-                )
-              )}
-            </div>
+            <RuntimeSettingsFields data={data} draft={draft} issues={issues} saving={saving} onChange={set} />
           </section>
 
           <section className="settings-section">
@@ -280,6 +271,51 @@ export default function Settings() {
         </>
       )}
     </div>
+  );
+}
+
+export function RuntimeSettingsFields({ data, draft, issues, saving, onChange }) {
+  const entries = Object.entries(PRESENTATION);
+  const availableEntries = entries.filter(([key]) => data.settings?.[key]);
+  const missingLabels = entries.filter(([key]) => !data.settings?.[key]).map(([, presentation]) => presentation.label);
+
+  return (
+    <>
+      {missingLabels.length > 0 && (
+        <div className="settings-warning">
+          Some settings are unavailable from the running backend and have been hidden: {missingLabels.join(', ')}.
+          Restart the backend to load the current settings schema.
+        </div>
+      )}
+      <div className="settings-grid">
+        {availableEntries.map(([key, presentation]) =>
+          data.settings[key].type === 'boolean' ? (
+            <BooleanRuntimeSetting
+              key={key}
+              name={key}
+              presentation={presentation}
+              setting={data.settings[key]}
+              value={draft[key]}
+              issue={issues[key]}
+              disabled={saving}
+              onChange={(value) => onChange(key, value)}
+            />
+          ) : (
+            <RuntimeSetting
+              key={key}
+              name={key}
+              presentation={presentation}
+              setting={data.settings[key]}
+              value={draft[key]}
+              issue={issues[key]}
+              disabled={saving}
+              ignored={key === 'minFreeStorageGb' && draft.ignoreLowStorage}
+              onChange={(value) => onChange(key, value)}
+            />
+          )
+        )}
+      </div>
+    </>
   );
 }
 

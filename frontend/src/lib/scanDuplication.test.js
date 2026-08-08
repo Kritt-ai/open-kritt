@@ -25,12 +25,19 @@ describe('scanConfigurationDraft', () => {
         include_tests: true,
         post_script_ids: ['21', '22'],
         agent_skill_ids: ['31', '32'],
+        post_processing_model: 'gpt-5.6-sol',
+        post_processing_model_provider: 'codex',
+        post_processing_harness: 'codex',
         post_processing_thinking_effort: 'medium',
       },
       model: 'gpt-5.4',
       modelProvider: 'codex',
       harness: 'codex',
       thinkingEffort: 'high',
+      postProcessingModelOverride: true,
+      postProcessingModel: 'gpt-5.6-sol',
+      postProcessingModelProvider: 'codex',
+      postProcessingHarness: 'codex',
       postProcessingThinkingEffort: 'medium',
       modelOverrides: {
         1: {
@@ -70,6 +77,10 @@ describe('scanConfigurationDraft', () => {
       model_provider: 'codex',
       harness: 'codex',
       thinking_effort: 'high',
+      post_processing_model_override: true,
+      post_processing_model: 'gpt-5.6-sol',
+      post_processing_model_provider: 'codex',
+      post_processing_harness: 'codex',
       post_processing_thinking_effort: 'medium',
       model_overrides: {
         1: {

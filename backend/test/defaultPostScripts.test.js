@@ -14,6 +14,10 @@ const securitySeedSql = fs.readFileSync(
   new URL('../../database/init/024_seed_security_post_scripts.sql', import.meta.url),
   'utf8'
 );
+const reportCreatorRefreshSql = fs.readFileSync(
+  new URL('../../database/init/027_describe_report_creator_inputs.sql', import.meta.url),
+  'utf8'
+);
 const seedSql = `${originalSeedSql}\n${securitySeedSql}`;
 
 function parseSeedScripts(sql) {
@@ -55,6 +59,33 @@ test('security artifact post-scripts use the reserved renderer outputs', () => {
     _chip_is_in_scope: 'boolean',
     is_valid: 'boolean',
   });
+});
+
+test('Report Creator refresh labels every expanded finding and context input', () => {
+  const content = reportCreatorRefreshSql.match(/content = \$script\$\n([\s\S]*?)\n\$script\$/)?.[1];
+
+  assert.ok(content);
+  for (const labeledInput of [
+    'Repository full name: {{repo_full}}',
+    'Repository scope scanned: {{repo_scope}}',
+    'Commit SHA scanned: {{commit_sha}}',
+    'Checked-out workspace root: {{workspace_root}}',
+    'Workspace layout (available directories and files):\n{{workspace_layout}}',
+    'Workspace manifest JSON (repository metadata):\n```json\n{{workspace_manifest_json}}',
+    'Runtime configuration:\n```json\n{{configuration}}',
+    'Dependencies (packages and versions):\n{{dependencies}}',
+    'Summary: {{summary}}',
+    'Vulnerability type: {{vulnerability_type}}',
+    'Vulnerable file path: {{file_path}}',
+    'Vulnerable line number: {{line}}',
+    'Technical explanation: {{explanation}}',
+    'Trigger flow (ordered path from attacker input to the vulnerable operation): {{trigger_flow}}',
+    'Confirmed exploitable: {{exploitable}}',
+    'Malicious actor (the attacker role): {{malicious_actor}}',
+    'Malicious input example (payload or sequence): {{malicious_input_example}}',
+  ]) {
+    assert.match(content, new RegExp(labeledInput.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  }
 });
 
 test('every bundled post-script insert is guarded by name', () => {

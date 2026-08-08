@@ -147,6 +147,10 @@ CODEX_ACCOUNT_CACHE_SECONDS = int(
 CODEX_USAGE_URL = os.getenv(
     "EXECUTOR_VIEW_CODEX_USAGE_URL", "https://chatgpt.com/backend-api/wham/usage"
 )
+CODEX_RESET_CREDITS_URL = os.getenv(
+    "EXECUTOR_VIEW_CODEX_RESET_CREDITS_URL",
+    "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits",
+)
 CODEX_RESET_URL = os.getenv(
     "EXECUTOR_VIEW_CODEX_RESET_URL",
     "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume",
@@ -2371,6 +2375,20 @@ def fetch_codex_usage(access_token, account_id=""):
             reached = format_account_value(payload.get("rate_limit_reached_type"))
             if not reached and rate_limit.get("allowed") is False:
                 reached = "rate_limit"
+            manual_reset_credits = format_manual_reset_credits(
+                payload.get("rate_limit_reset_credits")
+            )
+            if (manual_reset_credits or {}).get("availableCount", 0) > 0:
+                detailed_credits = fetch_codex_reset_credits(access_token, account_id)
+                if detailed_credits:
+                    if detailed_credits.get("availableCount") is None:
+                        detailed_credits["availableCount"] = manual_reset_credits.get(
+                            "availableCount"
+                        )
+                    detailed_credits["applicableAvailableCount"] = (
+                        manual_reset_credits.get("applicableAvailableCount")
+                    )
+                    manual_reset_credits = detailed_credits
             return {
                 "checkedAt": checked_at,
                 "observedAt": checked_at,
@@ -2381,9 +2399,7 @@ def fetch_codex_usage(access_token, account_id=""):
                 "allowed": rate_limit.get("allowed"),
                 "primary": primary,
                 "secondary": secondary,
-                "manualResetCredits": format_manual_reset_credits(
-                    payload.get("rate_limit_reset_credits")
-                ),
+                "manualResetCredits": manual_reset_credits,
             }
     except urlerror.HTTPError as exc:
         return {
@@ -2402,6 +2418,33 @@ def fetch_codex_usage(access_token, account_id=""):
             "checkedAt": checked_at,
             "error": f"Codex usage check failed ({type(exc).__name__})",
         }
+
+
+def fetch_codex_reset_credits(access_token, account_id=""):
+    """Fetch the available reset expirations without exposing credit IDs."""
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json",
+        "User-Agent": "open-kritt-executor-view",
+    }
+    if account_id:
+        headers["ChatGPT-Account-ID"] = account_id
+    request = urlrequest.Request(CODEX_RESET_CREDITS_URL, headers=headers, method="GET")
+    try:
+        with urlrequest.urlopen(
+            request, timeout=CODEX_USAGE_TIMEOUT_SECONDS
+        ) as response:
+            payload = json.loads(response.read(1024 * 256).decode("utf-8"))
+            return format_manual_reset_credits(payload)
+    except (
+        OSError,
+        TimeoutError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        ValueError,
+    ):
+        return None
 
 
 def consume_codex_reset_credit(account_id):
@@ -2529,9 +2572,37 @@ def format_manual_reset_credits(raw):
 
     available = count("available_count", "availableCount")
     applicable = count("applicable_available_count", "applicableAvailableCount")
-    if available is None and applicable is None:
+    raw_credits = raw.get("credits")
+    raw_credits = raw_credits if isinstance(raw_credits, list) else []
+    credits = []
+    for credit in raw_credits:
+        if (
+            not isinstance(credit, dict)
+            or credit.get("status", "available") != "available"
+        ):
+            continue
+        expires_at = parse_datetime(credit.get("expires_at", credit.get("expiresAt")))
+        if expires_at is None:
+            continue
+        title = credit.get("title")
+        title = (
+            title.strip()[:100]
+            if isinstance(title, str) and title.strip()
+            else "Usage reset"
+        )
+        credits.append({"title": title, "expiresAt": expires_at})
+        if len(credits) >= 50:
+            break
+    credits.sort(key=lambda credit: credit["expiresAt"])
+    if available is None and applicable is None and not credits:
         return None
-    return {"availableCount": available, "applicableAvailableCount": applicable}
+    result = {
+        "availableCount": available,
+        "applicableAvailableCount": applicable,
+    }
+    if credits:
+        result["credits"] = credits
+    return result
 
 
 def codex_account_identity(auth, home):

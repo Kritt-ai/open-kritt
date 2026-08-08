@@ -105,6 +105,9 @@ services:
       ENGINE_AUTOSCALE_SCAN_WORKERS_ON_PROVIDER_CAPACITY: ${ENGINE_AUTOSCALE_SCAN_WORKERS_ON_PROVIDER_CAPACITY:-true}
       ENGINE_CODEX_MAX_SUBAGENTS_PER_SESSION: ${ENGINE_CODEX_MAX_SUBAGENTS_PER_SESSION:-5}
       ENGINE_CODEX_FAST_MODE: ${ENGINE_CODEX_FAST_MODE:-false}
+      ENGINE_MEMORY_RESERVE_GB: ${ENGINE_MEMORY_RESERVE_GB:-2}
+      ENGINE_SCAN_RUNNER_MEMORY_MB: ${ENGINE_SCAN_RUNNER_MEMORY_MB:-1536}
+      ENGINE_SCAN_RUNNER_MEMORY_RESERVATION_MB: ${ENGINE_SCAN_RUNNER_MEMORY_RESERVATION_MB:-${ENGINE_SCAN_RUNNER_MEMORY_MB:-1536}}
       EXECUTOR_VIEW_URL: http://executor-view:8090
       EXECUTOR_VIEW_INTERNAL_TOKEN_FILE: /executor-auth/internal-token
       ENGINE_WORKSPACE_SETUP_CONCURRENCY: ${ENGINE_WORKSPACE_SETUP_CONCURRENCY:-2}
@@ -139,6 +142,7 @@ services:
         condition: service_healthy
       executor-view:
         condition: service_healthy
+    restart: unless-stopped
     volumes:
       - ./engine:/app
       - ${ENGINE_DATA_DIR_HOST:-./.data/engine}:/data
@@ -157,8 +161,7 @@ services:
       # Local repositories are copied into scan-specific snapshots; the host source
       # never needs to be modified by the engine.
       - ${LOCAL_REPOS_PATH:-./local_repos}:/run/open-kritt-secrets/local-repos:ro
-    tmpfs:
-      - /checkout-cache
+      - engine-checkout-cache:/checkout-cache
 
   executor-view:
     build:
@@ -231,3 +234,6 @@ services:
     volumes:
       - ${POSTGRES_DATA_DIR:-./.data/postgres}:/var/lib/postgresql/data
       - ./database/init:/docker-entrypoint-initdb.d:ro
+
+volumes:
+  engine-checkout-cache:

@@ -38,12 +38,28 @@ function safeManualResetCredits(credits) {
   if (!credits || typeof credits !== 'object') return null;
   const availableCount = safeNumber(credits.availableCount);
   const applicableAvailableCount = safeNumber(credits.applicableAvailableCount);
-  if (availableCount === null && applicableAvailableCount === null) return null;
-  return {
+  const sanitizedCredits = Array.isArray(credits.credits)
+    ? credits.credits
+        .map((credit) => {
+          if (!credit || typeof credit !== 'object') return null;
+          const expiresAt = safeText(credit.expiresAt, 100);
+          if (!expiresAt) return null;
+          return {
+            title: safeText(credit.title, 100) || 'Usage reset',
+            expiresAt,
+          };
+        })
+        .filter(Boolean)
+        .slice(0, 50)
+    : [];
+  if (availableCount === null && applicableAvailableCount === null && !sanitizedCredits.length) return null;
+  const result = {
     availableCount: availableCount === null ? null : Math.max(0, Math.trunc(availableCount)),
     applicableAvailableCount:
       applicableAvailableCount === null ? null : Math.max(0, Math.trunc(applicableAvailableCount)),
   };
+  if (sanitizedCredits.length) result.credits = sanitizedCredits;
+  return result;
 }
 
 function safeNumber(value) {

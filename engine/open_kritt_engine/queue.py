@@ -1,3 +1,4 @@
+import hashlib
 import re
 from typing import Any
 
@@ -20,6 +21,73 @@ def metadata_key(step_id: int, state: State):
 
 
 MULTI_OUTPUT_DEPTH_RE = re.compile(r"^multi_output_depth_\d+$")
+
+
+def configured_step_ids(scan: dict[str, Any], key: str) -> set[int]:
+    configuration = scan.get("configuration")
+    if not isinstance(configuration, dict):
+        return set()
+    raw = configuration.get(key, [])
+    if isinstance(raw, str | int):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return set()
+    step_ids = set()
+    for value in raw:
+        try:
+            step_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        if step_id > 0:
+            step_ids.add(step_id)
+    return step_ids
+
+
+def configured_pending_lineage_order(scan: dict[str, Any], step_id: int) -> dict[int, int]:
+    configuration = scan.get("configuration")
+    if not isinstance(configuration, dict):
+        return {}
+    by_step = configuration.get("pending_lineage_order_by_step")
+    if not isinstance(by_step, dict):
+        return {}
+    raw = by_step.get(str(step_id), by_step.get(step_id, []))
+    if not isinstance(raw, list):
+        return {}
+    positions: dict[int, int] = {}
+    for value in raw:
+        try:
+            prev_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        if prev_id > 0 and prev_id not in positions:
+            positions[prev_id] = len(positions)
+    return positions
+
+
+def _pending_order_value(
+    scan: dict[str, Any],
+    job: Job,
+    *,
+    explicit: dict[int, int] | None = None,
+    shuffle_step_ids: set[int] | None = None,
+) -> tuple[int, int, int]:
+    if explicit is None:
+        explicit = configured_pending_lineage_order(scan, job.step.id)
+    position = explicit.get(job.state.prev_id)
+    if position is not None:
+        return (0, position, job.state.prev_id)
+
+    if shuffle_step_ids is None:
+        shuffle_step_ids = configured_step_ids(scan, "shuffle_pending_step_ids")
+    if job.step.id not in shuffle_step_ids:
+        return (1 if explicit else 0, job.state.prev_id, job.state.prev_id)
+    configuration = scan.get("configuration") or {}
+    seed = str(configuration.get("pending_shuffle_seed") or scan.get("id") or "open-kritt")
+    material = (
+        f"{seed}|{job.step.id}|{job.state.prev_id}|{job.state.prev_table or ''}|{job.state.repeat_run}"
+    ).encode()
+    shuffled = int.from_bytes(hashlib.blake2b(material, digest_size=8).digest(), "big")
+    return (1 if explicit else 0, shuffled, job.state.prev_id)
 
 
 def _depth_consumes_all(steps, depth: int) -> bool:
@@ -123,7 +191,20 @@ def build_pending_jobs(
         states = next_states
         previous_depth_complete = depth_complete
 
+    step_ids = {job.step.id for job in pending}
+    explicit_orders = {step_id: configured_pending_lineage_order(scan, step_id) for step_id in step_ids}
+    shuffle_step_ids = configured_step_ids(scan, "shuffle_pending_step_ids")
     return sorted(
         pending,
-        key=lambda job: (-job.depth, job.state.repeat_run, job.step.order, job.state.prev_id),
+        key=lambda job: (
+            -job.depth,
+            job.state.repeat_run,
+            job.step.order,
+            *_pending_order_value(
+                scan,
+                job,
+                explicit=explicit_orders[job.step.id],
+                shuffle_step_ids=shuffle_step_ids,
+            ),
+        ),
     )

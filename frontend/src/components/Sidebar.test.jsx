@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { CommunityLinks } from './Sidebar.jsx';
+import { CommunityLinks, CommunityShareButton } from './Sidebar.jsx';
 
 describe('sidebar community links', () => {
   it('renders every project and contact destination', () => {
@@ -14,5 +14,13 @@ describe('sidebar community links', () => {
     expect(html).toContain('href="mailto:info@kritt.ai"');
     expect(html.match(/target="_blank"/g)).toHaveLength(4);
     expect(html.match(/rel="noreferrer"/g)).toHaveLength(4);
+  });
+
+  it('renders the persistent community sharing call to action', () => {
+    const html = renderToStaticMarkup(<CommunityShareButton onClick={() => {}} />);
+
+    expect(html).toContain('Support open·kritt');
+    expect(html).toContain('type="button"');
+    expect(html).not.toContain('↗');
   });
 });

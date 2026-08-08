@@ -11,10 +11,9 @@ from .harnesses import (
     RETRYABLE_RATE_LIMIT_FAILURES,
     HarnessError,
     normalize_harness_name,
-    scan_model_provider,
 )
 from .model_output_artifacts import record_model_error_output
-from .models import post_processing_thinking_effort
+from .models import post_processing_model_selection
 from .prompting import (
     append_schema_prompt,
     harness_prompt,
@@ -476,9 +475,6 @@ class PostProcessor:
         with self.db.connect() as conn:
             return self.db.load_agent_skills(conn, scan)
 
-    def _model_provider(self, scan: dict[str, Any]) -> str | None:
-        return scan_model_provider(scan)
-
     def _retry_count(self) -> int:
         return runtime_int(
             "ENGINE_RETRY_COUNT",
@@ -492,6 +488,7 @@ class PostProcessor:
         self, metadata_id: int, scan: dict[str, Any], agent_skills: list[dict[str, Any]] | None = None
     ):
         def prepare():
+            selection = post_processing_model_selection(scan)
             return prepare_dependency_workspace(
                 data_dir=self.config.data_dir,
                 checkout_cache_dir=getattr(self.config, "checkout_cache_dir", None),
@@ -499,8 +496,8 @@ class PostProcessor:
                 scan=scan,
                 github_token=self.config.github_token,
                 agent_skills=agent_skills or [],
-                harness_name=normalize_harness_name(scan["harness"]),
-                model_provider=self._model_provider(scan),
+                harness_name=normalize_harness_name(selection.harness),
+                model_provider=selection.model_provider,
                 use_snapshot_image=image_workspace_enabled(data_dir=getattr(self.config, "data_dir", None)),
             )
 
@@ -525,6 +522,7 @@ class PostProcessor:
     ) -> tuple[dict[str, Any], dict[str, Any] | None, str | None, str]:
         prepared = None
         try:
+            selection = post_processing_model_selection(scan)
             agent_skills = self._agent_skills(scan)
             prepared = self._prepare_workspace(metadata_id, scan, agent_skills=agent_skills)
             checked_out_commit = prepared.checked_out_commit
@@ -543,12 +541,12 @@ class PostProcessor:
             else:
                 prompt_body = append_schema_prompt(prompt, schema)
             prompt_parts = [
-                native_agent_skills_prompt(agent_skills, normalize_harness_name(scan["harness"])),
+                native_agent_skills_prompt(agent_skills, normalize_harness_name(selection.harness)),
                 workspace_prompt_context(prepared.layout, prepared.manifest_json),
                 prompt_body,
             ]
             final_prompt = "\n\n".join(part for part in prompt_parts if part)
-            thinking_effort = post_processing_thinking_effort(scan)
+            thinking_effort = selection.thinking_effort
             with self.db.connect() as conn:
                 self.db.update_post_process_metadata(
                     conn,
@@ -584,7 +582,7 @@ class PostProcessor:
                             "prompt": final_prompt,
                             "schema": schema,
                             "repo_dir": prepared.repo_dir,
-                            "model": scan["model"],
+                            "model": selection.model,
                             "thinking_effort": thinking_effort,
                             "env": prepared.workspace.env,
                         }
@@ -713,6 +711,7 @@ class PostProcessor:
             prompt = build_dedupe_prompt(current, anchors, targets)
             batch_index = self.db.next_post_process_batch_index(conn, scan_id, "dedupe")
             started = now_utc()
+            selection = post_processing_model_selection(current)
             metadata_id = self.db.claim_post_process_metadata(
                 conn,
                 scan_id=scan_id,
@@ -722,10 +721,10 @@ class PostProcessor:
                 target_vulnerability_ids=[_int(row["id"]) for row in targets],
                 prompt_template="anchored-dedupe",
                 prompt_filled="",
-                model=current["model"],
-                harness=current["harness"],
-                thinking_effort=post_processing_thinking_effort(current),
-                model_provider=self._model_provider(current),
+                model=selection.model,
+                harness=selection.harness,
+                thinking_effort=selection.thinking_effort,
+                model_provider=selection.model_provider,
                 run_started_at=started,
             )
             conn.commit()
@@ -754,7 +753,7 @@ class PostProcessor:
                     conn,
                     scan_id=scan_id,
                     dedupe_run_id=metadata_id,
-                    dedupe_model=current["model"],
+                    dedupe_model=selection.model,
                     mapping=mapping,
                 )
                 self.db.update_post_process_metadata(
@@ -801,6 +800,7 @@ class PostProcessor:
             prompt = build_ranker_prompt(current, anchors, targets)
             batch_index = self.db.next_post_process_batch_index(conn, scan_id, "ranker")
             started = now_utc()
+            selection = post_processing_model_selection(current)
             metadata_id = self.db.claim_post_process_metadata(
                 conn,
                 scan_id=scan_id,
@@ -810,10 +810,10 @@ class PostProcessor:
                 target_vulnerability_ids=[_int(row["id"]) for row in targets],
                 prompt_template="anchored-ranker",
                 prompt_filled="",
-                model=current["model"],
-                harness=current["harness"],
-                thinking_effort=post_processing_thinking_effort(current),
-                model_provider=self._model_provider(current),
+                model=selection.model,
+                harness=selection.harness,
+                thinking_effort=selection.thinking_effort,
+                model_provider=selection.model_provider,
                 run_started_at=started,
             )
             conn.commit()
@@ -839,7 +839,7 @@ class PostProcessor:
                 anchors=anchors,
                 targets=targets,
                 rank_run_id=metadata_id,
-                model=current["model"],
+                model=selection.model,
                 prompt_filled=prompt,
             )
             run_time_ms = int((now_utc() - started).total_seconds() * 1000)
@@ -948,6 +948,7 @@ class PostProcessor:
             if str(post_script.get("name") or "").strip().casefold() == "patched since":
                 prompt_template = patched_since_prompt(prompt_template)
             started = now_utc()
+            selection = post_processing_model_selection(current)
             metadata_id = self.db.claim_post_process_metadata(
                 conn,
                 scan_id=scan_id,
@@ -960,10 +961,10 @@ class PostProcessor:
                 target_vulnerability_ids=[_int(row["id"])],
                 prompt_template=prompt_template,
                 prompt_filled="",
-                model=current["model"],
-                harness=current["harness"],
-                thinking_effort=post_processing_thinking_effort(current),
-                model_provider=self._model_provider(current),
+                model=selection.model,
+                harness=selection.harness,
+                thinking_effort=selection.thinking_effort,
+                model_provider=selection.model_provider,
                 run_started_at=started,
             )
             conn.commit()

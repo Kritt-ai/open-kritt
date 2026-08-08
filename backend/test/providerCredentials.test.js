@@ -210,6 +210,14 @@ test('account overview merges executor detail without exposing unrecognized fiel
               manualResetCredits: {
                 availableCount: 3,
                 applicableAvailableCount: 1,
+                credits: [
+                  {
+                    id: 'credit-id-must-not-leak',
+                    title: 'Full reset',
+                    expiresAt: '2026-08-12T18:07:27Z',
+                    secret: 'credit-secret-must-not-leak',
+                  },
+                ],
                 secret: 'nested-secret-must-not-leak',
               },
             },
@@ -238,6 +246,7 @@ test('account overview merges executor detail without exposing unrecognized fiel
   assert.deepEqual(account.rateLimits.manualResetCredits, {
     availableCount: 3,
     applicableAvailableCount: 1,
+    credits: [{ title: 'Full reset', expiresAt: '2026-08-12T18:07:27Z' }],
   });
   assert.deepEqual(account.credit, {
     usage: 25.5,

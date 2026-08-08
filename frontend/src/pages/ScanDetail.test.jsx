@@ -4,6 +4,9 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
 
 import {
+  activeJobDepthSummary,
+  activeJobWorkflowDepth,
+  formatActiveJobElapsed,
   loadModelReferences,
   mergeRunSettingsDraft,
   runSettingsDraft,
@@ -42,6 +45,10 @@ describe('scan run settings', () => {
     model: 'gpt-5-codex',
     model_provider: 'codex',
     thinking_effort: 'medium',
+    post_processing_model_override: false,
+    post_processing_model: 'gpt-5-codex',
+    post_processing_model_provider: 'codex',
+    post_processing_harness: 'codex',
     post_processing_thinking_effort: 'low',
     harness: 'codex',
     model_overrides: {},
@@ -53,6 +60,10 @@ describe('scan run settings', () => {
       model: 'gpt-5-codex',
       model_provider: 'codex',
       thinking_effort: 'medium',
+      post_processing_model_override: false,
+      post_processing_model: 'gpt-5-codex',
+      post_processing_model_provider: 'codex',
+      post_processing_harness: 'codex',
       post_processing_thinking_effort: 'low',
       harness: 'codex',
     };
@@ -66,6 +77,10 @@ describe('scan run settings', () => {
       model: 'legacy-model',
       model_provider: 'openrouter',
       thinking_effort: 'medium',
+      post_processing_model_override: false,
+      post_processing_model: 'legacy-model',
+      post_processing_model_provider: 'openrouter',
+      post_processing_harness: 'codex',
       post_processing_thinking_effort: 'medium',
       harness: 'codex',
       model_overrides: {},
@@ -85,6 +100,43 @@ describe('scan run settings', () => {
   it('updates post-processing effort independently', () => {
     expect(runSettingsPayload({ post_processing_thinking_effort: 'medium' }, current)).toEqual({
       post_processing_thinking_effort: 'medium',
+    });
+  });
+
+  it('sets and clears an independent post-processing model selection', () => {
+    expect(
+      runSettingsPayload(
+        {
+          post_processing_model_override: true,
+          post_processing_model: 'claude-sonnet',
+          post_processing_model_provider: 'claude',
+          post_processing_harness: 'claude-code',
+          post_processing_thinking_effort: 'high',
+        },
+        current
+      )
+    ).toEqual({
+      post_processing_model: 'claude-sonnet',
+      post_processing_model_provider: 'claude',
+      post_processing_harness: 'claude-code',
+      post_processing_thinking_effort: 'high',
+    });
+
+    expect(
+      runSettingsPayload(
+        { post_processing_model_override: false },
+        {
+          ...current,
+          post_processing_model_override: true,
+          post_processing_model: 'claude-sonnet',
+          post_processing_model_provider: 'claude',
+          post_processing_harness: 'claude-code',
+        }
+      )
+    ).toEqual({
+      post_processing_model: null,
+      post_processing_model_provider: null,
+      post_processing_harness: null,
     });
   });
 
@@ -155,6 +207,98 @@ describe('scan lifecycle actions', () => {
       canResume: false,
       canDelete: true,
     });
+  });
+});
+
+describe('active worker presentation', () => {
+  it('derives workflow depth explicitly and from legacy active-worker titles', () => {
+    expect(activeJobWorkflowDepth({ depth: 3, title: '1 · ignored fallback' })).toBe(3);
+    expect(activeJobWorkflowDepth({ title: '2 · Derive concrete exploit candidates' })).toBe(2);
+    expect(activeJobWorkflowDepth({ kind: 'post_script', depth: 4, title: '4 · ignored' })).toBeNull();
+    expect(activeJobWorkflowDepth({ title: 'Post processing' })).toBeNull();
+  });
+
+  it('summarizes active workers by depth in stable workflow order', () => {
+    expect(
+      activeJobDepthSummary([
+        { depth: 2 },
+        { title: '1 · Trace security-sensitive flows' },
+        { depth: 2 },
+        { kind: 'post_script', title: 'Report Creator' },
+      ])
+    ).toEqual([
+      { key: 'depth-1', label: 'D1', depth: 1, count: 1 },
+      { key: 'depth-2', label: 'D2', depth: 2, count: 2 },
+      { key: 'post', label: 'POST', depth: null, count: 1 },
+    ]);
+  });
+
+  it('formats active harness duration without implying that extended work is stuck', () => {
+    expect(formatActiveJobElapsed(0)).toBe('<1s');
+    expect(formatActiveJobElapsed(56 * 60 * 1000)).toBe('56m');
+    expect(formatActiveJobElapsed((2 * 60 + 7) * 60 * 1000)).toBe('2h 7m');
+  });
+
+  it('renders every server-provided active worker', () => {
+    const html = renderToStaticMarkup(
+      createElement(ScanStatusPanel, {
+        scan: {
+          status: 'running',
+          statusSummary: {
+            totalAttempts: 10,
+            activeJobs: Array.from({ length: 10 }, (_, index) => ({
+              id: `worker-${index + 1}`,
+              phaseLabel: 'Running harness',
+              title: `Worker ${index + 1}`,
+            })),
+          },
+        },
+      })
+    );
+
+    expect(html).toContain('Worker 1');
+    expect(html).toContain('Worker 10');
+  });
+
+  it('renders a complete depth-aware active-worker card', () => {
+    const html = renderToStaticMarkup(
+      createElement(ScanStatusPanel, {
+        scan: {
+          status: 'running',
+          statusSummary: {
+            totalAttempts: 1,
+            activeJobs: [
+              {
+                id: '983',
+                depth: 2,
+                phaseLabel: 'Running harness',
+                title: '2 · Derive concrete exploit candidates',
+                elapsedMs: 56 * 60 * 1000,
+                model: 'gpt-5.6-luna',
+                modelProvider: 'codex',
+                harness: 'codex',
+                thinkingEffort: 'max',
+              },
+            ],
+          },
+        },
+      })
+    );
+
+    expect(html).toContain('Active workers');
+    expect(html).toContain('Depth 2: 1 active worker');
+    expect(html).toContain('Workflow depth 2 worker');
+    expect(html).toContain('D2');
+    expect(html).toContain('longest 56m');
+    expect(html).toContain('extended · 56m');
+    expect(html).toContain('2 · Derive concrete exploit candidates');
+    expect(html).toContain('Model: gpt-5.6-luna; Harness: Codex CLI');
+    expect(html).toContain('gpt-5.6-luna');
+    expect(html).toContain('Codex CLI');
+    expect(html).toContain('white-space:normal');
+    expect(html).toContain('overflow-wrap:anywhere');
+    expect(html).toContain('The engine reports failures separately below.');
+    expect(html).not.toContain('Stuck');
   });
 });
 

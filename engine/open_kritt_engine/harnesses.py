@@ -792,6 +792,8 @@ def _scan_docker_command(
     env: dict[str, str],
     *,
     runner_image: str | None = None,
+    memory_limit_mb: int = 0,
+    memory_reservation_mb: int = 0,
 ) -> list[str]:
     """Run a tool-enabled harness in a per-job network and mount namespace."""
 
@@ -864,6 +866,14 @@ def _scan_docker_command(
         "--pids-limit",
         "512",
     ]
+    if memory_limit_mb > 0:
+        memory = f"{int(memory_limit_mb)}m"
+        docker_cmd.extend(["--memory", memory, "--memory-swap", memory])
+    reservation_mb = max(0, int(memory_reservation_mb))
+    if memory_limit_mb > 0:
+        reservation_mb = min(reservation_mb, int(memory_limit_mb))
+    if reservation_mb > 0:
+        docker_cmd.extend(["--memory-reservation", f"{reservation_mb}m"])
     if workspace_host is not None:
         docker_cmd.extend(
             [
@@ -1418,6 +1428,8 @@ class CodexHarness:
         codex_model_provider: str | None = None,
         max_subagents: int = 5,
         fast_mode: bool = False,
+        runner_memory_mb: int = 0,
+        runner_memory_reservation_mb: int = 0,
     ):
         self.timeout_seconds = timeout_seconds
         self.model_provider = model_provider
@@ -1425,6 +1437,8 @@ class CodexHarness:
         self.cli_gate = cli_gate
         self.max_subagents = max(1, min(int(max_subagents), 5))
         self.fast_mode = bool(fast_mode)
+        self.runner_memory_mb = max(0, int(runner_memory_mb))
+        self.runner_memory_reservation_mb = max(0, int(runner_memory_reservation_mb))
 
     def run(
         self,
@@ -1476,10 +1490,13 @@ class CodexHarness:
                 fast_mode=self.fast_mode,
             )
             if allow_tools:
-                cmd = (
-                    _scan_docker_command(cmd, repo_dir, actual_env, runner_image=runner_image)
-                    if runner_image
-                    else _scan_docker_command(cmd, repo_dir, actual_env)
+                cmd = _scan_docker_command(
+                    cmd,
+                    repo_dir,
+                    actual_env,
+                    runner_image=runner_image,
+                    memory_limit_mb=self.runner_memory_mb,
+                    memory_reservation_mb=self.runner_memory_reservation_mb,
                 )
             started_at = time.time()
             proc = _run_process(cmd, prompt, repo_dir, self.timeout_seconds, env=actual_env)
@@ -1593,10 +1610,13 @@ class CodexHarness:
         if thinking_effort and thinking_effort != "default":
             cmd.extend(["-c", f'model_reasoning_effort="{thinking_effort}"'])
         cmd.extend([session_id, "-"])
-        cmd = (
-            _scan_docker_command(cmd, repo_dir, env, runner_image=runner_image)
-            if runner_image
-            else _scan_docker_command(cmd, repo_dir, env)
+        cmd = _scan_docker_command(
+            cmd,
+            repo_dir,
+            env,
+            runner_image=runner_image,
+            memory_limit_mb=self.runner_memory_mb,
+            memory_reservation_mb=self.runner_memory_reservation_mb,
         )
         started_at = time.time()
         proc = _run_process(cmd, _resume_json_prompt(schema), repo_dir, self.timeout_seconds, env=env)
@@ -1642,9 +1662,17 @@ class CodexHarness:
 class ClaudeHarness:
     name = "claude-code"
 
-    def __init__(self, timeout_seconds: int, model_provider: str | None = None):
+    def __init__(
+        self,
+        timeout_seconds: int,
+        model_provider: str | None = None,
+        runner_memory_mb: int = 0,
+        runner_memory_reservation_mb: int = 0,
+    ):
         self.timeout_seconds = timeout_seconds
         self.model_provider = model_provider
+        self.runner_memory_mb = max(0, int(runner_memory_mb))
+        self.runner_memory_reservation_mb = max(0, int(runner_memory_reservation_mb))
 
     def run(
         self,
@@ -1689,10 +1717,13 @@ class ClaudeHarness:
         if thinking_effort and thinking_effort != "default":
             cmd.extend(["--effort", thinking_effort])
         run_cmd = (
-            (
-                _scan_docker_command(cmd, repo_dir, actual_env, runner_image=runner_image)
-                if runner_image
-                else _scan_docker_command(cmd, repo_dir, actual_env)
+            _scan_docker_command(
+                cmd,
+                repo_dir,
+                actual_env,
+                runner_image=runner_image,
+                memory_limit_mb=self.runner_memory_mb,
+                memory_reservation_mb=self.runner_memory_reservation_mb,
             )
             if allow_tools
             else cmd
@@ -1777,9 +1808,17 @@ def _cursor_model_name(model: str, model_provider: str | None = None, thinking_e
 class CursorHarness:
     name = "cursor"
 
-    def __init__(self, timeout_seconds: int, model_provider: str | None = None):
+    def __init__(
+        self,
+        timeout_seconds: int,
+        model_provider: str | None = None,
+        runner_memory_mb: int = 0,
+        runner_memory_reservation_mb: int = 0,
+    ):
         self.timeout_seconds = timeout_seconds
         self.model_provider = model_provider
+        self.runner_memory_mb = max(0, int(runner_memory_mb))
+        self.runner_memory_reservation_mb = max(0, int(runner_memory_reservation_mb))
 
     def run(
         self,
@@ -1817,10 +1856,13 @@ class CursorHarness:
             repo_dir,
             "Read the full task from standard input, complete it in this workspace, and return only the requested structured JSON.",
         ]
-        cmd = (
-            _scan_docker_command(cmd, repo_dir, actual_env, runner_image=runner_image)
-            if runner_image
-            else _scan_docker_command(cmd, repo_dir, actual_env)
+        cmd = _scan_docker_command(
+            cmd,
+            repo_dir,
+            actual_env,
+            runner_image=runner_image,
+            memory_limit_mb=self.runner_memory_mb,
+            memory_reservation_mb=self.runner_memory_reservation_mb,
         )
         proc = _run_process(cmd, prompt, repo_dir, self.timeout_seconds, env=actual_env)
         process_output = _process_output(proc)
@@ -1864,6 +1906,8 @@ def harness_for(
     codex_cli_gate=None,
     codex_max_subagents: int = 5,
     codex_fast_mode: bool = False,
+    runner_memory_mb: int = 0,
+    runner_memory_reservation_mb: int = 0,
 ):
     normalized = normalize_harness_name(name)
     provider = model_provider if model_provider is not None else codex_model_provider
@@ -1875,9 +1919,21 @@ def harness_for(
             codex_model_provider=codex_model_provider,
             max_subagents=codex_max_subagents,
             fast_mode=codex_fast_mode,
+            runner_memory_mb=runner_memory_mb,
+            runner_memory_reservation_mb=runner_memory_reservation_mb,
         )
     if normalized == "claude-code":
-        return ClaudeHarness(timeout_seconds, provider)
+        return ClaudeHarness(
+            timeout_seconds,
+            provider,
+            runner_memory_mb=runner_memory_mb,
+            runner_memory_reservation_mb=runner_memory_reservation_mb,
+        )
     if normalized == "cursor":
-        return CursorHarness(timeout_seconds, provider)
+        return CursorHarness(
+            timeout_seconds,
+            provider,
+            runner_memory_mb=runner_memory_mb,
+            runner_memory_reservation_mb=runner_memory_reservation_mb,
+        )
     raise HarnessError(f"unsupported harness {name!r}")

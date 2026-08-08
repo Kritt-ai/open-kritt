@@ -254,6 +254,67 @@ test('runtime scan updates validate a separate post-processing thinking effort',
   ]);
 });
 
+test('runtime scan updates set and clear an independent post-processing model selection', async () => {
+  const current = {
+    model: 'gpt-5.5',
+    modelProvider: 'codex',
+    harness: 'codex',
+    thinkingEffort: 'high',
+    configuration: { post_processing_thinking_effort: 'high' },
+  };
+  const checkedSelections = [];
+
+  const data = await validateScanRuntimeUpdate(
+    {
+      post_processing_model: 'claude-sonnet',
+      post_processing_model_provider: 'claude',
+      post_processing_harness: 'claude-code',
+      post_processing_thinking_effort: 'medium',
+    },
+    current,
+    { assertAvailable: async (selection) => checkedSelections.push(selection) }
+  );
+
+  assert.deepEqual(data, {
+    postProcessingModel: 'claude-sonnet',
+    postProcessingModelProvider: 'claude',
+    postProcessingHarness: 'claude-code',
+    postProcessingThinkingEffort: 'medium',
+  });
+  assert.deepEqual(checkedSelections, [
+    {
+      model: 'claude-sonnet',
+      modelProvider: 'claude',
+      harness: 'claude-code',
+      thinkingEffort: 'medium',
+    },
+  ]);
+
+  const cleared = await validateScanRuntimeUpdate(
+    {
+      post_processing_model: null,
+      post_processing_model_provider: null,
+      post_processing_harness: null,
+    },
+    {
+      ...current,
+      configuration: {
+        post_processing_model: 'claude-sonnet',
+        post_processing_model_provider: 'claude',
+        post_processing_harness: 'claude-code',
+        post_processing_thinking_effort: 'medium',
+      },
+    },
+    { assertAvailable: async () => {} }
+  );
+
+  assert.deepEqual(cleared, {
+    postProcessingModel: null,
+    postProcessingModelProvider: null,
+    postProcessingHarness: null,
+  });
+});
+
 test('runtime scan updates validate and replace depth model overrides', async () => {
   const current = {
     model: 'gpt-5.5',

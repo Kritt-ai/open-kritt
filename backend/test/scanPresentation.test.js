@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
+  activeJobElapsedMs,
+  activeJobRuntimeSelection,
+  activeJobWorkflowDepth,
   cleanError,
   configuredPostScriptIds,
   errorIsFromPreviousRun,
@@ -12,6 +15,86 @@ import {
 } from '../src/lib/repo.js';
 import { serializeScan } from '../src/lib/serialize.js';
 import { SCAN_STATUSES } from '../src/lib/constants.js';
+
+test('active workers expose workflow depth only for workflow steps', () => {
+  assert.equal(activeJobWorkflowDepth({ kind: 'step' }, { depth: 2 }), 2);
+  assert.equal(activeJobWorkflowDepth({}, { depth: 0 }), 0);
+  assert.equal(activeJobWorkflowDepth({ kind: 'post_script' }, { depth: 3 }), null);
+  assert.equal(activeJobWorkflowDepth({ kind: 'step' }, null), null);
+});
+
+test('active worker duration begins at the harness phase instead of the earlier metadata claim', () => {
+  const now = Date.parse('2026-08-02T12:00:00.000Z');
+  const row = {
+    status: 'running',
+    phase: 'running_harness',
+    runStartedAt: new Date('2026-08-02T09:00:00.000Z'),
+    updatedAt: new Date('2026-08-02T11:04:00.000Z'),
+    runTimeMs: 0,
+  };
+
+  assert.equal(activeJobElapsedMs(row, row.phase, now), 56 * 60 * 1000);
+  assert.equal(activeJobElapsedMs({ ...row, phase: 'building_workspace' }, 'building_workspace', now), null);
+  assert.equal(activeJobElapsedMs({ ...row, runTimeMs: 1234 }, 'writing_db', now), 1234);
+});
+
+test('active worker runtime resolves persisted metadata, depth overrides, and scan fallbacks in order', () => {
+  const scan = {
+    model: 'scan-model',
+    modelProvider: 'codex',
+    harness: 'codex',
+    thinkingEffort: 'xhigh',
+    modelOverrides: {
+      2: {
+        model: 'depth-model',
+        model_provider: 'factory',
+        harness: 'droid',
+        thinking_effort: 'max',
+      },
+    },
+  };
+
+  assert.deepEqual(activeJobRuntimeSelection({ kind: 'step' }, { depth: 2 }, scan), {
+    model: 'depth-model',
+    modelProvider: 'factory',
+    harness: 'droid',
+    thinkingEffort: 'max',
+  });
+  assert.deepEqual(activeJobRuntimeSelection({ kind: 'step', model: 'persisted-model' }, { depth: 2 }, scan), {
+    model: 'persisted-model',
+    modelProvider: 'factory',
+    harness: 'droid',
+    thinkingEffort: 'max',
+  });
+});
+
+test('post-processing workers use their recorded runtime or configured fallback', () => {
+  const scan = {
+    model: 'scan-model',
+    modelProvider: 'codex',
+    harness: 'codex',
+    thinkingEffort: 'high',
+    configuration: {
+      post_processing_model: 'post-model',
+      post_processing_model_provider: 'factory',
+      post_processing_harness: 'droid',
+      post_processing_thinking_effort: 'xhigh',
+    },
+  };
+
+  assert.deepEqual(activeJobRuntimeSelection({ kind: 'post_script' }, null, scan), {
+    model: 'post-model',
+    modelProvider: 'factory',
+    harness: 'droid',
+    thinkingEffort: 'xhigh',
+  });
+  assert.deepEqual(activeJobRuntimeSelection({ kind: 'post_script', model: 'persisted-post-model' }, null, scan), {
+    model: 'persisted-post-model',
+    modelProvider: 'factory',
+    harness: 'droid',
+    thinkingEffort: 'xhigh',
+  });
+});
 
 test('lineage summary includes unclaimed fan-out work in the denominator', () => {
   const scan = { configuration: {} };
@@ -103,7 +186,12 @@ test('scan serialization distinguishes raw candidates from listed findings', () 
       commitSha: '4a7dfc2',
       repoScope: 'full',
       dependencies: [],
-      configuration: {},
+      configuration: {
+        post_processing_model: 'gpt-5.6-sol',
+        post_processing_model_provider: 'codex',
+        post_processing_harness: 'codex',
+        post_processing_thinking_effort: 'max',
+      },
       model: 'gpt-5.4',
       modelProvider: 'codex',
       harness: 'codex',
@@ -144,6 +232,11 @@ test('scan serialization distinguishes raw candidates from listed findings', () 
   assert.deepEqual(serialized.postScriptNames, ['Ease of exploitability', 'Patched since', 'Resource exhaustion']);
   assert.equal(serialized.postScripts[0].primary, true);
   assert.deepEqual(serialized.workflowDepths, [0, 1]);
+  assert.equal(serialized.postProcessingModelOverride, true);
+  assert.equal(serialized.postProcessingModel, 'gpt-5.6-sol');
+  assert.equal(serialized.postProcessingModelProvider, 'codex');
+  assert.equal(serialized.postProcessingHarness, 'codex');
+  assert.equal(serialized.postProcessingThinkingEffort, 'max');
   assert.deepEqual(serialized.modelOverrides, {
     1: {
       model: 'claude-sonnet',

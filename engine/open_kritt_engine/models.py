@@ -53,15 +53,39 @@ def model_selection_for_depth(scan: dict[str, Any], depth: int | None = None) ->
 
 
 def post_processing_thinking_effort(scan: dict[str, Any]) -> str:
+    return post_processing_model_selection(scan).thinking_effort
+
+
+def post_processing_model_selection(scan: dict[str, Any]) -> ModelSelection:
     configuration = scan.get("configuration")
     if not isinstance(configuration, dict):
         configuration = {}
-    fallback = _selection_value(scan, "thinking_effort", "thinkingEffort", "medium")
-    return _selection_value(
-        configuration,
-        "post_processing_thinking_effort",
-        "postProcessingThinkingEffort",
-        fallback,
+    default = model_selection_for_depth(scan)
+    return ModelSelection(
+        model=_selection_value(
+            configuration,
+            "post_processing_model",
+            "postProcessingModel",
+            default.model,
+        ),
+        model_provider=_selection_value(
+            configuration,
+            "post_processing_model_provider",
+            "postProcessingModelProvider",
+            default.model_provider,
+        ),
+        harness=_selection_value(
+            configuration,
+            "post_processing_harness",
+            "postProcessingHarness",
+            default.harness,
+        ),
+        thinking_effort=_selection_value(
+            configuration,
+            "post_processing_thinking_effort",
+            "postProcessingThinkingEffort",
+            default.thinking_effort,
+        ),
     )
 
 
