@@ -3,9 +3,11 @@ import { EventEmitter } from 'node:events';
 import { chmod, mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { PassThrough } from 'node:stream';
 import test from 'node:test';
 
 import {
+  createPrompter,
   ensureEnvFile,
   getSetupStatus,
   importCodexAuth,
@@ -642,4 +644,21 @@ test('help is available for subcommands and unknown commands fail clearly', asyn
   const unknownIo = testIo();
   assert.equal(await runCli(['unknown'], { ...project, io: unknownIo }), 1);
   assert.match(unknownIo.error.text, /Unknown command/);
+});
+
+test('secret prompt falls back to a visible prompt when the terminal cannot enter raw mode (issue #55)', async () => {
+  const apiKey = 'sk-or-visible-fallback';
+  // Reproduces Windows Git Bash / MSYS: an interactive stdin whose isTTY is
+  // undefined and that has no setRawMode. Before the fix this threw
+  // "Secret entry requires an interactive terminal." and aborted setup.
+  const input = new PassThrough();
+  const output = new BufferStream();
+  const prompter = createPrompter({ input, output, error: new BufferStream() });
+
+  const pending = prompter.secret('Enter OpenRouter API key (input is hidden): ');
+  input.write(`${apiKey}\n`);
+  input.end();
+
+  assert.equal(await pending, apiKey);
+  assert.match(output.text, /cannot hide input/);
 });
