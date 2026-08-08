@@ -2,7 +2,7 @@ import os
 from dataclasses import dataclass
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from .runtime_config import runtime_int, sync_runtime_config_file
+from .runtime_config import runtime_bool, runtime_int, sync_runtime_config_file
 
 
 def _float_env(name, default):
@@ -55,6 +55,7 @@ class EngineConfig:
     repo_dir: str
     github_token: str | None
     codex_model_provider: str | None
+    codex_fast_mode: bool
     model_catalog_refresh_seconds: float
     model_catalog_timeout_seconds: float
     codex_auto_update: bool
@@ -112,6 +113,7 @@ class EngineConfig:
             repo_dir=os.getenv("ENGINE_REPO_DIR", os.path.join(data_dir, "jobs")),
             github_token=os.getenv("GITHUB_TOKEN") or None,
             codex_model_provider=os.getenv("CODEX_MODEL_PROVIDER") or None,
+            codex_fast_mode=runtime_bool("ENGINE_CODEX_FAST_MODE", False, data_dir=data_dir),
             model_catalog_refresh_seconds=max(30.0, _float_env("ENGINE_MODEL_CATALOG_REFRESH_SECONDS", 300.0)),
             model_catalog_timeout_seconds=max(1.0, _float_env("ENGINE_MODEL_CATALOG_TIMEOUT_SECONDS", 10.0)),
             codex_auto_update=_bool_env("ENGINE_CODEX_AUTO_UPDATE", False),

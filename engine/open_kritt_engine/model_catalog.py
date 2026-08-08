@@ -92,6 +92,34 @@ def _thinking_efforts(value: Any) -> list[str]:
     return [effort for effort in THINKING_EFFORT_ORDER if effort in efforts]
 
 
+def _service_tiers(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+
+    tiers: list[str] = []
+    for item in value:
+        if isinstance(item, Mapping):
+            item = item.get("id")
+        tier = _clean_text(item, limit=50).lower()
+        if tier and tier not in tiers:
+            tiers.append(tier)
+    return tiers
+
+
+def model_supports_service_tier(models: Any, model_id: str, service_tier: str) -> bool:
+    """Return whether a sanitized catalog explicitly advertises a tier for a model."""
+
+    requested_model = _clean_text(model_id)
+    requested_tier = _clean_text(service_tier, limit=50).lower()
+    if not isinstance(models, list) or not requested_model or not requested_tier:
+        return False
+    for model in models:
+        if not isinstance(model, Mapping) or _clean_text(model.get("id")) != requested_model:
+            continue
+        return requested_tier in _service_tiers(model.get("serviceTiers") or model.get("service_tiers"))
+    return False
+
+
 def _openrouter_thinking_efforts(entry: Mapping[str, Any]) -> list[str]:
     """Return only effort levels explicitly exposed by OpenRouter metadata."""
 
@@ -146,6 +174,9 @@ def normalize_catalog_models(entries: Any) -> tuple[list[dict[str, Any]], str]:
             ),
             "isDefault": False,
         }
+        service_tiers = _service_tiers(entry.get("serviceTiers") or entry.get("service_tiers"))
+        if service_tiers:
+            model["serviceTiers"] = service_tiers
         if note:
             model["note"] = note
         if note_url:

@@ -436,6 +436,14 @@ class Database:
             (provider, _json(models), default_model),
         )
 
+    def load_model_catalog_models(self, conn, provider: str) -> list[dict[str, Any]]:
+        row = conn.execute(
+            "SELECT models FROM public.model_catalogs WHERE provider = %s",
+            (provider,),
+        ).fetchone()
+        models = (row or {}).get("models")
+        return models if isinstance(models, list) else []
+
     def record_model_catalog_error(self, conn, *, provider: str, error: str) -> None:
         # Retain any successful catalog so a transient provider outage does not
         # erase selectable models already known to work for this account.
