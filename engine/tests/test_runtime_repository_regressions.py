@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from open_kritt_engine import repository
 from open_kritt_engine.config import EngineConfig
+from open_kritt_engine.models import ModelSelection
 from open_kritt_engine.post_processing import PostProcessor
 from open_kritt_engine.runtime_config import (
     RUNTIME_ENV_ALIASES,
@@ -13,6 +14,26 @@ from open_kritt_engine.runtime_config import (
     sync_runtime_config_file,
 )
 from open_kritt_engine.worker import Worker
+
+
+class _ConnectionContext:
+    def __enter__(self):
+        return object()
+
+    def __exit__(self, _exc_type, _exc, _traceback):
+        return False
+
+
+class _CatalogDatabase:
+    def __init__(self, models):
+        self.models = models
+
+    def connect(self):
+        return _ConnectionContext()
+
+    def load_model_catalog_models(self, _conn, provider):
+        assert provider == "codex"
+        return self.models
 
 
 def _git(*args: str, cwd: Path | None = None) -> str:
@@ -295,3 +316,30 @@ def test_worker_and_post_processor_read_live_retry_and_timeout_settings(monkeypa
     assert worker.runtime_retry_count() == 2
     assert worker.runtime_harness_timeout_seconds() == 7200
     assert post_processor._retry_count() == 2
+
+
+def test_worker_enables_fast_mode_only_for_a_model_that_advertises_the_tier():
+    worker = Worker.__new__(Worker)
+    worker.config = SimpleNamespace()
+    worker.runtime_codex_fast_mode = lambda: True
+    selection = ModelSelection(
+        model="gpt-fast",
+        model_provider="codex",
+        harness="codex",
+        thinking_effort="high",
+    )
+
+    worker.db = _CatalogDatabase([{"id": "gpt-fast", "serviceTiers": ["fast"]}])
+    assert worker._codex_fast_mode_for_selection(selection) is True
+
+    worker.db = _CatalogDatabase([{"id": "gpt-fast", "serviceTiers": []}])
+    assert worker._codex_fast_mode_for_selection(selection) is False
+
+    unsupported = ModelSelection(
+        model="gpt-standard",
+        model_provider="codex",
+        harness="codex",
+        thinking_effort="high",
+    )
+    worker.db = _CatalogDatabase([{"id": "gpt-fast", "serviceTiers": ["fast"]}])
+    assert worker._codex_fast_mode_for_selection(unsupported) is False

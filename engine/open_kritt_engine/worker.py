@@ -41,7 +41,7 @@ from .memory_budget import (
     system_memory_available_bytes,
     system_memory_total_bytes,
 )
-from .model_catalog import ModelCatalogRefresher
+from .model_catalog import ModelCatalogRefresher, model_supports_service_tier
 from .model_output_artifacts import record_model_error_output
 from .models import ModelSelection, model_selection_for_depth, post_processing_model_selection
 from .post_processing import PostProcessor, PostProcessRateLimited
@@ -491,6 +491,22 @@ class Worker:
             data_dir=getattr(self.config, "data_dir", None),
         )
 
+    def _codex_fast_mode_for_selection(self, selection: ModelSelection) -> bool:
+        if not self.runtime_codex_fast_mode():
+            return False
+        if scan_model_provider({"model_provider": selection.model_provider}) != "codex":
+            return False
+        load_models = getattr(self.db, "load_model_catalog_models", None)
+        if not callable(load_models):
+            return False
+        try:
+            with self.db.connect() as conn:
+                models = load_models(conn, "codex")
+        except Exception:
+            LOGGER.warning("could not verify Codex Fast Mode support for model %s", selection.model)
+            return False
+        return model_supports_service_tier(models, selection.model, "fast")
+
     def runtime_min_free_storage_bytes(self) -> int:
         configured_default = max(0, int(getattr(self.config, "min_free_storage_bytes", 0) or 0))
         data_dir = getattr(self.config, "data_dir", None)
@@ -523,7 +539,7 @@ class Worker:
             codex_model_provider=getattr(self.config, "codex_model_provider", None),
             codex_cli_gate=self.codex_cli_gate,
             codex_max_subagents=self.runtime_codex_max_subagents(),
-            codex_fast_mode=self.runtime_codex_fast_mode(),
+            codex_fast_mode=self._codex_fast_mode_for_selection(selection),
             runner_memory_mb=self.runtime_scan_runner_memory_mb(),
             runner_memory_reservation_mb=self.runtime_scan_runner_memory_reservation_mb(),
         )

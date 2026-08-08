@@ -15,6 +15,7 @@ from open_kritt_engine.model_catalog import (
     fetch_anthropic_models,
     fetch_codex_models,
     fetch_openrouter_models,
+    model_supports_service_tier,
     normalize_catalog_models,
 )
 
@@ -100,6 +101,12 @@ def test_normalize_catalog_models_prefers_cli_model_and_sanitizes_metadata():
                 "id": "internal-id",
                 "model": "gpt-5-codex",
                 "displayName": "GPT-5 Codex",
+                "serviceTiers": [
+                    {"id": "fast", "name": "Fast"},
+                    {"id": "fast", "name": "Duplicate"},
+                    {"id": "flex", "name": "Flex"},
+                    {"id": "\ninvalid"},
+                ],
                 "supportedReasoningEfforts": [
                     {"reasoningEffort": "low"},
                     {"reasoningEffort": "medium"},
@@ -121,6 +128,7 @@ def test_normalize_catalog_models_prefers_cli_model_and_sanitizes_metadata():
             "label": "GPT-5 Codex",
             "thinkingEfforts": ["low", "medium", "max", "ultra"],
             "isDefault": False,
+            "serviceTiers": ["fast", "flex"],
         },
         {
             "id": "claude-sonnet-4",
@@ -130,6 +138,17 @@ def test_normalize_catalog_models_prefers_cli_model_and_sanitizes_metadata():
         },
     ]
     assert default_model == "claude-sonnet-4"
+
+
+def test_model_service_tier_support_requires_an_exact_catalog_advertisement():
+    models = [
+        {"id": "gpt-fast", "serviceTiers": ["fast"]},
+        {"id": "gpt-standard"},
+    ]
+
+    assert model_supports_service_tier(models, "gpt-fast", "fast") is True
+    assert model_supports_service_tier(models, "gpt-standard", "fast") is False
+    assert model_supports_service_tier(models, "unknown", "fast") is False
 
 
 def test_normalize_catalog_models_adds_cyber_note_to_gpt_models_newer_than_5_4():
