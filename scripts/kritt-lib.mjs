@@ -6,30 +6,11 @@ import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 
-export const PROVIDER_KEYS = [
-  'CODEX_API_KEY',
-  'OPENAI_API_KEY',
-  'ANTHROPIC_API_KEY',
-  'OPENROUTER_API_KEY',
-  'XAI_API_KEY',
-];
+export const PROVIDER_KEYS = ['CODEX_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'OPENROUTER_API_KEY'];
 export const CODEX_LOGIN_STATUS_KEY = 'CODEX_LOGIN_CONFIGURED';
-export const MANAGED_PROVIDER_ENV_KEYS = {
-  openrouter: 'OPENROUTER_API_KEY',
-  xai: 'XAI_API_KEY',
-};
-export const MANAGED_PROVIDER_LABELS = {
+const MANAGED_PROVIDER_LABELS = {
   openrouter: 'OpenRouter API key',
-  xai: 'xAI API key',
 };
-const MANAGED_ENV_KEY_TO_PROVIDER = Object.fromEntries(
-  Object.entries(MANAGED_PROVIDER_ENV_KEYS).map(([provider, key]) => [key, provider])
-);
-
-export function managedProviderForEnvKey(envKey) {
-  return MANAGED_ENV_KEY_TO_PROVIDER[envKey] ?? null;
-}
-
 const CODEX_LOGIN_CONTAINER_USER_HOME = '/open-kritt-login';
 const CODEX_LOGIN_CONTAINER_HOME = `${CODEX_LOGIN_CONTAINER_USER_HOME}/.codex`;
 const CODEX_LOGIN_CONTAINER_BOOTSTRAP =
@@ -57,20 +38,11 @@ export const ENVIRONMENT_ITEMS = [
     info: 'Used for supported OpenRouter-compatible model and harness selections.',
   },
   {
-    key: 'XAI_API_KEY',
-    label: 'xAI API key',
-    info: 'Used by the Grok Build harness via the xAI provider.',
-  },
-  {
     key: 'GITHUB_TOKEN',
     label: 'GitHub token',
     info: 'Optional. It lets the engine clone private GitHub repositories and dependencies. Public and local scans do not need it.',
   },
 ];
-
-export function providerEnvironmentItems() {
-  return ENVIRONMENT_ITEMS.filter((item) => item.key !== 'GITHUB_TOKEN');
-}
 
 export const CODEX_LOGIN = {
   label: 'Codex login',
@@ -548,10 +520,10 @@ export async function getSetupStatus({ rootDir, envFile = join(rootDir, '.env'),
   const managedState = await managedProviderState(credentialsPath);
   const disabledProviders = managedState.disabledEnvironmentProviders;
   const valuesPresent = Object.fromEntries(
-    ENVIRONMENT_ITEMS.map(({ key }) => {
-      const provider = managedProviderForEnvKey(key);
-      return [key, Boolean(values[key]) && !(provider && disabledProviders.includes(provider))];
-    })
+    ENVIRONMENT_ITEMS.map(({ key }) => [
+      key,
+      Boolean(values[key]) && !(key === 'OPENROUTER_API_KEY' && disabledProviders.includes('openrouter')),
+    ])
   );
   const codexAuthInspections = await Promise.all(
     codexHomes.map((home) => inspectCodexAuthFile(join(home, 'auth.json')))
@@ -696,7 +668,7 @@ function renderStatus(status, io) {
     io,
     `${status.claudeLoginPresent ? '✓' : '○'} Claude login ${status.claudeLoginPresent ? 'present' : 'not set'}`
   );
-  for (const item of providerEnvironmentItems()) {
+  for (const item of ENVIRONMENT_ITEMS.slice(0, 4)) {
     const present = status.valuesPresent[item.key];
     write(io, `${present ? '✓' : '○'} ${item.label} ${present ? 'present' : 'not set'}`);
   }
@@ -814,19 +786,17 @@ async function manageEnvironmentItem(context, item) {
       write(io, 'Nothing changed.');
       return;
     }
-    const managedProvider = managedProviderForEnvKey(item.key);
-    if (managedProvider) {
+    if (item.key === 'OPENROUTER_API_KEY') {
       const status = await getSetupStatus(context);
-      await saveManagedProviderCredential(status.credentialsPath, managedProvider, value);
+      await saveManagedProviderCredential(status.credentialsPath, 'openrouter', value);
     }
     await setEnvValue(envFile, item.key, value);
     write(io, `${item.label} saved.`);
   } else if (action === '2') {
     if (await prompter.confirm(`Unset ${item.label}?`)) {
-      const managedProvider = managedProviderForEnvKey(item.key);
-      if (managedProvider) {
+      if (item.key === 'OPENROUTER_API_KEY') {
         const status = await getSetupStatus(context);
-        await disableManagedProviderCredential(status.credentialsPath, managedProvider);
+        await disableManagedProviderCredential(status.credentialsPath, 'openrouter');
       }
       await setEnvValue(envFile, item.key, '');
       write(io, `${item.label} unset.`);
@@ -1202,12 +1172,11 @@ export async function runSetup(options = {}) {
     write(context.io, '4) OpenAI API key');
     write(context.io, '5) Anthropic API key');
     write(context.io, '6) OpenRouter API key');
-    write(context.io, '7) xAI API key');
-    write(context.io, '8) GitHub token');
-    write(context.io, '9) Finish setup');
+    write(context.io, '7) GitHub token');
+    write(context.io, '8) Finish setup');
     const choice = (await context.prompter.ask('Choose an item: ')).toLowerCase();
 
-    if (choice === '9' || choice === 'q' || choice === 'quit') break;
+    if (choice === '8' || choice === 'q' || choice === 'quit') break;
     if (choice === '1') {
       await manageCodexLogin(context);
       continue;
@@ -1216,11 +1185,7 @@ export async function runSetup(options = {}) {
       await manageClaudeLogin(context);
       continue;
     }
-    const providerItems = providerEnvironmentItems();
-    const githubChoice = String(providerItems.length + 3);
-    const item =
-      providerItems[Number(choice) - 3] ||
-      (choice === githubChoice ? ENVIRONMENT_ITEMS.find((candidate) => candidate.key === 'GITHUB_TOKEN') : null);
+    const item = ENVIRONMENT_ITEMS[Number(choice) - 3] || (choice === '7' ? ENVIRONMENT_ITEMS[4] : null);
     if (!item) {
       write(context.io, 'Choose a listed item.');
       continue;
