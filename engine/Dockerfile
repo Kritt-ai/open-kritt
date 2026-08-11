@@ -29,9 +29,11 @@ RUN mkdir -p /run/open-kritt-secrets \
     && ln -s /run/open-kritt-secrets/local-repos /local_repos
 
 # Tool-enabled scans run as root inside disposable per-job containers. Keep
-# Cursor in a shared, checksummed image path so every runner can invoke it.
+# Cursor and Grok Build in shared, checksummed image paths so every runner can
+# invoke them.
 ARG TARGETARCH
 ARG CURSOR_AGENT_VERSION=2026.07.09-a3815c0
+ARG GROK_BUILD_VERSION=1.0.0
 RUN case "${TARGETARCH}" in \
       amd64) cursor_arch=x64; cursor_sha256=c7c1f32249cedb99cc20cd4eed1f9308dc2299a78c283bbc6efd6d658cd4977e ;; \
       arm64) cursor_arch=arm64; cursor_sha256=11b2b6801136a11a3632a4b1080ea3bfc7d97d0a68382be9ede1faf5333207fb ;; \
@@ -43,7 +45,17 @@ RUN case "${TARGETARCH}" in \
     && tar --strip-components=1 -xzf /tmp/cursor-agent.tar.gz -C "/opt/cursor-agent/versions/${CURSOR_AGENT_VERSION}" \
     && ln -s "/opt/cursor-agent/versions/${CURSOR_AGENT_VERSION}/cursor-agent" /usr/local/bin/agent \
     && ln -s "/opt/cursor-agent/versions/${CURSOR_AGENT_VERSION}/cursor-agent" /usr/local/bin/cursor-agent \
-    && rm /tmp/cursor-agent.tar.gz
+    && rm /tmp/cursor-agent.tar.gz \
+    && case "${TARGETARCH}" in \
+      amd64) grok_arch=linux-x86_64; grok_sha256=28dbc967a5843dae2374b6834dadbab95354e685c7e5c8dc750b92a4e5fc7c3e ;; \
+      arm64) grok_arch=linux-aarch64; grok_sha256=bb7c51116564a2219f6a49850815060f416918ac407f1f2ba82c53c0b0d4383f ;; \
+      *) echo "unsupported Grok Build architecture: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL "https://x.ai/cli/grok-${GROK_BUILD_VERSION}-${grok_arch}" -o /tmp/grok \
+    && echo "${grok_sha256}  /tmp/grok" | sha256sum -c - \
+    && install -m 0755 /tmp/grok /usr/local/bin/grok \
+    && rm /tmp/grok \
+    && grok --version
 
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 

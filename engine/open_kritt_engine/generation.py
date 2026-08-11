@@ -50,7 +50,7 @@ POST_SCRIPT_MARKDOWN_OUTPUT_KEYS = frozenset({"_reserved_report", "_reserved_poc
 POST_SCRIPT_CHIP_PREFIX = "_chip_"
 WORKFLOW_FIELD_TYPES = ("string", "number", "boolean", "array", "object")
 POST_SCRIPT_FIELD_TYPES = WORKFLOW_FIELD_TYPES
-MODEL_PROVIDERS = frozenset({"codex", "claude", "openrouter"})
+MODEL_PROVIDERS = frozenset({"codex", "claude", "openrouter", "xai"})
 THINKING_EFFORTS = frozenset({"default", "low", "medium", "high", "xhigh", "max", "ultra"})
 GENERATION_REQUEST_MAX_LENGTH = 20_000
 MODEL_ID_MAX_LENGTH = 200
@@ -63,10 +63,12 @@ MODEL_PROVIDER_HARNESSES = {
     "codex": frozenset({"codex"}),
     "claude": frozenset({"claude-code"}),
     "openrouter": frozenset({"codex", "claude-code"}),
+    "xai": frozenset({"grok-build"}),
 }
 HARNESS_THINKING_EFFORTS = {
     "codex": frozenset({"default", "low", "medium", "high", "xhigh", "max", "ultra"}),
     "claude-code": frozenset({"default", "low", "medium", "high", "xhigh", "max"}),
+    "grok-build": frozenset({"low", "medium", "high"}),
 }
 
 IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
@@ -101,6 +103,7 @@ GENERATION_PROVIDER_ENV_KEYS = {
     "codex": frozenset({"CODEX_API_KEY", "OPENAI_API_KEY", "CODEX_HOME"}),
     "claude": frozenset({"ANTHROPIC_API_KEY"}),
     "openrouter": frozenset({"OPENROUTER_API_KEY"}),
+    "xai": frozenset({"XAI_API_KEY", "GROK_BIN"}),
 }
 
 

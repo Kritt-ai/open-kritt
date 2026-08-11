@@ -656,11 +656,18 @@ def native_agent_skills_prompt(agent_skills: list[dict[str, Any]] | None, harnes
     if not agent_skills:
         return ""
     normalized = "codex" if harness_name == "codex-cli" else (harness_name or "codex")
+    if normalized == "grok":
+        normalized = "grok-build"
     if normalized == "claude-code":
         return f"/{SELECTED_AGENT_SKILLS_SLUG}"
     if normalized == "codex":
         return (
             f"${SELECTED_AGENT_SKILLS_SLUG}\n\nUse the installed native Open-Kritt selected scan skill for this task."
+        )
+    if normalized == "grok-build":
+        return (
+            f"Use the installed native Open-Kritt selected scan skill `{SELECTED_AGENT_SKILLS_SLUG}` "
+            "for this task (invoke it as a Grok Build skill/rule when available)."
         )
     return f"Use the installed native Open-Kritt selected scan skill `{SELECTED_AGENT_SKILLS_SLUG}` for this task."
 
