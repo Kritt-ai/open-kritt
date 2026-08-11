@@ -17,6 +17,7 @@ RUNTIME_ENV_ALIASES = {
     "ENGINE_SCAN_RUNNER_MEMORY_RESERVATION_MB": ("ENGINE_SCAN_RUNNER_MEMORY_RESERVATION_MB",),
     "ENGINE_CODEX_HOME": ("ENGINE_CODEX_HOME", "CODEX_HOME"),
     "ENGINE_CLAUDE_HOME": ("ENGINE_CLAUDE_HOME", "CLAUDE_HOME"),
+    "ENGINE_GROK_HOME": ("ENGINE_GROK_HOME", "GROK_HOME"),
     "ENGINE_WORKSPACE_SETUP_CONCURRENCY": ("ENGINE_WORKSPACE_SETUP_CONCURRENCY",),
     "ENGINE_POST_PROCESS_WORKSPACE_MODE": ("ENGINE_POST_PROCESS_WORKSPACE_MODE",),
     "ENGINE_RETRY_COUNT": ("ENGINE_RETRY_COUNT",),
@@ -57,6 +58,7 @@ def ensure_runtime_config_file(data_dir: str | None = None) -> Path:
         or "1536",
         "ENGINE_CODEX_HOME": os.getenv("ENGINE_CODEX_HOME") or os.getenv("CODEX_HOME") or "/root/.codex",
         "ENGINE_CLAUDE_HOME": os.getenv("ENGINE_CLAUDE_HOME") or os.getenv("CLAUDE_HOME") or "/root/.claude",
+        "ENGINE_GROK_HOME": os.getenv("ENGINE_GROK_HOME") or os.getenv("GROK_HOME") or "/root/.grok",
         "ENGINE_WORKSPACE_SETUP_CONCURRENCY": os.getenv("ENGINE_WORKSPACE_SETUP_CONCURRENCY") or "2",
         "ENGINE_POST_PROCESS_WORKSPACE_MODE": os.getenv("ENGINE_POST_PROCESS_WORKSPACE_MODE") or "copy",
         "ENGINE_RETRY_COUNT": os.getenv("ENGINE_RETRY_COUNT") or "2",
@@ -84,7 +86,7 @@ def ensure_runtime_config_file(data_dir: str | None = None) -> Path:
         "# ENGINE_CYBER_SAFETY_RETRY_COUNT=0 fails on the first policy block; positive values opt into retries.",
         "# ENGINE_WORKSPACE_SETUP_CONCURRENCY requires an engine recreation to take effect.",
         "# ENGINE_POST_PROCESS_WORKSPACE_MODE=image uses immutable Docker snapshots for workflow and post-processing jobs.",
-        "# Accounts updates ENGINE_CODEX_HOME and ENGINE_CLAUDE_HOME live; no engine restart is required.",
+        "# Accounts updates ENGINE_CODEX_HOME, ENGINE_CLAUDE_HOME, and ENGINE_GROK_HOME live; no engine restart is required.",
         "# Each list controls the provider homes copied into future job workspaces.",
         "",
     ]
@@ -128,7 +130,7 @@ def sync_runtime_config_file(data_dir: str | None = None) -> Path:
         key = stripped.split("=", 1)[0].strip()
         if key in updates:
             found.add(key)
-            if key not in {"ENGINE_CODEX_HOME", "ENGINE_CLAUDE_HOME"}:
+            if key not in {"ENGINE_CODEX_HOME", "ENGINE_CLAUDE_HOME", "ENGINE_GROK_HOME"}:
                 lines[index] = f"{key}={_quote_env_value(updates[key])}"
     remaining = {key: value for key, value in updates.items() if key not in found}
     if remaining:

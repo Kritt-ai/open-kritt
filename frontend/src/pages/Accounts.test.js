@@ -386,6 +386,40 @@ describe('creditUsageNote', () => {
   });
 });
 
+describe('xAI login provider', () => {
+  it('uses Grok device-login action labels and relogin targets', () => {
+    expect(
+      providerActionLabel({
+        id: 'xai',
+        label: 'xAI',
+        management: 'login',
+        configured: false,
+        accounts: [],
+      })
+    ).toBe('Add Grok account');
+    expect(
+      providerActionLabel({
+        id: 'xai',
+        label: 'xAI',
+        management: 'login',
+        configured: true,
+        accounts: [{ id: 'primary', statusKind: 'expired' }],
+      })
+    ).toBe('Sign in to xAI again');
+    expect(
+      providerReloginAccountId({
+        id: 'xai',
+        accounts: [
+          { id: 'active', statusKind: 'available' },
+          { id: 'expired', statusKind: 'expired' },
+        ],
+      })
+    ).toBe('expired');
+    const html = renderToStaticMarkup(createElement(ProviderSignInRequired, { providerId: 'xai' }));
+    expect(html).toContain('Sign in to xAI again');
+  });
+});
+
 describe('api key providers', () => {
   it('derives add-key labels from credential metadata', () => {
     expect(

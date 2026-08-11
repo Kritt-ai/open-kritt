@@ -1,17 +1,54 @@
 ---
 title: "xAI"
-description: "Create an xAI API key and run scans with the Grok Build harness."
+description: "Sign in with Grok device login or an xAI API key, then run scans with the Grok Build harness."
 ---
 
-The **xAI** provider uses `XAI_API_KEY` to call Grok models through xAI's API. open·kritt
-defaults this provider to the **Grok Build** harness (`grok-build`, alias `grok`).
+The **xAI** provider runs Grok models through the **Grok Build** harness (`grok-build`,
+alias `grok`). Configure access with either:
 
-After the key is configured, the engine periodically refreshes a searchable model catalog
-from xAI's authenticated models endpoint. The results reflect the models returned for that
-key and are cached for the create-scan and AI-generation forms. The catalog is advisory:
-you can also enter an exact model ID as a custom value, like OpenRouter.
+1. **Grok device login** (recommended when you have an xAI account session), or
+2. An **`XAI_API_KEY`** from the xAI Console.
 
-## Create and configure the key
+Both methods can coexist. Scan and generation jobs authenticate with a stored login
+(`GROK_HOME` / `auth.json`) when available, and fall back to `XAI_API_KEY` when you use
+the key path.
+
+After credentials are configured, the engine periodically refreshes a searchable model
+catalog from xAI's authenticated models endpoint when an API key is present. Catalog
+results are advisory: you can also enter an exact model ID as a custom value, like
+OpenRouter.
+
+## Sign in with Grok device login
+
+<Steps>
+  <Step title="Start open·kritt">
+    Complete `./kritt setup` if needed, then start the stack so the Accounts page can
+    drive the login:
+
+    ```bash
+    ./kritt start
+    ```
+  </Step>
+  <Step title="Open Accounts">
+    In the web UI, open **Accounts** and find the **xAI** provider card.
+  </Step>
+  <Step title="Start Grok login">
+    Choose **Add Grok account** (or **Sign in to xAI again** if a saved login expired).
+    open·kritt runs `grok login --device-auth` in the backend and shows a one-time device
+    code plus a sign-in URL.
+  </Step>
+  <Step title="Complete the device flow">
+    Open the xAI sign-in page, enter the device code, and finish authentication in the
+    browser. When the CLI writes credentials, Accounts marks the session complete.
+  </Step>
+  <Step title="Confirm storage">
+    Login material is stored under `ENGINE_GROK_HOME_HOST` / `ENGINE_GROK_ACCOUNTS_HOST`
+    (defaults `./.data/grok` and `./.data/grok-accounts`). The engine receives those homes
+    as `GROK_HOME` for Grok Build jobs. Treat those directories as secrets.
+  </Step>
+</Steps>
+
+## Create and configure an API key
 
 <Steps>
   <Step title="Create an xAI account">
@@ -25,8 +62,9 @@ you can also enter an exact model ID as a custom value, like OpenRouter.
   <Step title="Save it in open·kritt">
     Run `./kritt setup`, choose **xAI API key**, and paste the key into the hidden input.
     The CLI writes it to `XAI_API_KEY` in `.env`. You can also add or replace the key from
-    the running application's **Accounts** page; Accounts keeps the key synchronized with
-    `.env` and the engine credential store.
+    the running application's **Accounts** page (**Add API key** / **Add or replace key**
+    on the xAI card); Accounts keeps the key synchronized with `.env` and the engine
+    credential store.
   </Step>
   <Step title="Start or recreate the stack">
     ```bash
@@ -44,8 +82,8 @@ you can also enter an exact model ID as a custom value, like OpenRouter.
 
 ## Harness and model compatibility
 
-xAI supports only the **Grok Build** harness. The engine image pins the Grok Build CLI to
-**1.0.0** (`/usr/local/bin/grok`).
+xAI supports only the **Grok Build** harness. The engine and backend images pin the Grok
+Build CLI to **1.0.0** (`/usr/local/bin/grok`).
 
 Whether selected from the catalog or entered manually, the model must support the agent
 behavior needed by Grok Build, including a large code context, tool use for scans, and
@@ -56,26 +94,31 @@ The UI shows only levels supported for the selected model and harness.
 
 ## Catalog refresh and fallback
 
-The engine refreshes the xAI catalog in the background and stores only the sanitized model
-metadata needed by the UI. While the first refresh is still running, the forms may show the
-catalog as loading. A successful refresh replaces the cached choices.
+When an API key is configured, the engine refreshes the xAI catalog in the background and
+stores only the sanitized model metadata needed by the UI. While the first refresh is
+still running, the forms may show the catalog as loading. A successful refresh replaces
+the cached choices.
 
-If a later refresh fails, open·kritt keeps the last usable cached catalog. If no successful
-catalog has been cached yet, model discovery is shown as unavailable; check the engine logs
-and the configured key, then retry. You can still use an exact custom model ID as the
-compatibility escape hatch.
+If a later refresh fails, open·kritt keeps the last usable cached catalog. If no
+successful catalog has been cached yet, model discovery is shown as unavailable; check
+the engine logs and the configured key, then retry. You can still use an exact custom
+model ID as the compatibility escape hatch. Device-login-only setups can still run scans
+with an exact model ID even when the catalog is unavailable.
 
 ## Verify and troubleshoot
 
-- `./kritt setup` should show **xAI API key present**.
-- The create and generation forms should list **xAI** and load a searchable model catalog.
-  An exact custom ID can also be entered when needed.
+- Accounts should show an active **xAI** login and/or a configured **xAI API key**.
+- `./kritt setup` should show **xAI API key present** when you use the key path.
+- The create and generation forms should list **xAI**. With a key, they also load a
+  searchable model catalog; an exact custom ID can also be entered when needed.
+- If login fails, confirm the backend image includes `grok` and that device-code output
+  appears in Accounts. Re-run **Sign in to xAI again** for expired sessions.
 - If the catalog remains in a loading or unavailable state, inspect
   `docker compose logs engine` and confirm the configured key can list models.
-- A `401` usually means the key is invalid or revoked. Billing or quota errors generally
-  mean the account cannot run the selected model.
-- A model-not-found error usually means the identifier is misspelled or unavailable to the
-  account. Copy the exact ID from the model catalog or xAI documentation.
+- A `401` or “Not signed in” usually means the login expired or the key is invalid.
+  Billing or quota errors generally mean the account cannot run the selected model.
+- A model-not-found error usually means the identifier is misspelled or unavailable to
+  the account. Copy the exact ID from the model catalog or xAI documentation.
 - If a run starts but cannot use tools or return valid structured output, choose a model
   with the required capabilities or review Grok Build logs in the scan attempt output.
 

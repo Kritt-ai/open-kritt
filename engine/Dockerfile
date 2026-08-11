@@ -25,6 +25,7 @@ RUN mkdir -p /run/open-kritt-secrets \
     && ln -s /run/open-kritt-secrets/credentials /credentials \
     && ln -s /run/open-kritt-secrets/codex-accounts /codex-accounts \
     && ln -s /run/open-kritt-secrets/claude-accounts /claude-accounts \
+    && ln -s /run/open-kritt-secrets/grok-accounts /grok-accounts \
     && ln -s /run/open-kritt-secrets/codex-home-source /codex-home-source \
     && ln -s /run/open-kritt-secrets/local-repos /local_repos
 

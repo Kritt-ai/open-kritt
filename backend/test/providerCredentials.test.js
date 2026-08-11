@@ -140,6 +140,38 @@ test('provider status recognizes Codex and Claude login homes', async (t) => {
   assert.equal(claude.source, 'claude_login');
 });
 
+test('xAI status supports device login alongside managed API keys', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'open-kritt-provider-xai-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const primaryHome = join(directory, 'grok');
+  const accountsRoot = join(directory, 'grok-accounts');
+  const runtimeConfigPath = join(directory, 'engine-runtime.env');
+  const credentialsPath = join(directory, 'providers.json');
+  await mkdir(join(accountsRoot, 'reviewer', '.grok'), { recursive: true });
+  await writeFile(join(accountsRoot, 'reviewer', '.grok', 'auth.json'), '{"tokens":{"access_token":"x"}}');
+  await writeFile(runtimeConfigPath, 'ENGINE_GROK_HOME=/grok-accounts/reviewer/.grok\n');
+
+  let xai = providerCredentialStatuses({
+    env: {},
+    credentialsPath,
+    loginOptions: { grok: { primaryHome, accountsRoot, runtimeConfigPath } },
+  }).find((provider) => provider.id === 'xai');
+  assert.equal(xai.management, 'login');
+  assert.equal(xai.canManageKey, true);
+  assert.equal(xai.source, 'xai_login');
+  assert.equal(xai.configured, true);
+
+  await saveManagedProviderCredential('xai', 'managed-xai-key', { credentialsPath });
+  xai = providerCredentialStatuses({
+    env: {},
+    credentialsPath,
+    loginOptions: { grok: { primaryHome, accountsRoot, runtimeConfigPath } },
+  }).find((provider) => provider.id === 'xai');
+  assert.equal(xai.source, 'managed_api_key');
+  assert.equal(xai.canRemove, true);
+  assert.equal(xai.canManageKey, true);
+});
+
 test('Codex homes left on disk but removed from the runtime registry stay inactive', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'open-kritt-provider-orphaned-login-'));
   t.after(() => rm(directory, { recursive: true, force: true }));

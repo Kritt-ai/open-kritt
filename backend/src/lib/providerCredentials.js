@@ -35,8 +35,8 @@ export const PROVIDER_DEFINITIONS = {
     label: 'xAI',
     envKeys: ['XAI_API_KEY'],
     credentialLabel: 'xAI API key',
-    description: 'Grok Build models through an xAI API key.',
-    management: 'api_key',
+    description: 'Grok Build through an xAI device login or API key.',
+    management: 'login',
   },
 };
 
@@ -223,7 +223,9 @@ export function providerCredentialStatuses({
       configured,
       source,
       canManage: definition.management === 'login' || definition.management === 'api_key',
-      canRemove: definition.management === 'api_key' && (managedCredential || environmentCredential),
+      // xAI keeps OpenRouter-style managed API keys alongside device login.
+      canManageKey: MANAGED_CREDENTIAL_PROVIDERS.has(id),
+      canRemove: MANAGED_CREDENTIAL_PROVIDERS.has(id) && (managedCredential || environmentCredential),
       managed: managedCredential,
     };
   });

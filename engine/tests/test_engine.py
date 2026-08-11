@@ -1832,6 +1832,37 @@ def test_job_workspace_rotates_between_configured_codex_homes(monkeypatch, tmp_p
     assert (Path(workspace_3.env["CODEX_HOME"]) / "auth.json").read_text(encoding="utf-8") == '{"account":"a"}'
 
 
+def test_job_workspace_copies_configured_grok_login_auth(monkeypatch, tmp_path):
+    monkeypatch.delenv("ENGINE_RUNTIME_CONFIG_PATH", raising=False)
+    from open_kritt_engine.workspace import _configured_grok_homes
+
+    home_a = tmp_path / "grok-accounts" / "primary" / ".grok"
+    home_b = tmp_path / "grok-accounts" / "secondary" / ".grok"
+    home_a.mkdir(parents=True)
+    home_b.mkdir(parents=True)
+    (home_a / "auth.json").write_text('{"email":"a@example.test"}', encoding="utf-8")
+    (home_b / "auth.json").write_text('{"email":"b@example.test"}', encoding="utf-8")
+    monkeypatch.setenv("ENGINE_GROK_HOME", f"{home_a},{home_b}")
+
+    workspace_1 = prepare_job_workspace(
+        str(tmp_path / "data"), 1, model_provider="xai", harness_name="grok-build"
+    )
+    workspace_2 = prepare_job_workspace(
+        str(tmp_path / "data"), 2, model_provider="xai", harness_name="grok-build"
+    )
+
+    assert _configured_grok_homes() == [str(home_a), str(home_b)]
+    assert workspace_1.provider_account_provider == "xai"
+    assert workspace_1.provider_account_home == str(home_a)
+    assert workspace_1.provider_account_email == "a@example.test"
+    assert (Path(workspace_1.env["GROK_HOME"]) / "auth.json").read_text(encoding="utf-8") == (
+        '{"email":"a@example.test"}'
+    )
+    assert (Path(workspace_2.env["GROK_HOME"]) / "auth.json").read_text(encoding="utf-8") == (
+        '{"email":"b@example.test"}'
+    )
+
+
 def test_claude_rotation_reloads_live_account_list_without_engine_restart(monkeypatch, tmp_path):
     monkeypatch.delenv("ENGINE_RUNTIME_CONFIG_PATH", raising=False)
     data_dir = tmp_path / "data"
@@ -1861,17 +1892,21 @@ def test_claude_rotation_reloads_live_account_list_without_engine_restart(monkey
     assert provider_home_for_job("claude", 4, data_dir=str(data_dir)) == str(home_b)
 
 
-@pytest.mark.parametrize("provider", ["codex", "claude"])
+@pytest.mark.parametrize("provider", ["codex", "claude", "xai"])
 def test_provider_rotation_skips_limited_accounts_until_all_are_limited(monkeypatch, tmp_path, provider):
     monkeypatch.delenv("ENGINE_RUNTIME_CONFIG_PATH", raising=False)
     home_a = tmp_path / provider / "account-a"
     home_b = tmp_path / provider / "account-b"
     home_a.mkdir(parents=True)
     home_b.mkdir(parents=True)
-    if provider == "codex":
+    if provider in {"codex", "xai"}:
         (home_a / "auth.json").write_text("{}", encoding="utf-8")
         (home_b / "auth.json").write_text("{}", encoding="utf-8")
-    setting = "ENGINE_CODEX_HOME" if provider == "codex" else "ENGINE_CLAUDE_HOME"
+    setting = {
+        "codex": "ENGINE_CODEX_HOME",
+        "claude": "ENGINE_CLAUDE_HOME",
+        "xai": "ENGINE_GROK_HOME",
+    }[provider]
     monkeypatch.setenv(setting, f"{home_a},{home_b}")
 
     first = provider_home_for_job(provider, 1)

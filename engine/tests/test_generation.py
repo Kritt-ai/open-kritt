@@ -353,6 +353,17 @@ def test_generation_environment_prefers_live_codex_home():
     assert env["CODEX_HOME"] == "/runtime-home"
 
 
+def test_generation_environment_prefers_live_grok_home():
+    env = generation_environment(
+        "xai",
+        {"XAI_API_KEY": "xai-secret", "ENGINE_GROK_HOME": "/also-stale", "GROK_HOME": "/startup-home"},
+        grok_home="/runtime-grok",
+    )
+
+    assert env["GROK_HOME"] == "/runtime-grok"
+    assert env["XAI_API_KEY"] == "xai-secret"
+
+
 def test_generation_runner_retries_validation_with_feedback_and_no_tools(monkeypatch, tmp_path):
     class FakeHarness:
         def __init__(self):

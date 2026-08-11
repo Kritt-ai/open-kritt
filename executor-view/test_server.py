@@ -1302,6 +1302,7 @@ class ExecutorViewSummaryTests(unittest.TestCase):
         }
         with (
             patch.dict(server.os.environ, {"EXECUTOR_VIEW_XAI_REMOTE_CHECK": "1"}),
+            patch.object(server, "configured_grok_homes", return_value=[]),
             patch.object(
                 server,
                 "configured_secret",
@@ -1333,6 +1334,37 @@ class ExecutorViewSummaryTests(unittest.TestCase):
         )
         serialized = json.dumps(result, default=server.encode)
         self.assertNotIn("unit-test-xai-key", serialized)
+
+    def test_xai_accounts_include_grok_login_homes_and_api_key(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory) / "reviewer" / ".grok"
+            home.mkdir(parents=True)
+            (home / "auth.json").write_text(
+                json.dumps({"email": "grok@example.test", "tokens": {"access_token": "x"}}),
+                encoding="utf-8",
+            )
+            with (
+                patch.object(server, "GROK_ACCOUNTS_ROOT", Path(directory)),
+                patch.object(server, "configured_grok_homes", return_value=[home]),
+                patch.object(
+                    server,
+                    "configured_secret",
+                    side_effect=lambda name: (
+                        "unit-test-xai-key" if name == "XAI_API_KEY" else None
+                    ),
+                ),
+                patch.dict(server.os.environ, {"EXECUTOR_VIEW_XAI_REMOTE_CHECK": "0"}),
+            ):
+                result = server.fetch_xai_accounts(force=True)
+
+            self.assertEqual(result["total"], 2)
+            login = next(account for account in result["accounts"] if account["path"] == str(home))
+            key = next(account for account in result["accounts"] if account["path"] == "XAI_API_KEY")
+            self.assertEqual(login["id"], "reviewer")
+            self.assertTrue(login["canRemove"])
+            self.assertEqual(login["statusKind"], "available")
+            self.assertTrue(key["active"])
+            self.assertIn("XAI_API_KEY", result["configuredRaw"])
 
     def test_managed_xai_key_overrides_environment_and_disable_is_sticky(self):
         with tempfile.TemporaryDirectory() as directory:

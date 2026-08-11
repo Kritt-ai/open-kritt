@@ -115,6 +115,10 @@ CODEX_HOME_RAW = os.getenv(
 CLAUDE_HOME_RAW = os.getenv(
     "EXECUTOR_VIEW_CLAUDE_HOME", os.getenv("CLAUDE_HOME", "/root/.claude")
 )
+GROK_HOME_RAW = os.getenv(
+    "EXECUTOR_VIEW_GROK_HOME",
+    os.getenv("ENGINE_GROK_HOME", os.getenv("GROK_HOME", "/root/.grok")),
+)
 CLAUDE_ACCOUNTS_ROOT = Path(
     os.getenv("EXECUTOR_VIEW_CLAUDE_ACCOUNTS_ROOT", "/claude-accounts")
 ).expanduser()
@@ -126,6 +130,12 @@ CODEX_ACCOUNTS_ROOT = Path(
 ).expanduser()
 CODEX_PRIMARY_HOME = Path(
     os.getenv("EXECUTOR_VIEW_CODEX_PRIMARY_HOME", "/root/.codex")
+).expanduser()
+GROK_ACCOUNTS_ROOT = Path(
+    os.getenv("EXECUTOR_VIEW_GROK_ACCOUNTS_ROOT", "/grok-accounts")
+).expanduser()
+GROK_PRIMARY_HOME = Path(
+    os.getenv("EXECUTOR_VIEW_GROK_PRIMARY_HOME", "/root/.grok")
 ).expanduser()
 PROVIDER_CREDENTIALS_PATH = Path(
     os.getenv("OPEN_KRITT_PROVIDER_CREDENTIALS_PATH", "/credentials/providers.json")
@@ -1117,6 +1127,13 @@ def current_claude_home_raw():
     return CLAUDE_HOME_RAW
 
 
+def current_grok_home_raw():
+    runtime_config = read_runtime_config()
+    if "ENGINE_GROK_HOME" in runtime_config:
+        return runtime_config["ENGINE_GROK_HOME"]
+    return GROK_HOME_RAW
+
+
 def current_worker_count():
     raw = (
         read_runtime_config().get("ENGINE_WORKER_COUNT")
@@ -1174,6 +1191,40 @@ def configured_claude_homes():
         if key not in seen:
             seen.add(key)
             homes.append(home)
+    return homes
+
+
+def resolve_grok_home(path):
+    source = Path(path).expanduser()
+    if (source / "auth.json").exists() or source.name == ".grok":
+        return source
+    nested = source / ".grok"
+    if nested.exists():
+        return nested
+    return source
+
+
+def configured_grok_homes():
+    seen = set()
+    homes = []
+    for raw_path in split_home_list(current_grok_home_raw()):
+        source = Path(raw_path).expanduser()
+        if (
+            source.exists()
+            and source.name != ".grok"
+            and not (source / "auth.json").exists()
+            and not (source / ".grok").exists()
+        ):
+            candidates = sorted(
+                path for path in source.glob("*/.grok") if path.is_dir()
+            )
+        else:
+            candidates = [resolve_grok_home(raw_path)]
+        for candidate in candidates:
+            key = str(candidate)
+            if key not in seen:
+                seen.add(key)
+                homes.append(candidate)
     return homes
 
 
@@ -1276,7 +1327,7 @@ def build_account_provider(kind, data):
         ),
         "xai": (
             "xAI",
-            "Verified xAI key status and masked metadata for Grok Build.",
+            "Grok device login homes and optional xAI API key status for Grok Build.",
         ),
     }
     label, description = metadata[kind]
@@ -1287,7 +1338,7 @@ def build_account_provider(kind, data):
         "active": data.get("active", 0),
         "total": data.get("total", 0),
         "limited": data.get("limited", 0),
-        "stale": data.get("stale", 0) if kind not in {"openrouter", "xai"} else 0,
+        "stale": data.get("stale", 0) if kind not in {"openrouter"} else 0,
         "accounts": data.get("accounts", []),
         "configuredRaw": data.get("configuredRaw"),
     }
@@ -1986,10 +2037,11 @@ def fetch_openrouter_key_info(api_key):
 def empty_xai_accounts():
     return {
         "generatedAt": datetime.now(timezone.utc),
-        "configuredRaw": "XAI_API_KEY",
+        "configuredRaw": current_grok_home_raw(),
         "active": 0,
         "total": 0,
         "limited": 0,
+        "stale": 0,
         "accounts": [],
     }
 
@@ -1998,8 +2050,125 @@ def fetch_xai_accounts(force=False):
     api_key = configured_secret("XAI_API_KEY") or configured_secret(
         "EXECUTOR_VIEW_XAI_API_KEY"
     )
+    homes = configured_grok_homes()
+    login_accounts = []
+    for home in homes:
+        auth_path = Path(home) / "auth.json"
+        # Skip an empty default primary home when only an API key is configured.
+        if auth_path.exists() or (home.exists() and home != GROK_PRIMARY_HOME):
+            login_accounts.append(grok_account(home))
+    accounts = list(login_accounts)
+    if api_key or not accounts:
+        accounts.append(xai_api_key_account(api_key, force=force))
+    active = sum(1 for account in accounts if account["active"])
+    limited = sum(1 for account in accounts if account["statusKind"] == "limited")
+    stale = sum(1 for account in accounts if account["statusKind"] == "stale")
+    configured_parts = []
+    if login_accounts:
+        configured_parts.append(current_grok_home_raw())
+    if api_key:
+        configured_parts.append("XAI_API_KEY")
+    return {
+        "generatedAt": datetime.now(timezone.utc),
+        "configuredRaw": ",".join(configured_parts) if configured_parts else "XAI_API_KEY",
+        "active": active,
+        "total": len(accounts),
+        "limited": limited,
+        "stale": stale,
+        "accounts": accounts,
+    }
+
+
+def removable_grok_account_id(home):
+    home = Path(home).expanduser()
+    if home == GROK_PRIMARY_HOME:
+        return "primary"
+    try:
+        relative = home.relative_to(GROK_ACCOUNTS_ROOT)
+    except ValueError:
+        return None
+    if len(relative.parts) != 2 or relative.parts[1] != ".grok":
+        return None
+    account_id = relative.parts[0]
+    if not ACCOUNT_ID_PATTERN.fullmatch(account_id):
+        return None
+    return account_id
+
+
+def grok_account_label(home):
+    home = Path(home)
+    return home.parent.name if home.name == ".grok" else home.name
+
+
+def load_grok_auth(home):
+    auth_path = Path(home) / "auth.json"
+    out = {"exists": auth_path.exists()}
+    if not auth_path.exists():
+        return out
+    try:
+        auth = json.loads(auth_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return out
+    tokens = auth.get("tokens") if isinstance(auth.get("tokens"), dict) else {}
+    payload = decode_jwt_payload(
+        tokens.get("access_token") or tokens.get("id_token") or auth.get("access_token")
+    )
+    email = payload.get("email") or auth.get("email")
+    out.update(
+        {
+            "email": email if isinstance(email, str) else None,
+            "accountId": payload.get("sub")
+            or auth.get("user_id")
+            or auth.get("account_id")
+            or email,
+            "authMode": auth.get("auth_mode") or auth.get("authMode"),
+        }
+    )
+    return out
+
+
+def grok_account(home):
+    home = Path(home).expanduser()
+    auth = load_grok_auth(home)
+    account_id = removable_grok_account_id(home)
+    if auth.get("exists") and (auth.get("accountId") or auth.get("email")):
+        status_kind = "available"
+        status = "logged in"
+        active = True
+    elif auth.get("exists"):
+        status_kind = "available"
+        status = "logged in"
+        active = True
+    elif home.exists():
+        status_kind = "warning"
+        status = "no credentials found"
+        active = False
+    else:
+        status_kind = "missing"
+        status = "missing config"
+        active = False
+    details = []
+    add_detail(details, "Provider", "xAI")
+    add_detail(details, "Auth", "Grok device login")
+    email = auth.get("email")
+    return {
+        "id": account_id or str(home),
+        "provider": "xAI",
+        "label": email or grok_account_label(home),
+        "path": str(home),
+        "email": email,
+        "active": active,
+        "canRemove": account_id is not None,
+        "status": status,
+        "statusKind": status_kind,
+        "details": details,
+    }
+
+
+def xai_api_key_account(api_key, force=False):
     if not api_key:
-        account = {
+        return {
+            "id": "xai-api-key",
             "provider": "xAI",
             "label": "xAI API key",
             "path": "XAI_API_KEY",
@@ -2007,14 +2176,6 @@ def fetch_xai_accounts(force=False):
             "status": "missing key",
             "statusKind": "missing",
             "details": [],
-        }
-        return {
-            "generatedAt": datetime.now(timezone.utc),
-            "configuredRaw": "XAI_API_KEY",
-            "active": 0,
-            "total": 0,
-            "limited": 0,
-            "accounts": [account],
         }
 
     remote_enabled = os.getenv("EXECUTOR_VIEW_XAI_REMOTE_CHECK", "1").lower() in (
@@ -2061,7 +2222,8 @@ def fetch_xai_accounts(force=False):
     if force and not remote_enabled:
         add_detail(details, "Remote check", "disabled; local key configuration shown")
 
-    account = {
+    return {
+        "id": "xai-api-key",
         "provider": "xAI",
         "label": "xAI API key",
         "path": "XAI_API_KEY",
@@ -2069,14 +2231,6 @@ def fetch_xai_accounts(force=False):
         "status": status,
         "statusKind": status_kind,
         "details": details,
-    }
-    return {
-        "generatedAt": datetime.now(timezone.utc),
-        "configuredRaw": "XAI_API_KEY",
-        "active": 1 if active else 0,
-        "total": 1,
-        "limited": 0,
-        "accounts": [account],
     }
 
 

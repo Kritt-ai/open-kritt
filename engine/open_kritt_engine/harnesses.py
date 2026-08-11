@@ -862,6 +862,7 @@ def _scan_docker_command(
         "CURSOR_AUTH_TOKEN",
         "CURSOR_AGENT_BIN",
         "GROK_BIN",
+        "GROK_HOME",
         "SSL_CERT_FILE",
         "SSL_CERT_DIR",
         "NODE_EXTRA_CA_CERTS",
