@@ -53,6 +53,12 @@ export const RUNTIME_SETTING_DEFINITIONS = Object.freeze({
     recommendedMax: 5,
     apply: 'live',
   }),
+  codexFastMode: Object.freeze({
+    envKey: 'ENGINE_CODEX_FAST_MODE',
+    defaultValue: false,
+    type: 'boolean',
+    apply: 'live',
+  }),
   minFreeStorageGb: Object.freeze({
     envKey: 'ENGINE_MIN_FREE_STORAGE_GB',
     defaultValue: 20,

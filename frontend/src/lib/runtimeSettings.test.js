@@ -10,6 +10,7 @@ const payload = {
     workersPerAccount: { value: 15, min: 1, max: 128 },
     autoscaleScanWorkersOnProviderCapacity: { value: true, type: 'boolean' },
     codexMaxSubagentsPerSession: { value: 5, min: 1, max: 5 },
+    codexFastMode: { value: false, type: 'boolean', defaultValue: false },
     minFreeStorageGb: { value: 20, min: 0, max: 1024, step: 0.1, type: 'number' },
     ignoreLowStorage: { value: false, type: 'boolean', defaultValue: false },
     memoryReserveGb: { value: 2, min: 0, max: 1024, step: 0.1, type: 'number' },
@@ -30,6 +31,7 @@ describe('runtime settings form helpers', () => {
       workersPerAccount: '15',
       autoscaleScanWorkersOnProviderCapacity: true,
       codexMaxSubagentsPerSession: '5',
+      codexFastMode: false,
       minFreeStorageGb: '20',
       ignoreLowStorage: false,
       memoryReserveGb: '2',
@@ -58,6 +60,15 @@ describe('runtime settings form helpers', () => {
         autoscaleScanWorkersOnProviderCapacity: false,
       })
     ).toEqual({ autoscaleScanWorkersOnProviderCapacity: false });
+  });
+
+  it('returns a changed Codex Fast mode toggle', () => {
+    expect(
+      runtimeSettingsPatch(payload, {
+        ...runtimeSettingsDraft(payload),
+        codexFastMode: true,
+      })
+    ).toEqual({ codexFastMode: true });
   });
 
   it('accepts a fractional minimum-free-storage threshold', () => {
