@@ -616,7 +616,10 @@ test('Grok login is added to runtime homes atomically and idempotently', async (
     ENGINE_GROK_HOME: '/root/.grok,/grok-accounts/reviewer/.grok',
     GROK_LOGIN_CONFIGURED: '1',
   });
-  assert.equal(await removeGrokRuntimeHome('/grok-accounts/missing/.grok', { runtimeConfigPath, environmentFilePath }), false);
+  assert.equal(
+    await removeGrokRuntimeHome('/grok-accounts/missing/.grok', { runtimeConfigPath, environmentFilePath }),
+    false
+  );
 });
 
 test('xAI sign-in again reuses the selected Grok account home', async (t) => {

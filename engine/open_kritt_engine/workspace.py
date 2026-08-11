@@ -224,9 +224,7 @@ def prepare_job_workspace(
         codex_source_home=codex_source,
         codex_account_id=provider_account.get("id") if codex_source else None,
         codex_account_email=provider_account.get("email") if codex_source else None,
-        provider_account_provider=(
-            selected_provider if selected_provider in {"codex", "claude", "xai"} else None
-        ),
+        provider_account_provider=(selected_provider if selected_provider in {"codex", "claude", "xai"} else None),
         provider_account_home=codex_source or claude_source or grok_source,
         provider_account_id=provider_account.get("id"),
         provider_account_email=provider_account.get("email"),
@@ -1713,9 +1711,8 @@ def _grok_account_info(home: str) -> dict[str, str | None]:
         return {"id": str(home), "email": None}
     tokens = auth.get("tokens") if isinstance(auth.get("tokens"), dict) else {}
     access_payload = _decode_jwt_payload(tokens.get("access_token") or tokens.get("id_token"))
-    email = (
-        access_payload.get("email")
-        or _first_account_profile_value(auth, {"email", "emailaddress", "useremail", "accountemail"})
+    email = access_payload.get("email") or _first_account_profile_value(
+        auth, {"email", "emailaddress", "useremail", "accountemail"}
     )
     account_id = (
         access_payload.get("sub")

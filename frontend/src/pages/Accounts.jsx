@@ -172,8 +172,8 @@ export default function Accounts() {
         <div>
           <div style={{ fontSize: 27, fontWeight: 600, letterSpacing: '-0.02em' }}>Accounts</div>
           <div style={{ color: 'var(--text-2)', marginTop: 7, maxWidth: 680, lineHeight: 1.5 }}>
-            See which model providers are ready. Sign in to Codex, Claude, or xAI with their official login flows, or add
-            an OpenRouter or xAI API key. Secret values are never returned by the API.
+            See which model providers are ready. Sign in to Codex, Claude, or xAI with their official login flows, or
+            add an OpenRouter or xAI API key. Secret values are never returned by the API.
           </div>
         </div>
         {data && (
@@ -200,7 +200,9 @@ export default function Accounts() {
                 key={provider.id}
                 provider={provider}
                 onEdit={() => setEditing(provider)}
-                onEditKey={provider.management === 'login' && provider.canManageKey ? () => setEditingKey(provider) : null}
+                onEditKey={
+                  provider.management === 'login' && provider.canManageKey ? () => setEditingKey(provider) : null
+                }
                 onRemove={() => remove(provider)}
                 onRemoveAccount={(account) => removeLoginAccount(provider, account)}
                 onStartWeeklyUsage={startWeeklyUsage}
@@ -455,8 +457,7 @@ export function removeProviderFromOverview(overview, providerId) {
 }
 
 function ProviderMark({ provider }) {
-  const label =
-    provider === 'codex' ? 'CX' : provider === 'claude' ? 'CL' : provider === 'xai' ? 'XA' : 'OR';
+  const label = provider === 'codex' ? 'CX' : provider === 'claude' ? 'CL' : provider === 'xai' ? 'XA' : 'OR';
   return <span className={`mono account-provider-mark account-provider-mark-${provider}`}>{label}</span>;
 }
 

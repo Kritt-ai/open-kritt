@@ -55,9 +55,7 @@ export function parseLoginInstructions(provider, rawOutput) {
   const authorizationUrl = output.match(/https:\/\/[^\s<>"']+/)?.[0]?.replace(/[),.;]+$/, '') || null;
   // Codex uses ABCD-12345; Grok device-auth uses ABCD-EFGH (and embeds it in the URL).
   const deviceCode =
-    provider === 'codex' || provider === 'xai'
-      ? output.match(/\b[A-Z0-9]{4}-[A-Z0-9]{4,5}\b/)?.[0] || null
-      : null;
+    provider === 'codex' || provider === 'xai' ? output.match(/\b[A-Z0-9]{4}-[A-Z0-9]{4,5}\b/)?.[0] || null : null;
   const requiresInput = provider === 'claude' && /paste code here/i.test(output);
   return { authorizationUrl, deviceCode, requiresInput };
 }
