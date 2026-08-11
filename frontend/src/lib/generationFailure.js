@@ -4,11 +4,13 @@ const PROVIDER_LABELS = {
   codex: 'Codex',
   claude: 'Claude',
   openrouter: 'OpenRouter',
+  xai: 'xAI',
 };
 
 const HARNESS_LABELS = {
   codex: 'Codex CLI',
   'claude-code': 'Claude Code',
+  'grok-build': 'Grok Build',
 };
 
 function text(value) {

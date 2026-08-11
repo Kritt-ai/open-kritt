@@ -8,6 +8,7 @@ import { usePagination } from '../lib/usePagination.js';
 
 const PROVIDER_LINKS = {
   openrouter: 'https://openrouter.ai/settings/keys',
+  xai: 'https://console.x.ai/',
 };
 
 const WEEKLY_WINDOW_MINUTES = 7 * 24 * 60;
@@ -101,7 +102,7 @@ export default function Accounts() {
   };
 
   const remove = async (provider) => {
-    if (!window.confirm('Remove the OpenRouter API key from open·kritt?')) return;
+    if (!window.confirm(`Remove the ${provider.label} API key from open·kritt?`)) return;
     const previous = data;
     setData(removeProviderFromOverview(data, provider.id));
     try {
@@ -351,7 +352,16 @@ function ProviderCard({
 }
 
 export function providerActionLabel(provider) {
-  if (provider.management !== 'login') return provider.configured ? 'Add or replace key' : 'Add OpenRouter key';
+  if (provider.management !== 'login') {
+    if (provider.configured) return 'Add or replace key';
+    const credential = `${provider.credentialLabel || ''}`.trim();
+    if (credential) {
+      const name = credential.replace(/\s+api\s+key$/i, '').trim();
+      if (name) return `Add ${name} key`;
+    }
+    const label = `${provider.label || ''}`.trim();
+    return label ? `Add ${label} key` : 'Add API key';
+  }
   const signInRequired = provider.accounts.some((account) => account.statusKind === 'expired');
   if (provider.id === 'codex') return signInRequired ? 'Sign in to Codex again' : 'Add Codex account';
   if (signInRequired) return 'Sign in to Claude again';
@@ -427,7 +437,8 @@ export function removeProviderFromOverview(overview, providerId) {
 }
 
 function ProviderMark({ provider }) {
-  const label = provider === 'codex' ? 'CX' : provider === 'claude' ? 'CL' : 'OR';
+  const label =
+    provider === 'codex' ? 'CX' : provider === 'claude' ? 'CL' : provider === 'xai' ? 'XA' : 'OR';
   return <span className={`mono account-provider-mark account-provider-mark-${provider}`}>{label}</span>;
 }
 

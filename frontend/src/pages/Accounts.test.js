@@ -386,6 +386,61 @@ describe('creditUsageNote', () => {
   });
 });
 
+describe('api key providers', () => {
+  it('derives add-key labels from credential metadata', () => {
+    expect(
+      providerActionLabel({
+        id: 'openrouter',
+        label: 'OpenRouter',
+        management: 'api_key',
+        configured: false,
+        credentialLabel: 'OpenRouter API key',
+        accounts: [],
+      })
+    ).toBe('Add OpenRouter key');
+    expect(
+      providerActionLabel({
+        id: 'xai',
+        label: 'xAI',
+        management: 'api_key',
+        configured: false,
+        credentialLabel: 'xAI API key',
+        accounts: [],
+      })
+    ).toBe('Add xAI key');
+    expect(
+      providerActionLabel({
+        id: 'openrouter',
+        label: 'OpenRouter',
+        management: 'api_key',
+        configured: true,
+        credentialLabel: 'OpenRouter API key',
+        accounts: [{ id: 'openrouter-key', active: true, statusKind: 'available' }],
+      })
+    ).toBe('Add or replace key');
+  });
+
+  it('falls back to a generic label when credential metadata is missing', () => {
+    expect(
+      providerActionLabel({
+        id: 'custom',
+        label: 'Custom',
+        management: 'api_key',
+        configured: false,
+        accounts: [],
+      })
+    ).toBe('Add Custom key');
+    expect(
+      providerActionLabel({
+        id: 'custom',
+        management: 'api_key',
+        configured: false,
+        accounts: [],
+      })
+    ).toBe('Add API key');
+  });
+});
+
 describe('optimistic account removal', () => {
   const overview = {
     configuredProviders: 3,

@@ -61,10 +61,11 @@ const modelCatalog = configuredModelCatalog({
 
 describe('configuredModelProviders', () => {
   it('uses only supported provider IDs returned by the API', () => {
-    expect(configuredModelProviders({ providers: ['OPENROUTER', 'unknown', 'claude', 'codex', 'codex'] })).toEqual([
+    expect(configuredModelProviders({ providers: ['OPENROUTER', 'unknown', 'claude', 'codex', 'codex', 'xai'] })).toEqual([
       'codex',
       'claude',
       'openrouter',
+      'xai',
     ]);
   });
 
@@ -79,6 +80,7 @@ describe('model provider defaults', () => {
     expect(defaultModelForModelProvider('codex')).toBe('gpt-5-codex');
     expect(defaultModelForModelProvider('claude')).toBe('claude-sonnet-5');
     expect(defaultModelForModelProvider('openrouter')).toBe('z-ai/glm-5.2');
+    expect(defaultModelForModelProvider('xai')).toBe('grok-4.5');
   });
 
   it('moves provider-owned model defaults with the provider', () => {
@@ -185,6 +187,44 @@ describe('model catalog', () => {
     expect(modelForCatalogChange('gpt-5-codex', 'codex', 'openrouter', loadingCatalog)).toBe('');
   });
 
+  it('keeps exact xAI IDs usable while suggestions load or refresh', () => {
+    expect(usesFreeTextModelInput({}, 'xai')).toBe(true);
+    const loadingCatalog = configuredModelCatalog({
+      providers: [{ provider: 'xai', input: 'text', status: 'loading', models: [] }],
+    });
+
+    expect(usesFreeTextModelInput(loadingCatalog, 'xai')).toBe(true);
+    expect(modelCatalogIsReady(loadingCatalog, 'xai')).toBe(false);
+    expect(isModelSelectionValid('grok-4.5', loadingCatalog, 'xai')).toBe(true);
+    expect(modelForCatalogChange('grok-4.5', 'xai', 'xai', loadingCatalog)).toBe('grok-4.5');
+    expect(modelForCatalogChange('gpt-5-codex', 'codex', 'xai', loadingCatalog)).toBe('');
+  });
+
+  it('limits Grok Build thinking efforts to low, medium, and high', () => {
+    const xaiCatalog = configuredModelCatalog({
+      providers: [
+        {
+          provider: 'xai',
+          input: 'text',
+          status: 'ready',
+          defaultModel: 'grok-4.5',
+          models: [{ id: 'grok-4.5', thinkingEfforts: ['low', 'medium', 'high'] }],
+        },
+      ],
+    });
+
+    expect(thinkingEffortsForModel(xaiCatalog, 'xai', 'grok-4.5', [], 'grok-build')).toEqual([
+      'low',
+      'medium',
+      'high',
+    ]);
+    expect(thinkingEffortsForModel(xaiCatalog, 'xai', 'custom-model', [], 'grok-build')).toEqual([
+      'low',
+      'medium',
+      'high',
+    ]);
+  });
+
   it('uses only the selected native model thinking efforts', () => {
     expect(thinkingEffortsForModel(modelCatalog, 'codex', 'gpt-5-codex', ['low', 'medium', 'high', 'xhigh'])).toEqual([
       'low',
@@ -242,6 +282,11 @@ describe('model provider harnesses', () => {
   it('defaults OpenRouter to Claude Code and retains Codex as an advanced option', () => {
     expect(harnessesForModelProvider('openrouter')).toEqual(['claude-code', 'codex']);
     expect(defaultHarnessForModelProvider('openrouter')).toBe('claude-code');
+  });
+
+  it('pairs xAI with the Grok Build harness', () => {
+    expect(harnessesForModelProvider('xai')).toEqual(['grok-build']);
+    expect(defaultHarnessForModelProvider('xai')).toBe('grok-build');
   });
 
   it('returns no harness for an unsupported provider', () => {
