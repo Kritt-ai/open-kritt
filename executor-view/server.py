@@ -186,6 +186,16 @@ OPENROUTER_TIMEOUT_SECONDS = float(
 OPENROUTER_KEY_CACHE_SECONDS = int(
     os.getenv("EXECUTOR_VIEW_OPENROUTER_KEY_CACHE_SECONDS", "60")
 )
+XAI_MODELS_URL = os.getenv(
+    "EXECUTOR_VIEW_XAI_MODELS_URL", "https://api.x.ai/v1/models"
+)
+XAI_TIMEOUT_SECONDS = float(os.getenv("EXECUTOR_VIEW_XAI_TIMEOUT_SECONDS", "5"))
+XAI_KEY_CACHE_SECONDS = int(os.getenv("EXECUTOR_VIEW_XAI_KEY_CACHE_SECONDS", "60"))
+MANAGED_PROVIDER_ENV_KEYS = {
+    "openrouter": "OPENROUTER_API_KEY",
+    "xai": "XAI_API_KEY",
+}
+MANAGED_PROVIDERS = frozenset(MANAGED_PROVIDER_ENV_KEYS)
 DEEP_ACCOUNT_REFRESH = os.getenv("EXECUTOR_VIEW_DEEP_ACCOUNT_REFRESH", "0").lower() in (
     "1",
     "true",
@@ -213,6 +223,7 @@ CODEX_ACCOUNT_CACHE = {"expires_at": 0.0, "data": None}
 CODEX_USAGE_CACHE = {}
 CLAUDE_USAGE_CACHE = {}
 OPENROUTER_KEY_CACHE = {"expires_at": 0.0, "credential": None, "data": None}
+XAI_KEY_CACHE = {"expires_at": 0.0, "credential": None, "data": None}
 ACCOUNT_OVERVIEW_CACHE = {"expires_at": 0.0, "data": None}
 SCAN_STATUS_ACTIONS = {"pause": "paused", "resume": "running", "start": "running"}
 CYBER_RISK_FLAG_TEXT = (
@@ -315,7 +326,7 @@ def internal_request_path_allowed(method, path):
         method == "GET"
         and len(parts) == 3
         and parts[:2] == ["api", "accounts"]
-        and parts[2] in {"codex", "claude", "openrouter"}
+        and parts[2] in {"codex", "claude", "openrouter", "xai"}
     ):
         return True
     return (
@@ -741,6 +752,7 @@ def accounts_for_state(force=False):
         empty_codex_accounts(),
         empty_claude_accounts(),
         fetch_openrouter_accounts(force=False),
+        fetch_xai_accounts(force=False),
         fetched=False,
     )
 
@@ -1220,14 +1232,16 @@ def fetch_accounts(force=False):
         codex = fetch_codex_accounts(force=True)
         claude = fetch_claude_accounts(force=True)
         openrouter = fetch_openrouter_accounts(force=True)
-        data = build_account_overview(codex, claude, openrouter, fetched=True)
+        xai = fetch_xai_accounts(force=True)
+        data = build_account_overview(codex, claude, openrouter, xai, fetched=True)
         ACCOUNT_OVERVIEW_CACHE["data"] = data
         ACCOUNT_OVERVIEW_CACHE["expires_at"] = now + ACCOUNT_OVERVIEW_CACHE_SECONDS
         return data
     codex = fetch_codex_accounts(force=force)
     claude = fetch_claude_accounts(force=force)
     openrouter = fetch_openrouter_accounts(force=force)
-    data = build_account_overview(codex, claude, openrouter, fetched=True)
+    xai = fetch_xai_accounts(force=force)
+    data = build_account_overview(codex, claude, openrouter, xai, fetched=True)
     ACCOUNT_OVERVIEW_CACHE["data"] = data
     ACCOUNT_OVERVIEW_CACHE["expires_at"] = now + ACCOUNT_OVERVIEW_CACHE_SECONDS
     return data
@@ -1238,6 +1252,7 @@ def fetch_account_provider(kind, force=False):
         "codex": fetch_codex_accounts,
         "claude": fetch_claude_accounts,
         "openrouter": fetch_openrouter_accounts,
+        "xai": fetch_xai_accounts,
     }
     fetcher = fetchers.get(kind)
     if not fetcher:
@@ -1259,6 +1274,10 @@ def build_account_provider(kind, data):
             "OpenRouter",
             "Verified OpenRouter key status, credit usage, limits, and masked metadata.",
         ),
+        "xai": (
+            "xAI",
+            "Verified xAI key status and masked metadata for Grok Build.",
+        ),
     }
     label, description = metadata[kind]
     return {
@@ -1268,17 +1287,18 @@ def build_account_provider(kind, data):
         "active": data.get("active", 0),
         "total": data.get("total", 0),
         "limited": data.get("limited", 0),
-        "stale": data.get("stale", 0) if kind != "openrouter" else 0,
+        "stale": data.get("stale", 0) if kind not in {"openrouter", "xai"} else 0,
         "accounts": data.get("accounts", []),
         "configuredRaw": data.get("configuredRaw"),
     }
 
 
-def build_account_overview(codex, claude, openrouter, fetched=True):
+def build_account_overview(codex, claude, openrouter, xai, fetched=True):
     providers = [
         build_account_provider("codex", codex),
         build_account_provider("claude", claude),
         build_account_provider("openrouter", openrouter),
+        build_account_provider("xai", xai),
     ]
     return {
         "generatedAt": datetime.now(timezone.utc),
@@ -1298,6 +1318,7 @@ def build_account_overview(codex, claude, openrouter, fetched=True):
         "codex": codex,
         "claude": claude,
         "openrouter": openrouter,
+        "xai": xai,
         "providers": providers,
     }
 
@@ -1962,13 +1983,190 @@ def fetch_openrouter_key_info(api_key):
         }
 
 
+def empty_xai_accounts():
+    return {
+        "generatedAt": datetime.now(timezone.utc),
+        "configuredRaw": "XAI_API_KEY",
+        "active": 0,
+        "total": 0,
+        "limited": 0,
+        "accounts": [],
+    }
+
+
+def fetch_xai_accounts(force=False):
+    api_key = configured_secret("XAI_API_KEY") or configured_secret(
+        "EXECUTOR_VIEW_XAI_API_KEY"
+    )
+    if not api_key:
+        account = {
+            "provider": "xAI",
+            "label": "xAI API key",
+            "path": "XAI_API_KEY",
+            "active": False,
+            "status": "missing key",
+            "statusKind": "missing",
+            "details": [],
+        }
+        return {
+            "generatedAt": datetime.now(timezone.utc),
+            "configuredRaw": "XAI_API_KEY",
+            "active": 0,
+            "total": 0,
+            "limited": 0,
+            "accounts": [account],
+        }
+
+    remote_enabled = os.getenv("EXECUTOR_VIEW_XAI_REMOTE_CHECK", "1").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    remote = xai_key_verify_for_account(api_key, force=force) if remote_enabled else {}
+    status_code = remote.get("statusCode")
+    if status_code in (401, 403):
+        status_kind = "expired"
+        status = "key rejected"
+        active = False
+    elif remote.get("error"):
+        status_kind = "warning"
+        status = "check failed"
+        active = True
+    elif remote.get("verified"):
+        status_kind = "available"
+        status = "verified"
+        active = True
+    else:
+        status_kind = "available"
+        status = "key configured"
+        active = True
+
+    details = []
+    add_detail(details, "XAI_API_KEY", masked_secret(api_key), mono=True)
+    add_detail(details, "Key fingerprint", secret_fingerprint(api_key), mono=True)
+    model_count = remote.get("modelCount")
+    if model_count is not None:
+        add_detail(details, "Models accessible", str(model_count))
+    if remote.get("checkedAt"):
+        checked_at = parse_datetime(remote.get("checkedAt"))
+        add_detail(
+            details,
+            "Checked",
+            checked_at.strftime("%Y-%m-%d %H:%M UTC")
+            if checked_at
+            else remote.get("checkedAt"),
+        )
+    if remote.get("error"):
+        add_detail(details, "Last check", remote.get("error"))
+    if force and not remote_enabled:
+        add_detail(details, "Remote check", "disabled; local key configuration shown")
+
+    account = {
+        "provider": "xAI",
+        "label": "xAI API key",
+        "path": "XAI_API_KEY",
+        "active": active,
+        "status": status,
+        "statusKind": status_kind,
+        "details": details,
+    }
+    return {
+        "generatedAt": datetime.now(timezone.utc),
+        "configuredRaw": "XAI_API_KEY",
+        "active": 1 if active else 0,
+        "total": 1,
+        "limited": 0,
+        "accounts": [account],
+    }
+
+
+def xai_key_verify_for_account(api_key, force=False):
+    now = time.monotonic()
+    credential = secret_fingerprint(api_key)
+    cached = (
+        XAI_KEY_CACHE.get("data")
+        if XAI_KEY_CACHE.get("credential") == credential
+        else None
+    )
+    if cached and now < XAI_KEY_CACHE.get("expires_at", 0):
+        return cached
+    if not force:
+        if cached:
+            fallback = dict(cached)
+            fallback["stale"] = True
+            fallback["error"] = "xAI key data is waiting for refresh"
+            return fallback
+        return {}
+
+    result = fetch_xai_models(api_key)
+    if result.get("verified") or result.get("statusCode") in (401, 403):
+        XAI_KEY_CACHE["data"] = result
+        XAI_KEY_CACHE["credential"] = credential
+        XAI_KEY_CACHE["expires_at"] = now + XAI_KEY_CACHE_SECONDS
+        return result
+    if cached:
+        fallback = dict(result)
+        fallback["verified"] = cached.get("verified")
+        fallback["modelCount"] = cached.get("modelCount")
+        fallback["stale"] = True
+        XAI_KEY_CACHE["data"] = fallback
+        XAI_KEY_CACHE["credential"] = credential
+        XAI_KEY_CACHE["expires_at"] = now + XAI_KEY_CACHE_SECONDS
+        return fallback
+    XAI_KEY_CACHE["data"] = result
+    XAI_KEY_CACHE["credential"] = credential
+    XAI_KEY_CACHE["expires_at"] = now + XAI_KEY_CACHE_SECONDS
+    return result
+
+
+def fetch_xai_models(api_key):
+    checked_at = datetime.now(timezone.utc)
+    req = urlrequest.Request(
+        XAI_MODELS_URL,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "application/json",
+            "User-Agent": "open-kritt-executor-view",
+        },
+        method="GET",
+    )
+    try:
+        with urlrequest.urlopen(req, timeout=XAI_TIMEOUT_SECONDS) as response:
+            body = response.read(1024 * 256)
+            payload = json.loads(body.decode("utf-8"))
+            models = payload.get("data") if isinstance(payload, dict) else None
+            model_count = len(models) if isinstance(models, list) else None
+            return {
+                "checkedAt": checked_at.isoformat(),
+                "statusCode": response.status,
+                "verified": response.status == 200,
+                "modelCount": model_count,
+            }
+    except urlerror.HTTPError as exc:
+        return {
+            "checkedAt": checked_at.isoformat(),
+            "statusCode": exc.code,
+            "verified": False,
+            "error": f"xAI returned HTTP {exc.code}",
+        }
+    except (OSError, TimeoutError, json.JSONDecodeError) as exc:
+        return {
+            "checkedAt": checked_at.isoformat(),
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
 def configured_secret(name):
-    if name == "OPENROUTER_API_KEY":
+    provider = next(
+        (candidate for candidate, env_key in MANAGED_PROVIDER_ENV_KEYS.items() if env_key == name),
+        None,
+    )
+    if provider:
         state = managed_provider_credential_state()
-        managed = state["credentials"].get("openrouter")
+        managed = state["credentials"].get(provider)
         if managed:
             return managed
-        if "openrouter" in state["disabledEnvironmentProviders"]:
+        if provider in state["disabledEnvironmentProviders"]:
             return None
     value = os.getenv(name)
     value = value.strip() if isinstance(value, str) else ""
@@ -1989,16 +2187,17 @@ def managed_provider_credential_state():
     credentials = {}
     raw_credentials = payload.get("credentials")
     if isinstance(raw_credentials, dict):
-        value = raw_credentials.get("openrouter")
-        if isinstance(value, str) and value.strip():
-            credentials["openrouter"] = value.strip()
+        for provider in MANAGED_PROVIDERS:
+            value = raw_credentials.get(provider)
+            if isinstance(value, str) and value.strip():
+                credentials[provider] = value.strip()
 
     raw_disabled = payload.get("disabledEnvironmentProviders")
     disabled = (
         {
             provider
             for provider in raw_disabled
-            if isinstance(provider, str) and provider == "openrouter"
+            if isinstance(provider, str) and provider in MANAGED_PROVIDERS
         }
         if isinstance(raw_disabled, list)
         else set()
@@ -4345,7 +4544,7 @@ class Handler(BaseHTTPRequestHandler):
         if (
             len(parts) == 3
             and parts[:2] == ["api", "accounts"]
-            and parts[2] in {"codex", "claude", "openrouter"}
+            and parts[2] in {"codex", "claude", "openrouter", "xai"}
         ):
             try:
                 query = parse_qs(parsed.query)

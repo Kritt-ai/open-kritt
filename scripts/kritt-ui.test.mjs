@@ -22,6 +22,7 @@ CODEX_API_KEY=
 OPENAI_API_KEY=
 ANTHROPIC_API_KEY=
 OPENROUTER_API_KEY=
+XAI_API_KEY=
 GITHUB_TOKEN=
 `;
 
@@ -142,6 +143,7 @@ test('long menus keep the selection and footer visible on a short terminal', () 
     { id: 'OPENAI_API_KEY', label: 'OpenAI API key', description: 'not set' },
     { id: 'ANTHROPIC_API_KEY', label: 'Anthropic API key', description: 'not set' },
     { id: 'OPENROUTER_API_KEY', label: 'OpenRouter API key', description: 'not set' },
+    { id: 'XAI_API_KEY', label: 'xAI API key', description: 'not set' },
     { id: 'GITHUB_TOKEN', label: 'GitHub token', description: 'optional for private repositories' },
     { id: 'back', label: 'Back', description: 'Return to the main menu' },
   ];
@@ -152,6 +154,7 @@ test('long menus keep the selection and footer visible on a short terminal', () 
     '○ OpenAI API key not set',
     '○ Anthropic API key not set',
     '○ OpenRouter API key not set',
+    '○ xAI API key not set',
     '○ GitHub token not set (optional)',
   ];
 
@@ -161,7 +164,7 @@ test('long menus keep the selection and footer visible on a short terminal', () 
     details,
     options,
     selected: 1,
-    rows: 14,
+    rows: 16,
     width: 90,
   });
 
@@ -274,6 +277,24 @@ test('interactive home can open setup and save a hidden credential', async (t) =
   assert.equal(parseEnv(await readFile(project.envFile, 'utf8')).CODEX_API_KEY, 'sk-hidden');
   assert.deepEqual(terminal.calls.slice(0, 3), ['enter', 'choose:Welcome', 'notice:Setup']);
   assert.equal(terminal.calls.at(-1), 'exit');
+});
+
+test('interactive setup saves xAI in .env and the shared managed store', async (t) => {
+  const project = await createProject(t);
+  const terminal = new ScriptedTerminal({
+    choices: ['setup', 'XAI_API_KEY', 'set', 'back', 'back', 'back'],
+    inputs: ['xai-hidden'],
+  });
+
+  const result = await runInteractiveCli({ ...project, terminal });
+  const env = parseEnv(await readFile(project.envFile, 'utf8'));
+  const store = JSON.parse(
+    await readFile(join(project.rootDir, '.data', 'engine', 'credentials', 'providers.json'), 'utf8')
+  );
+
+  assert.deepEqual(result, { code: 0 });
+  assert.equal(env.XAI_API_KEY, 'xai-hidden');
+  assert.equal(store.credentials.xai, 'xai-hidden');
 });
 
 test('interactive setup saves OpenRouter in .env and the shared managed store', async (t) => {
