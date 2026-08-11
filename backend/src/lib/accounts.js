@@ -8,7 +8,7 @@ import { CLAUDE_ACCOUNTS_ROOT, CLAUDE_HOME } from './providerLogins.js';
 const EXECUTOR_VIEW_URL = process.env.EXECUTOR_VIEW_URL || 'http://executor-view:8090';
 const EXECUTOR_VIEW_INTERNAL_TOKEN_FILE =
   process.env.EXECUTOR_VIEW_INTERNAL_TOKEN_FILE || '/executor-auth/internal-token';
-const ACCOUNT_PROVIDER_IDS = ['codex', 'claude', 'openrouter'];
+const ACCOUNT_PROVIDER_IDS = ['codex', 'claude', 'openrouter', 'xai'];
 const EXECUTOR_ACCOUNT_TIMEOUT_MS = 180000;
 const ACCOUNT_STATUS_KINDS = new Set(['available', 'limited', 'stale', 'expired', 'warning', 'missing']);
 const ACCOUNT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;

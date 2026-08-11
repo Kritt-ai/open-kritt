@@ -102,12 +102,14 @@ test('removing an environment-bootstrapped key keeps it removed until explicitly
   assert.deepEqual(readManagedCredentialStateSync(credentialsPath).disabledEnvironmentProviders, []);
 });
 
-test('credential validation accepts only a single-line OpenRouter key', () => {
+test('credential validation accepts only a single-line API key for managed providers', () => {
   assert.equal(validateProviderCredential('openrouter', 'valid-key'), null);
+  assert.equal(validateProviderCredential('xai', 'valid-key'), null);
   assert.equal(validateProviderCredential('other', 'key').field, 'provider');
   assert.equal(validateProviderCredential('claude', 'key').field, 'provider');
   assert.equal(validateProviderCredential('openrouter', ' ').field, 'credential');
   assert.equal(validateProviderCredential('openrouter', 'one\ntwo').field, 'credential');
+  assert.equal(validateProviderCredential('xai', 'one\ntwo').field, 'credential');
 });
 
 test('provider status recognizes Codex and Claude login homes', async (t) => {

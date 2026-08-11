@@ -121,7 +121,13 @@ export function modelCatalogEntry(provider, catalog) {
   // one, catalog-backed suggestions remain unavailable; OpenRouter still accepts
   // explicit model IDs through its text input and selection validation policy.
   const status = models.length > 0 && !defaultIsMissing ? 'ready' : hasText(lastError) ? 'unavailable' : 'loading';
-  return { provider, input: provider === 'openrouter' ? 'text' : 'select', models, defaultModel, status };
+  return {
+    provider,
+    input: provider === 'openrouter' || provider === 'xai' ? 'text' : 'select',
+    models,
+    defaultModel,
+    status,
+  };
 }
 
 export function buildModelCatalogResponse(configuredProviders, catalogs = []) {
