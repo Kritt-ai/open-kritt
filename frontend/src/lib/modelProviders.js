@@ -15,7 +15,7 @@ const PROVIDER_DEFAULT_MODELS = {
   codex: 'gpt-5-codex',
   claude: 'claude-sonnet-5',
   openrouter: 'z-ai/glm-5.2',
-  xai: 'grok-4.5',
+  xai: 'grok-4.6',
 };
 
 const PROVIDER_THINKING_EFFORTS = {

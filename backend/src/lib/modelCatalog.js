@@ -42,6 +42,21 @@ const CLAUDE_CODE_MODELS = [
   },
 ];
 
+const XAI_GROK_MODELS = [
+  {
+    id: 'grok-4.6',
+    label: 'Grok 4.6',
+    thinkingEfforts: ['low', 'medium', 'high'],
+    isDefault: true,
+  },
+  {
+    id: 'grok-4.5',
+    label: 'Grok 4.5',
+    thinkingEfforts: ['low', 'medium', 'high'],
+    isDefault: false,
+  },
+];
+
 function normalizedProvider(provider) {
   return `${provider || ''}`.trim().toLowerCase();
 }
@@ -111,6 +126,18 @@ export function modelCatalogEntry(provider, catalog) {
       input: 'select',
       models: CLAUDE_CODE_MODELS,
       defaultModel: 'claude-sonnet-5',
+      status: 'ready',
+    };
+  }
+
+  // Device login authenticates Grok Build but cannot call xAI's API-key-only
+  // /v1/models endpoint. Keep the current default so the picker is usable.
+  if (provider === 'xai' && (!models.length || !defaultModel)) {
+    return {
+      provider,
+      input: 'text',
+      models: XAI_GROK_MODELS,
+      defaultModel: 'grok-4.6',
       status: 'ready',
     };
   }

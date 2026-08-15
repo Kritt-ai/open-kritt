@@ -406,10 +406,10 @@ def test_fetch_xai_models_uses_models_endpoint_and_default_efforts(monkeypatch):
     monkeypatch.setattr(model_catalog, "urlopen", fake_urlopen)
     models, default_model = fetch_xai_models("xai-test-key", 2)
 
-    assert [model["id"] for model in models] == ["grok-3", "grok-4.5", "grok-code-fast-1"]
-    assert default_model == "grok-4.5"
-    assert models[1]["isDefault"] is True
-    assert models[1]["thinkingEfforts"] == ["low", "medium", "high"]
+    assert [model["id"] for model in models] == ["grok-4.6", "grok-3", "grok-4.5", "grok-code-fast-1"]
+    assert default_model == "grok-4.6"
+    assert models[0]["isDefault"] is True
+    assert models[0]["thinkingEfforts"] == ["low", "medium", "high"]
     request, timeout = requests[0]
     assert request.full_url == "https://api.x.ai/v1/models"
     assert request.get_header("Authorization") == "Bearer xai-test-key"
@@ -423,8 +423,8 @@ def test_fetch_xai_models_injects_default_when_missing(monkeypatch):
         lambda *_args, **_kwargs: io.BytesIO(json.dumps({"data": [{"id": "grok-3"}]}).encode("utf-8")),
     )
     models, default_model = fetch_xai_models("xai-test-key", 2)
-    assert default_model == "grok-4.5"
-    assert any(model["id"] == "grok-4.5" and model["isDefault"] for model in models)
+    assert default_model == "grok-4.6"
+    assert any(model["id"] == "grok-4.6" and model["isDefault"] for model in models)
 
 
 def test_refresher_persists_only_configured_provider_catalogs():

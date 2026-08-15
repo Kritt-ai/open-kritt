@@ -185,7 +185,7 @@ CLAUDE_MODEL_ALIASES = {
 DEFAULT_MODEL_PROVIDER = "openrouter"
 MODEL_PROVIDERS = {"codex", "claude", "openrouter", "xai"}
 GROK_BUILD_THINKING_EFFORTS = frozenset({"low", "medium", "high"})
-DEFAULT_GROK_BUILD_MODEL = "grok-4.5"
+DEFAULT_GROK_BUILD_MODEL = "grok-4.6"
 CLAUDE_WORKSPACE_SYSTEM_PROMPT = (
     "Use only files under the current working directory and dependency paths listed in WORKSPACE.json. "
     "Do not search from filesystem root (/), /data, /root, /home, or other global paths. "
@@ -838,6 +838,7 @@ def _scan_docker_command(
         "CODEX_HOME": f"{CLAUDE_RUNNER_HOME}/.codex",
         "CLAUDE_HOME": f"{CLAUDE_RUNNER_HOME}/.claude",
         "CLAUDE_CONFIG_DIR": f"{CLAUDE_RUNNER_HOME}/.claude",
+        "GROK_HOME": f"{CLAUDE_RUNNER_HOME}/.grok",
         "XDG_CONFIG_HOME": f"{CLAUDE_RUNNER_HOME}/.config",
         "XDG_CACHE_HOME": f"{CLAUDE_RUNNER_HOME}/.cache",
         "XDG_DATA_HOME": f"{CLAUDE_RUNNER_HOME}/.local/share",
@@ -862,7 +863,6 @@ def _scan_docker_command(
         "CURSOR_AUTH_TOKEN",
         "CURSOR_AGENT_BIN",
         "GROK_BIN",
-        "GROK_HOME",
         "SSL_CERT_FILE",
         "SSL_CERT_DIR",
         "NODE_EXTRA_CA_CERTS",

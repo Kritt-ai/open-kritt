@@ -80,7 +80,7 @@ describe('model provider defaults', () => {
     expect(defaultModelForModelProvider('codex')).toBe('gpt-5-codex');
     expect(defaultModelForModelProvider('claude')).toBe('claude-sonnet-5');
     expect(defaultModelForModelProvider('openrouter')).toBe('z-ai/glm-5.2');
-    expect(defaultModelForModelProvider('xai')).toBe('grok-4.5');
+    expect(defaultModelForModelProvider('xai')).toBe('grok-4.6');
   });
 
   it('moves provider-owned model defaults with the provider', () => {

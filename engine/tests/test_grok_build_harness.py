@@ -139,6 +139,60 @@ def test_grok_build_tool_free_command_and_structured_output(monkeypatch, tmp_pat
     assert captured["prompt"] == ""
 
 
+def test_grok_build_docker_runner_remaps_grok_home(monkeypatch, tmp_path):
+    data_dir = tmp_path / "engine-data"
+    host_data_dir = tmp_path / "host-engine-data"
+    repo_dir = data_dir / "jobs" / "metadata-9" / "workspace"
+    home_dir = data_dir / "jobs" / "metadata-9" / "home"
+    repo_dir.mkdir(parents=True)
+    home_dir.mkdir(parents=True)
+    captured = {}
+
+    monkeypatch.setenv("ENGINE_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("ENGINE_DOCKER_DATA_DIR_HOST", str(host_data_dir))
+    monkeypatch.setenv("ENGINE_SCAN_RUNNER_IMAGE", "runner-image")
+    monkeypatch.setattr(harnesses, "_scan_docker_command", harnesses._scan_docker_command)
+    original_which = harnesses.shutil.which
+    monkeypatch.setattr(
+        harnesses.shutil,
+        "which",
+        lambda name, path=None: (
+            "docker"
+            if name == "docker"
+            else "/usr/local/bin/grok"
+            if name == "grok"
+            else original_which(name, path=path)
+        ),
+    )
+
+    def fake_run_process(cmd, prompt, cwd, timeout, env=None):
+        captured["cmd"] = cmd
+        return SimpleNamespace(
+            stdout=json.dumps({"structuredOutput": marked({"stub": True, "stub_explanation": "ok", "results": []})}),
+            stderr="",
+            returncode=0,
+        )
+
+    monkeypatch.setattr(harnesses, "_run_process", fake_run_process)
+
+    GrokBuildHarness(timeout_seconds=5, model_provider="xai").run(
+        prompt="prompt",
+        schema=output_schema('{"thing":"string"}', multi_output=False),
+        repo_dir=str(repo_dir),
+        model="grok-4.5",
+        env={
+            "HOME": str(home_dir),
+            "GROK_HOME": str(home_dir / ".grok"),
+            "PATH": "/usr/local/bin",
+        },
+        allow_tools=True,
+    )
+
+    cmd = captured["cmd"]
+    grok_home_flags = [part for part in cmd if part == "GROK_HOME" or part.startswith("GROK_HOME=")]
+    assert grok_home_flags == ["GROK_HOME=/home/runner/.grok"]
+
+
 def test_grok_build_tool_enabled_uses_bypass_permissions(monkeypatch, tmp_path):
     captured = {}
     payload = marked({"stub": True, "stub_explanation": "No matching records.", "results": []})
