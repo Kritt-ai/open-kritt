@@ -45,6 +45,7 @@ def test_engine_config_reads_scan_storage_floor(monkeypatch, tmp_path):
 class _ScanDatabase:
     def __init__(self, *, claimed):
         self.claimed = claimed
+        self.statuses = []
         self.scan = {
             "id": 58,
             "workflow_id": 2,
@@ -74,6 +75,11 @@ class _ScanDatabase:
 
     def load_step_results(self, _conn, _scan_id):
         return []
+
+    def set_scan_status_if_active(self, _conn, scan_id, status, error=None):
+        self.statuses.append((scan_id, status, error))
+        self.scan["status"] = status
+        return True
 
 
 def _worker(db):
@@ -143,6 +149,28 @@ def test_worker_still_claims_pending_work_on_an_already_running_scan(monkeypatch
     assert worker.run_scan_once(worker_id=2) is True
     assert calls == [pending_job]
     assert cleanup_requests == [True]
+
+
+def test_unexpected_model_usage_pauses_scan_instead_of_allowing_auto_resume():
+    db = _ScanDatabase(claimed=set())
+    worker = _worker(db)
+    worker.process_scan = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        worker_module.StepExecutionError(
+            "step failed after 1 attempt: Claude Code changed models.",
+            code="unexpected_model_usage",
+        )
+    )
+    worker._schedule_post_task_cleanup = lambda: None
+
+    assert worker.run_scan_once(worker_id=2) is True
+
+    assert db.statuses == [
+        (
+            58,
+            "paused",
+            "step failed after 1 attempt: Claude Code changed models.",
+        )
+    ]
 
 
 class _RateLimitDatabase:

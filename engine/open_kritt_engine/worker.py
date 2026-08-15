@@ -93,7 +93,9 @@ ARTIFACT_CLEANUP_GRACE_SECONDS = 5 * 60.0
 
 
 class StepExecutionError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, code: str | None = None):
+        super().__init__(message)
+        self.code = code
 
 
 class RateLimitExhausted(StepExecutionError):
@@ -864,9 +866,19 @@ class Worker:
                 return True
             except Exception as exc:
                 task_finished = True
-                LOGGER.exception("scan %s failed", scan["id"])
+                unexpected_model_usage = getattr(exc, "code", None) == "unexpected_model_usage"
+                failure_status = "paused" if unexpected_model_usage else "failed"
+                failure_error = (
+                    f"{exc.public_message} Diagnostic: {exc.code}." if isinstance(exc, HarnessError) else str(exc)
+                )
+                LOGGER.exception("scan %s %s", scan["id"], failure_status)
                 with self.db.connect() as conn:
-                    self.db.set_scan_status_if_active(conn, int(scan["id"]), "failed", error=str(exc))
+                    self.db.set_scan_status_if_active(
+                        conn,
+                        int(scan["id"]),
+                        failure_status,
+                        error=failure_error,
+                    )
                     conn.commit()
                 return True
             self._record_scan_claim_result(int(scan["id"]), did_work=did_work)
@@ -1075,6 +1087,7 @@ class Worker:
                     generation_id,
                     error=error,
                     validation_errors=validation_errors,
+                    raw_token_usage=exc.usage if isinstance(exc, HarnessError) else None,
                 )
                 return
 
@@ -1140,14 +1153,20 @@ class Worker:
         *,
         error: str,
         validation_errors: list[dict[str, str]] | None = None,
+        raw_token_usage: dict[str, Any] | None = None,
     ) -> bool:
         try:
             with self.db.connect() as conn:
+                failure_details: dict[str, Any] = {
+                    "error": error,
+                    "validation_errors": validation_errors,
+                }
+                if raw_token_usage is not None:
+                    failure_details["raw_token_usage"] = raw_token_usage
                 failed = self.db.fail_generation(
                     conn,
                     generation_id,
-                    error=error,
-                    validation_errors=validation_errors,
+                    **failure_details,
                 )
                 conn.commit()
             return failed
@@ -1518,6 +1537,8 @@ class Worker:
                     return True
                 except (HarnessError, OutputValidationError, ValueError) as exc:
                     last_exception = exc
+                    if isinstance(exc, HarnessError) and exc.usage is not None:
+                        usage = exc.usage
                     if isinstance(exc, HarnessError):
                         last_error = f"{exc.public_message} Diagnostic: {exc.code}."
                     else:
@@ -1634,7 +1655,10 @@ class Worker:
                     account_home=getattr(prepared.workspace, "provider_account_home", None),
                     limit_kind=last_exception.code,
                 )
-            raise StepExecutionError(f"step {step.id} {failure_summary}")
+            raise StepExecutionError(
+                f"step {step.id} {failure_summary}",
+                code=getattr(last_exception, "code", None),
+            ) from last_exception
         finally:
             if metadata_id is not None:
                 if prepared is not None:

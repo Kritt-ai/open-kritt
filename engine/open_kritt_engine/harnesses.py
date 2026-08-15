@@ -28,6 +28,7 @@ NON_RETRYABLE_HARNESS_FAILURES = frozenset(
         "model_unavailable",
         "quota_exceeded",
         "start_failed",
+        "unexpected_model_usage",
     }
 )
 CAPACITY_RATE_LIMIT_FAILURES = frozenset({"provider_throttled", "subagent_limited"})
@@ -81,6 +82,10 @@ HARNESS_FAILURE_MESSAGES = {
     "rate_limited": "The model provider is rate limiting generation requests. Wait and try again.",
     "start_failed": "The configured model harness could not be started. Rebuild or restart the engine and try again.",
     "timeout": "Generation timed out before the model provider returned a draft. Try again or choose a faster model.",
+    "unexpected_model_usage": (
+        "Claude Code reported use of a model other than the one selected for this scan. "
+        "The result was rejected and automatic retries were disabled to limit further charges."
+    ),
 }
 
 
@@ -104,6 +109,7 @@ class HarnessError(RuntimeError):
         exit_code: int | None = None,
         harness: str | None = None,
         retry_after_seconds: float | None = None,
+        usage: dict[str, Any] | None = None,
     ):
         super().__init__(message)
         self.output = output
@@ -115,6 +121,7 @@ class HarnessError(RuntimeError):
         self.exit_code = exit_code
         self.harness = harness
         self.retry_after_seconds = retry_after_seconds
+        self.usage = usage
         self.attempts: int | None = None
 
 
@@ -246,6 +253,7 @@ def _harness_error_with_output(exc: BaseException, output: HarnessOutput) -> Har
             exit_code=exc.exit_code,
             harness=exc.harness,
             retry_after_seconds=exc.retry_after_seconds,
+            usage=exc.usage,
         )
     return HarnessError(str(exc), output=output)
 
@@ -851,6 +859,9 @@ def _scan_docker_command(
         "ANTHROPIC_API_KEY",
         "CODEX_MODEL_PROVIDER",
         "CLAUDE_CODE_MODEL_PROVIDER",
+        "CLAUDE_CODE_SUBAGENT_MODEL",
+        "CLAUDE_CODE_NO_MODEL_FALLBACK",
+        "CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK",
         "CURSOR_API_KEY",
         "CURSOR_AUTH_TOKEN",
         "CURSOR_AGENT_BIN",
@@ -1002,6 +1013,14 @@ def _claude_env(env: dict[str, str], model: str, model_provider: str | None = No
         actual_env["ANTHROPIC_BASE_URL"] = actual_env.get("ANTHROPIC_BASE_URL") or OPENROUTER_CLAUDE_BASE_URL
         actual_env["ANTHROPIC_AUTH_TOKEN"] = actual_env.get("ANTHROPIC_AUTH_TOKEN") or actual_env["OPENROUTER_API_KEY"]
         actual_env["ANTHROPIC_API_KEY"] = ""
+        selected_model = _claude_model_name(model, actual_env, model_provider)
+        # Claude Code's Agent tool can request a different model than the
+        # parent --model value. Force every subagent to the explicit OpenRouter
+        # selection and disable internal model fallback so a scan cannot
+        # silently cross provider/model price boundaries.
+        actual_env["CLAUDE_CODE_SUBAGENT_MODEL"] = selected_model
+        actual_env["CLAUDE_CODE_NO_MODEL_FALLBACK"] = "1"
+        actual_env["CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK"] = "1"
     return actual_env
 
 
@@ -1126,11 +1145,12 @@ def _extract_json_from_output_file(path: str) -> dict[str, Any]:
 
 
 def _extract_json_from_claude_stream(
-    stdout: str, *, provider: str | None = None
+    stdout: str, *, provider: str | None = None, expected_model: str | None = None
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     candidates: list[str] = []
     usage = None
     stream_error = None
+    model_switch_event = None
     for line in stdout.splitlines():
         if not line.strip():
             continue
@@ -1157,6 +1177,22 @@ def _extract_json_from_claude_stream(
                 candidates.append(event["result"])
         if event.get("type") == "error":
             stream_error = json.dumps(event.get("error") or event)
+        if event.get("type") == "system" and event.get("subtype") in {
+            "model_fallback",
+            "model_refusal_fallback",
+            "server_fallback",
+        }:
+            model_switch_event = event.get("subtype")
+
+    if model_switch_event:
+        raise HarnessError(
+            f"Claude Code reported an internal model switch ({model_switch_event}).",
+            code="unexpected_model_usage",
+            harness="claude-code",
+            usage=usage,
+        )
+    if expected_model:
+        _validate_claude_model_usage(usage, expected_model)
 
     last_error = None
     for candidate in reversed(candidates):
@@ -1171,6 +1207,34 @@ def _extract_json_from_claude_stream(
         code="invalid_output",
         harness="claude-code",
     ) from last_error
+
+
+def _claude_usage_model_name(model: str) -> str:
+    """Remove Claude Code's context-window annotation from a usage key."""
+
+    return re.sub(r"\[1m\]$", "", model.strip(), flags=re.IGNORECASE).casefold()
+
+
+def _validate_claude_model_usage(usage: dict[str, Any] | None, expected_model: str) -> None:
+    """Fail closed when Claude Code reports billing against another model."""
+
+    if not isinstance(usage, dict):
+        return
+    model_usage = usage.get("modelUsage")
+    if not isinstance(model_usage, dict):
+        return
+    expected = _claude_usage_model_name(expected_model)
+    unexpected = sorted(
+        str(model) for model in model_usage if isinstance(model, str) and _claude_usage_model_name(model) != expected
+    )
+    if not unexpected:
+        return
+    raise HarnessError(
+        f"Claude Code reported unexpected model usage ({', '.join(unexpected)}); expected {expected_model}.",
+        code="unexpected_model_usage",
+        harness="claude-code",
+        usage=usage,
+    )
 
 
 def _collect_json_text_candidates(value: Any) -> list[str]:
@@ -1744,7 +1808,11 @@ class ClaudeHarness:
         process_output = _process_output(proc)
         if provider == "openrouter":
             try:
-                payload, usage = _extract_json_from_claude_stream(proc.stdout, provider=provider)
+                payload, usage = _extract_json_from_claude_stream(
+                    proc.stdout,
+                    provider=provider,
+                    expected_model=model,
+                )
             except HarnessError as exc:
                 raise _harness_error_with_output(exc, process_output) from exc
             except json.JSONDecodeError as exc:

@@ -45,7 +45,16 @@ IMPACT_LEVELS = {"critical", "high", "medium", "low", "informational"}
 
 
 class PostProcessExecutionError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        usage: dict[str, Any] | None = None,
+    ):
+        super().__init__(message)
+        self.code = code
+        self.usage = usage
 
 
 class PostProcessRateLimited(PostProcessExecutionError):
@@ -628,6 +637,8 @@ class PostProcessor:
                     return result.payload, usage, codex_session_id, checked_out_commit
                 except (HarnessError, OutputValidationError, ValueError) as exc:
                     last_exception = exc
+                    if isinstance(exc, HarnessError) and exc.usage is not None:
+                        usage = exc.usage
                     detail = (
                         f"{exc.public_message} Diagnostic: {exc.code}." if isinstance(exc, HarnessError) else str(exc)
                     )
@@ -693,8 +704,10 @@ class PostProcessor:
                     limit_kind=last_exception.code,
                 )
             raise PostProcessExecutionError(
-                last_error or "The model process exited before post-processing returned a structured result."
-            )
+                last_error or "The model process exited before post-processing returned a structured result.",
+                code=getattr(last_exception, "code", None),
+                usage=usage,
+            ) from last_exception
         except ClaudeCredentialRateLimited as exc:
             with self.db.connect() as conn:
                 self.db.update_post_process_metadata(
@@ -803,7 +816,7 @@ class PostProcessor:
                     status="interrupted" if isinstance(exc, PostProcessRateLimited) else "failed",
                     error=str(exc),
                     run_time_ms=run_time_ms,
-                    raw_token_usage=None,
+                    raw_token_usage=getattr(exc, "usage", None),
                     phase="interrupted" if isinstance(exc, PostProcessRateLimited) else "failed",
                 )
                 conn.commit()
@@ -892,7 +905,7 @@ class PostProcessor:
                     status="interrupted" if isinstance(exc, PostProcessRateLimited) else "failed",
                     error=str(exc),
                     run_time_ms=run_time_ms,
-                    raw_token_usage=None,
+                    raw_token_usage=getattr(exc, "usage", None),
                     phase="interrupted" if isinstance(exc, PostProcessRateLimited) else "failed",
                 )
                 conn.commit()
@@ -1052,7 +1065,7 @@ class PostProcessor:
                     status="interrupted" if isinstance(exc, PostProcessRateLimited) else "failed",
                     error=str(exc),
                     run_time_ms=run_time_ms,
-                    raw_token_usage=None,
+                    raw_token_usage=getattr(exc, "usage", None),
                     phase="interrupted" if isinstance(exc, PostProcessRateLimited) else "failed",
                 )
                 conn.commit()

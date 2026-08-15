@@ -1214,6 +1214,7 @@ def test_claude_harness_uses_dangerous_permissions_and_default_tools(monkeypatch
 
     def fake_run_process(cmd, prompt, cwd, timeout, env=None):
         captured["cmd"] = cmd
+        captured["env"] = env
         captured["timeout"] = timeout
         return SimpleNamespace(
             stdout=json.dumps(
@@ -1259,6 +1260,9 @@ def test_claude_harness_uses_dangerous_permissions_and_default_tools(monkeypatch
     assert "--append-system-prompt" in captured["cmd"]
     assert "--no-session-persistence" in captured["cmd"]
     assert "--permission-mode" not in captured["cmd"]
+    assert "CLAUDE_CODE_SUBAGENT_MODEL" not in captured["env"]
+    assert "CLAUDE_CODE_NO_MODEL_FALLBACK" not in captured["env"]
+    assert "CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK" not in captured["env"]
     claude_schema = json.loads(captured["cmd"][captured["cmd"].index("--json-schema") + 1])
     assert source_schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
     assert "$schema" not in claude_schema
@@ -1310,6 +1314,9 @@ def test_claude_harness_can_route_glm_through_openrouter(monkeypatch, tmp_path):
             "CLAUDE_CONFIG_DIR": str(tmp_path / "home" / ".claude"),
             "OPENROUTER_API_KEY": "or-key",
             "CODEX_MODEL_PROVIDER": "openrouter",
+            "CLAUDE_CODE_SUBAGENT_MODEL": "claude-opus-4-8",
+            "CLAUDE_CODE_NO_MODEL_FALLBACK": "0",
+            "CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK": "0",
         },
     )
 
@@ -1318,6 +1325,9 @@ def test_claude_harness_can_route_glm_through_openrouter(monkeypatch, tmp_path):
     assert captured["env"]["ANTHROPIC_BASE_URL"] == "https://openrouter.ai/api"
     assert captured["env"]["ANTHROPIC_AUTH_TOKEN"] == "or-key"
     assert captured["env"]["ANTHROPIC_API_KEY"] == ""
+    assert captured["env"]["CLAUDE_CODE_SUBAGENT_MODEL"] == "z-ai/glm-5.2"
+    assert captured["env"]["CLAUDE_CODE_NO_MODEL_FALLBACK"] == "1"
+    assert captured["env"]["CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK"] == "1"
     # The subprocess environment is authoritative in both containers and local
     # development; credentials must never be serialized into process arguments.
     if captured["cmd"][:3] == ["runuser", "-u", "nobody"]:
@@ -1330,6 +1340,89 @@ def test_claude_harness_can_route_glm_through_openrouter(monkeypatch, tmp_path):
     assert "--append-system-prompt" in captured["cmd"]
     assert "--json-schema" not in captured["cmd"]
     assert harnesses.claude_model_provider("glm-5.2", captured["env"]) == "openrouter"
+
+
+def test_claude_openrouter_rejects_unexpected_model_usage(monkeypatch, tmp_path):
+    raw_stdout = "\n".join(
+        [
+            json.dumps(
+                {
+                    "type": "result",
+                    "result": "not structured JSON",
+                    "usage": {"input_tokens": 3},
+                    "total_cost_usd": 1.25,
+                    "modelUsage": {
+                        "z-ai/glm-5.2": {"inputTokens": 1},
+                        "claude-opus-4-8[1m]": {"inputTokens": 2},
+                    },
+                }
+            )
+        ]
+    )
+
+    monkeypatch.setattr(
+        harnesses,
+        "_run_process",
+        lambda *_args, **_kwargs: SimpleNamespace(stdout=raw_stdout, stderr="", returncode=0),
+    )
+
+    with pytest.raises(HarnessError) as raised:
+        ClaudeHarness(timeout_seconds=5, model_provider="openrouter").run(
+            prompt="prompt",
+            schema=output_schema('{"thing":"string"}', multi_output=False),
+            repo_dir="/tmp",
+            model="glm-5.2",
+            env={
+                "HOME": str(tmp_path / "home"),
+                "OPENROUTER_API_KEY": "or-key",
+            },
+        )
+
+    assert raised.value.code == "unexpected_model_usage"
+    assert raised.value.retryable is False
+    assert harnesses.harness_failure_retry_count(raised.value, retry_count=5, cyber_safety_retry_count=5) == 0
+    assert raised.value.usage["total_cost_usd"] == 1.25
+    assert "claude-opus-4-8[1m]" in str(raised.value)
+    assert raised.value.output.stdout == raw_stdout
+
+
+def test_claude_openrouter_rejects_model_fallback_event(monkeypatch, tmp_path):
+    raw_stdout = "\n".join(
+        [
+            json.dumps({"type": "system", "subtype": "model_refusal_fallback"}),
+            json.dumps({"type": "result", "result": "not structured JSON"}),
+        ]
+    )
+    monkeypatch.setattr(
+        harnesses,
+        "_run_process",
+        lambda *_args, **_kwargs: SimpleNamespace(stdout=raw_stdout, stderr="", returncode=0),
+    )
+
+    with pytest.raises(HarnessError) as raised:
+        ClaudeHarness(timeout_seconds=5, model_provider="openrouter").run(
+            prompt="prompt",
+            schema=output_schema('{"thing":"string"}', multi_output=False),
+            repo_dir="/tmp",
+            model="glm-5.2",
+            env={"HOME": str(tmp_path / "home"), "OPENROUTER_API_KEY": "or-key"},
+        )
+
+    assert raised.value.code == "unexpected_model_usage"
+    assert raised.value.retryable is False
+    assert "model_refusal_fallback" in str(raised.value)
+    assert raised.value.output.stdout == raw_stdout
+
+
+def test_claude_model_usage_accepts_selected_model_context_annotation():
+    harnesses._validate_claude_model_usage(
+        {"modelUsage": {"z-ai/glm-5.2[1m]": {"inputTokens": 1}}},
+        "z-ai/glm-5.2",
+    )
+    harnesses._validate_claude_model_usage(
+        {"modelUsage": {"~deepseek/deepseek-v4-flash-latest": {"inputTokens": 1}}},
+        "~deepseek/deepseek-v4-flash-latest",
+    )
 
 
 def test_claude_openrouter_parse_error_carries_raw_output(monkeypatch, tmp_path):
@@ -2838,6 +2931,7 @@ def test_worker_does_not_retry_permanent_harness_failures(monkeypatch, tmp_path)
                 "provider response contained secret-value",
                 code="quota_exceeded",
                 harness="claude-code",
+                usage={"total_tokens": 7},
             )
 
     prepared = SimpleNamespace(
@@ -2862,6 +2956,7 @@ def test_worker_does_not_retry_permanent_harness_failures(monkeypatch, tmp_path)
     assert fake_harness.calls == 1
     assert "account quota is exhausted" in fake_db.metadata[0]["error"]
     assert "Diagnostic: quota_exceeded" in fake_db.metadata[0]["error"]
+    assert fake_db.metadata[1]["raw_token_usage"] == {"total_tokens": 7}
     assert "secret-value" not in fake_db.metadata[0]["error"]
     assert not root.exists()
 
@@ -3072,6 +3167,7 @@ def test_post_processing_does_not_retry_permanent_harness_failures(monkeypatch, 
                 "provider response contained secret-value",
                 code="quota_exceeded",
                 harness="claude-code",
+                usage={"total_tokens": 13},
             )
 
     prepared = SimpleNamespace(
@@ -3086,7 +3182,7 @@ def test_post_processing_does_not_retry_permanent_harness_failures(monkeypatch, 
     processor = PostProcessor(SimpleNamespace(retry_count=2, data_dir="/tmp", github_token=None), fake_db)
     fake_harness = PermanentFailureHarness()
 
-    with pytest.raises(post_processing_module.PostProcessExecutionError, match="quota_exceeded"):
+    with pytest.raises(post_processing_module.PostProcessExecutionError, match="quota_exceeded") as raised:
         processor._run_harness_with_retries(
             metadata_id=9,
             scan=scan(),
@@ -3097,7 +3193,10 @@ def test_post_processing_does_not_retry_permanent_harness_failures(monkeypatch, 
         )
 
     assert fake_harness.calls == 1
+    assert raised.value.code == "quota_exceeded"
+    assert raised.value.usage == {"total_tokens": 13}
     assert "account quota is exhausted" in fake_db.updates[-1]["error"]
+    assert fake_db.updates[-1]["raw_token_usage"] == {"total_tokens": 13}
     assert "secret-value" not in fake_db.updates[-1]["error"]
     assert not root.exists()
 

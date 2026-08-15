@@ -1447,6 +1447,7 @@ def test_worker_records_actionable_harness_failure_without_provider_detail(caplo
         code="invalid_output_schema",
         exit_code=1,
         harness="codex",
+        usage={"total_tokens": 11},
     )
     harness_error.attempts = 1
     fake_db = FakeDb()
@@ -1465,6 +1466,7 @@ def test_worker_records_actionable_harness_failure_without_provider_detail(caplo
     assert "model=gpt-test" in caplog.text
     assert "attempts=1" in caplog.text
     assert provider_detail not in caplog.text
+    assert fake_db.failed[0][1]["raw_token_usage"] == {"total_tokens": 11}
 
 
 def test_worker_marks_generation_failed_when_completed_result_cannot_be_serialized(tmp_path):
