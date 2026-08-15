@@ -164,13 +164,13 @@ test('long menus keep the selection and footer visible on a short terminal', () 
     details,
     options,
     selected: 1,
-    rows: 16,
+    rows: 14,
     width: 90,
   });
 
   assert.match(screen, /› Claude login/);
   assert.match(screen, /↑↓ navigate/);
-  assert.match(screen, /2\/8/);
+  assert.match(screen, /2\/9/);
   assert.doesNotMatch(screen, /GitHub token/);
 
   const bottomScreen = renderMenuScreen({
@@ -178,14 +178,14 @@ test('long menus keep the selection and footer visible on a short terminal', () 
     subtitle: 'Choose one option to configure model access',
     details,
     options,
-    selected: 7,
+    selected: 8,
     rows: 14,
     width: 90,
   });
 
   assert.match(bottomScreen, /› Back/);
   assert.match(bottomScreen, /GitHub token/);
-  assert.match(bottomScreen, /8\/8/);
+  assert.match(bottomScreen, /9\/9/);
 });
 
 test('document screens fill the terminal, scroll, and retain semantic color', () => {
