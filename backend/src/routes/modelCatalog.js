@@ -2,7 +2,7 @@ import { Router } from 'express';
 
 import { prisma } from '../db.js';
 import { buildModelCatalogResponse, hasModelCatalog } from '../lib/modelCatalog.js';
-import { configuredModelProviders } from '../lib/modelProviders.js';
+import { discoverConfiguredModelProviders } from '../lib/providerDiscovery.js';
 
 async function findCatalogs(providerIds) {
   if (!providerIds.length) return [];
@@ -10,7 +10,7 @@ async function findCatalogs(providerIds) {
 }
 
 export function createModelCatalogRouter({
-  getConfiguredProviders = configuredModelProviders,
+  getConfiguredProviders = discoverConfiguredModelProviders,
   getCatalogs = findCatalogs,
 } = {}) {
   const router = Router();
@@ -18,7 +18,7 @@ export function createModelCatalogRouter({
   // GET /api/model-catalog — configured provider input modes and cached models.
   router.get('/', async (req, res, next) => {
     try {
-      const providers = getConfiguredProviders();
+      const providers = await getConfiguredProviders();
       const catalogProviders = providers.filter(hasModelCatalog);
       const catalogs = await getCatalogs(catalogProviders);
       res.json(buildModelCatalogResponse(providers, catalogs));

@@ -15,7 +15,35 @@ FIELD_TYPE_MAP = {
 
 
 class OutputValidationError(ValueError):
-    pass
+    def __init__(self, errors: list[dict[str, str]] | str):
+        if isinstance(errors, str):
+            errors = [{"field": "<root>", "message": errors}]
+        self.errors = errors
+        detail = "; ".join(f"{item['field']}: {item['message']}" for item in errors[:3])
+        super().__init__(detail or "Generated output is invalid.")
+
+
+def _schema_error_field(error) -> str:
+    if not error.path:
+        if error.validator == "required":
+            missing = error.message.split("'")
+            if len(missing) >= 2 and missing[1]:
+                return missing[1]
+        if error.validator == "additionalProperties":
+            extra = error.message.split("'")
+            if len(extra) >= 2 and extra[1]:
+                return extra[1]
+        return "<root>"
+    return ".".join(str(part) for part in error.path)
+
+
+def _missing_required_fields(error) -> list[str]:
+    if error.validator != "required":
+        return []
+    missing = error.message.split("'")
+    if len(missing) >= 2 and missing[1]:
+        return [missing[1]]
+    return []
 
 
 def normalize_output_format(raw: Any) -> dict[str, str]:
@@ -84,19 +112,41 @@ def output_schema(raw_output_format: Any, multi_output: bool) -> dict[str, Any]:
     }
 
 
-def validate_payload(payload: Any, schema: dict[str, Any], multi_output: bool) -> list[dict[str, Any]]:
-    errors = sorted(Draft202012Validator(schema).iter_errors(payload), key=lambda e: list(e.path))
+def payload_validation_errors(payload: Any, schema: dict[str, Any], multi_output: bool) -> list[dict[str, str]]:
+    validation_errors = sorted(Draft202012Validator(schema).iter_errors(payload), key=lambda e: list(e.path))
+    errors = []
+    missing_required: list[str] = []
+    for error in validation_errors:
+        missing_required.extend(_missing_required_fields(error))
+        errors.append({"field": _schema_error_field(error), "message": error.message})
+    if missing_required:
+        ordered_missing = []
+        for field in missing_required:
+            if field not in ordered_missing:
+                ordered_missing.append(field)
+        errors.insert(
+            0,
+            {
+                "field": "<required>",
+                "message": "Missing required field(s): " + ", ".join(ordered_missing),
+            },
+        )
     if errors:
-        first = errors[0]
-        path = ".".join(str(p) for p in first.path) or "<root>"
-        raise OutputValidationError(f"{path}: {first.message}")
+        return errors
     results = payload["results"]
     if payload["stub"] and results:
-        raise OutputValidationError("stub=true must use an empty results array")
+        return [{"field": "results", "message": "stub=true must use an empty results array"}]
     if payload["stub"] and not payload["stub_explanation"].strip():
-        raise OutputValidationError("stub=true requires a non-empty stub_explanation")
+        return [{"field": "stub_explanation", "message": "stub=true requires a non-empty stub_explanation"}]
     if not payload["stub"] and not results:
-        raise OutputValidationError("stub=false requires at least one result")
+        return [{"field": "results", "message": "stub=false requires at least one result"}]
     if not multi_output and len(results) > 1:
-        raise OutputValidationError("single-output step returned more than one result")
-    return results
+        return [{"field": "results", "message": "single-output step returned more than one result"}]
+    return []
+
+
+def validate_payload(payload: Any, schema: dict[str, Any], multi_output: bool) -> list[dict[str, Any]]:
+    errors = payload_validation_errors(payload, schema, multi_output)
+    if errors:
+        raise OutputValidationError(errors)
+    return payload["results"]

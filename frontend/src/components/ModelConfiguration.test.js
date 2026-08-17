@@ -58,29 +58,6 @@ describe('modelConfigurationIsValid', () => {
     });
   });
 
-  it('defaults to the first configured custom provider when no built-in provider is configured', () => {
-    const customCatalog = configuredModelCatalog({
-      providers: [
-        {
-          provider: 'my-gateway',
-          label: 'My Gateway',
-          input: 'text',
-          status: 'ready',
-          defaultModel: 'gateway-model',
-          harnesses: ['openai-compatible'],
-          models: [{ id: 'gateway-model', label: 'gateway-model', thinkingEfforts: ['medium'] }],
-        },
-      ],
-    });
-
-    expect(modelConfigurationForCatalog({}, ['my-gateway'], customCatalog)).toEqual({
-      model_provider: 'my-gateway',
-      model: 'gateway-model',
-      thinking_effort: 'medium',
-      harness: 'openai-compatible',
-    });
-  });
-
   it('accepts a catalog model with its compatible harness', () => {
     expect(
       modelConfigurationIsValid(
@@ -228,6 +205,38 @@ describe('modelConfigurationIsValid', () => {
     expect(customOpenRouterMarkup).toContain('data-model-input-mode="autocomplete"');
     expect(customOpenRouterMarkup).toContain('vendor/custom-model');
     expect(customOpenRouterMarkup).toContain('<option value="medium" selected="">medium</option>');
+  });
+
+  it('renders detected local CLI sessions as selectable scan accounts', () => {
+    const markup = renderToStaticMarkup(
+      React.createElement(
+        MemoryRouter,
+        { initialEntries: ['/'] },
+        React.createElement(ModelConfiguration, {
+          value: {
+            model_provider: 'codex',
+            model: 'gpt-5-codex',
+            thinking_effort: 'medium',
+            harness: 'codex',
+            provider_account_id: 'primary',
+          },
+          onChange: () => {},
+          providers: ['codex'],
+          catalog,
+          accountProviders: [
+            {
+              id: 'codex',
+              accounts: [{ id: 'primary', email: 'reviewer@example.com', label: 'reviewer', active: true }],
+            },
+          ],
+        })
+      )
+    );
+
+    expect(markup).toContain('<label');
+    expect(markup).toContain('account');
+    expect(markup).toContain('reviewer@example.com - local session');
+    expect(markup).toContain('<option value="primary" selected="">reviewer@example.com - local session</option>');
   });
 
   it('keeps exact OpenRouter entry available when catalog suggestions are loading', () => {

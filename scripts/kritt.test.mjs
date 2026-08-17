@@ -272,26 +272,6 @@ test('setup migrates Codex accounts registered by the UI into .env', async (t) =
   assert.equal(after.codexLoginPresent, true);
 });
 
-test('status discovers Claude accounts registered by the UI through the live runtime registry', async (t) => {
-  const project = await createProject(t);
-  await ensureEnvFile(project);
-  const accountHome = join(project.rootDir, '.data', 'claude-accounts', 'ui-account', '.claude');
-  const runtimeConfigPath = join(project.rootDir, '.data', 'engine', 'engine-runtime.env');
-  await mkdir(accountHome, { recursive: true });
-  await mkdir(dirname(runtimeConfigPath), { recursive: true });
-  await writeFile(
-    join(accountHome, '.credentials.json'),
-    '{"claudeAiOauth":{"accessToken":"test","refreshToken":"refresh","expiresAt":9999999999999}}'
-  );
-  await writeFile(runtimeConfigPath, 'ENGINE_CLAUDE_HOME=/claude-accounts/ui-account/.claude\n');
-
-  const status = await getSetupStatus(project);
-
-  assert.equal(status.claudeLoginPresent, true);
-  assert.equal(status.providerPresent, true);
-  assert.deepEqual(status.claudeHomes, [accountHome]);
-});
-
 test('guided Claude login uses the shared home monitored by Accounts', async (t) => {
   const project = await createProject(t);
   const io = testIo();
@@ -466,7 +446,10 @@ test('guided Docker login copies a host-owned auth file from an isolated contain
   ]);
   assert.match(commands[1].args.at(-1), /open-kritt-codex-login-.*auth\.json$/);
   assert.equal(await readFile(targetPath, 'utf8'), '{"tokens":{"access_token":"test"}}');
-  assert.equal((await stat(join(project.rootDir, '.data', 'codex-accounts', 'cli', '.codex'))).mode & 0o777, 0o700);
+  assert.equal(
+    (await stat(join(project.rootDir, '.data', 'codex-accounts', 'cli', '.codex'))).mode & 0o777,
+    0o700
+  );
   assert.equal((await stat(targetPath)).mode & 0o777, 0o600);
   assert.equal((await getSetupStatus(project)).codexLoginPresent, true);
   assert.equal(parseEnv(await readFile(project.envFile, 'utf8')).CODEX_LOGIN_CONFIGURED, '1');
@@ -581,7 +564,10 @@ test('start blocks GitHub-only configuration and launches Compose with model acc
   assert.deepEqual(commands, [
     { command: 'docker', args: ['compose', 'up', '--build'], options: { cwd: project.rootDir, stdio: 'inherit' } },
   ]);
-  assert.equal((await stat(join(project.rootDir, '.data', 'codex-accounts', 'cli', '.codex'))).mode & 0o777, 0o700);
+  assert.equal(
+    (await stat(join(project.rootDir, '.data', 'codex-accounts', 'cli', '.codex'))).mode & 0o777,
+    0o700
+  );
 });
 
 test('start reports how to repair a Codex home parent left unwritable by Docker', async (t) => {

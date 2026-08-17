@@ -108,20 +108,17 @@ export const api = {
   // configured providers and their selectable model catalogs
   modelCatalog: () => request('/model-catalog'),
   // provider accounts, provider login sessions, and the managed OpenRouter key
-  accounts: (refresh = false) => request(`/accounts${refresh ? '?refresh=1' : ''}`, { cache: 'no-store' }),
-  accountSummary: () => request('/accounts/summary', { cache: 'no-store' }),
+  accounts: (refresh = false) => request(`/accounts${refresh ? '?refresh=1' : ''}`),
+  accountSummary: () => request('/accounts/summary'),
   accountProvider: (provider, refresh = false) =>
-    request(`/accounts/provider/${encodeURIComponent(provider)}${refresh ? '?refresh=1' : ''}`, {
-      cache: 'no-store',
-    }),
-  customProviders: () => request('/accounts/custom-providers', { cache: 'no-store' }),
+    request(`/accounts/provider/${encodeURIComponent(provider)}${refresh ? '?refresh=1' : ''}`),
+  customProviders: () => request('/accounts/custom-providers'),
   createCustomProvider: (body) => request('/accounts/custom-providers', { method: 'POST', body }),
   updateCustomProvider: (providerId, body) =>
     request(`/accounts/custom-providers/${encodeURIComponent(providerId)}`, { method: 'PUT', body }),
   testCustomProvider: (providerId) =>
     request(`/accounts/custom-providers/${encodeURIComponent(providerId)}/test`, { method: 'POST' }),
-  deleteCustomProvider: (providerId) =>
-    request(`/accounts/custom-providers/${encodeURIComponent(providerId)}`, { method: 'DELETE' }),
+  deleteCustomProvider: (providerId) => request(`/accounts/custom-providers/${encodeURIComponent(providerId)}`, { method: 'DELETE' }),
   saveProviderCredential: (provider, credential) =>
     request(`/accounts/${provider}`, { method: 'POST', body: { credential } }),
   removeProviderCredential: (provider) => request(`/accounts/${provider}`, { method: 'DELETE' }),
@@ -129,6 +126,10 @@ export const api = {
     request(`/accounts/${encodeURIComponent(provider)}/account/${encodeURIComponent(accountId)}`, {
       method: 'DELETE',
     }),
+  saveProviderExecutable: (provider, path) =>
+    request(`/accounts/${encodeURIComponent(provider)}/executable`, { method: 'POST', body: { path } }),
+  refreshProviderSession: (provider) =>
+    request(`/accounts/${encodeURIComponent(provider)}/refresh`, { method: 'POST' }),
   startCodexWeeklyUsage: (accountId) =>
     request(`/accounts/codex/account/${encodeURIComponent(accountId)}/start-weekly`, { method: 'POST' }),
   useCodexManualReset: (accountId) =>
@@ -141,7 +142,7 @@ export const api = {
       method: 'POST',
       ...(accountId ? { body: { accountId } } : {}),
     }),
-  providerLogin: (sessionId) => request(`/accounts/login/${sessionId}`, { cache: 'no-store' }),
+  providerLogin: (sessionId) => request(`/accounts/login/${sessionId}`),
   submitProviderLoginCode: (sessionId, code) =>
     request(`/accounts/login/${sessionId}/input`, { method: 'POST', body: { code } }),
   cancelProviderLogin: (sessionId) => request(`/accounts/login/${sessionId}`, { method: 'DELETE' }),
@@ -156,7 +157,6 @@ export const api = {
   updateVulnerability: (id, body) => request(`/vulnerabilities/${id}`, { method: 'PATCH', body }),
   // local repos available to scan
   localRepos: () => request('/local-repos'),
-  localRepoStats: (name, options) => request(`/local-repos/${encodeURIComponent(name)}/stats`, options),
   // post-scripts
   postScripts: () => request('/post-scripts'),
   postScript: (id) => request(`/post-scripts/${id}`),

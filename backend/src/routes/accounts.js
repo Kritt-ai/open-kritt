@@ -9,6 +9,7 @@ import {
   getAccountsSummary,
 } from '../lib/accounts.js';
 import { testCustomProviderConnection } from '../lib/customProviderConnection.js';
+import { saveProviderCliExecutable } from '../lib/localCliProviders.js';
 import {
   customProviderStatuses,
   managedCustomProviderRecord,
@@ -36,11 +37,7 @@ export function createAccountsRouter({
   consumeReset = consumeCodexManualReset,
 } = {}) {
   const router = Router();
-
-  router.use((req, res, next) => {
-    res.set('Cache-Control', 'no-store');
-    next();
-  });
+  const builtinProviderRoute = '/:provider';
 
   router.get('/', async (req, res, next) => {
     try {
@@ -98,9 +95,7 @@ export function createAccountsRouter({
     try {
       const existing = getCustomProviderRecord(req.params.providerId);
       if (!existing) return res.status(404).json({ error: 'Custom provider not found.' });
-      const validationBody =
-        typeof req.body?.apiKey === 'string' && req.body.apiKey.trim() ? req.body : { ...req.body, apiKey: existing.apiKey };
-      const validationError = validateCustomProvider(validationBody, { providerId: existing.id, existingIds: new Set() });
+      const validationError = validateCustomProvider(req.body, { providerId: existing.id, existingIds: new Set() });
       if (validationError) {
         return res.status(422).json({ error: 'Validation failed.', errors: [validationError] });
       }
@@ -136,7 +131,7 @@ export function createAccountsRouter({
     }
   });
 
-  router.post('/:provider', async (req, res, next) => {
+  router.post(builtinProviderRoute, async (req, res, next) => {
     try {
       const validationError = validateProviderCredential(req.params.provider, req.body?.credential);
       if (validationError) {
@@ -149,12 +144,36 @@ export function createAccountsRouter({
     }
   });
 
-  router.post('/:provider/login', async (req, res, next) => {
+  router.post(`${builtinProviderRoute}/login`, async (req, res, next) => {
     try {
       res.status(201).json(await loginManager.start(req.params.provider, req.body?.accountId || null));
     } catch (error) {
       if (error?.statusCode) return res.status(error.statusCode).json({ error: error.message });
       next(error);
+    }
+  });
+
+  router.post(`${builtinProviderRoute}/executable`, async (req, res, next) => {
+    try {
+      await saveProviderCliExecutable(req.params.provider, req.body?.path);
+      const provider = await getProvider(req.params.provider, { refresh: true });
+      if (!provider) return res.status(404).json({ error: 'Unknown account provider.' });
+      return res.json(provider);
+    } catch (error) {
+      if (error?.statusCode) return res.status(error.statusCode).json({ error: error.message });
+      return next(error);
+    }
+  });
+
+  router.post(`${builtinProviderRoute}/refresh`, async (req, res, next) => {
+    try {
+      await loginManager.refreshProvider(req.params.provider);
+      const provider = await getProvider(req.params.provider, { refresh: true });
+      if (!provider) return res.status(404).json({ error: 'Unknown account provider.' });
+      return res.json(provider);
+    } catch (error) {
+      if (error?.statusCode) return res.status(error.statusCode).json({ error: error.message });
+      return next(error);
     }
   });
 
@@ -210,7 +229,7 @@ export function createAccountsRouter({
     }
   });
 
-  router.delete('/:provider/account/:accountId', async (req, res, next) => {
+  router.delete(`${builtinProviderRoute}/account/:accountId`, async (req, res, next) => {
     try {
       await loginManager.removeAccount(req.params.provider, req.params.accountId);
       res.json(await getOverview({ refresh: true }));
@@ -220,7 +239,7 @@ export function createAccountsRouter({
     }
   });
 
-  router.delete('/:provider', async (req, res, next) => {
+  router.delete(builtinProviderRoute, async (req, res, next) => {
     try {
       await removeCredential(req.params.provider, { disableEnvironment: true });
       res.json(await getOverview({ refresh: true }));

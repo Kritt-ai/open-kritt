@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 
 import { api } from '../api/client.js';
 import Pagination from '../components/Pagination.jsx';
@@ -15,10 +16,25 @@ const RESET_ALIGNMENT_TOLERANCE_MS = 5000;
 
 const SOURCE_LABELS = {
   managed_api_key: 'Managed in open·kritt',
-  codex_login: 'Codex login',
-  claude_login: 'Claude login',
+  codex_login: 'Detected from local Codex CLI',
+  claude_login: 'Detected from local Claude Code CLI',
   environment: 'Environment configuration',
 };
+const LOCAL_SESSION_STORAGE_KEY = 'open-kritt.localProviderSessions';
+
+function loadSelectedLocalSessions() {
+  if (typeof window === 'undefined') return {};
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(LOCAL_SESSION_STORAGE_KEY) || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveSelectedLocalSessions(value) {
+  if (typeof window !== 'undefined') window.localStorage.setItem(LOCAL_SESSION_STORAGE_KEY, JSON.stringify(value));
+}
 
 export default function Accounts() {
   const [data, setData] = useState(null);
@@ -29,6 +45,9 @@ export default function Accounts() {
   const [removingAccount, setRemovingAccount] = useState(null);
   const [startingUsage, setStartingUsage] = useState(null);
   const [resettingUsage, setResettingUsage] = useState(null);
+  const [savingExecutable, setSavingExecutable] = useState(null);
+  const [refreshingSession, setRefreshingSession] = useState(null);
+  const [selectedLocalSessions, setSelectedLocalSessions] = useState(loadSelectedLocalSessions);
   const [loadingProviders, setLoadingProviders] = useState(() => new Set());
   const [providerErrors, setProviderErrors] = useState({});
   const loadSequence = useRef(0);
@@ -118,7 +137,7 @@ export default function Accounts() {
     const impact =
       provider.id === 'codex'
         ? 'This signs Codex out locally and removes its managed account home when applicable. Existing scans and results are kept.'
-        : 'This signs Claude out locally and removes its managed account home when applicable. Existing scans and results are kept.';
+        : 'This signs Claude out locally. Existing scans and results are kept.';
     if (!window.confirm(`Remove ${label}?\n\n${impact}`)) return;
     const key = `${provider.id}:${account.id}`;
     const previous = data;
@@ -162,14 +181,54 @@ export default function Accounts() {
     }
   };
 
+  const useLocalSession = (provider, account) => {
+    setSelectedLocalSessions((current) => {
+      const next = { ...current, [provider.id]: account.id };
+      saveSelectedLocalSessions(next);
+      return next;
+    });
+  };
+
+  const saveExecutable = async (provider, path) => {
+    setSavingExecutable(provider.id);
+    setError(null);
+    try {
+      const nextProvider = await api.saveProviderExecutable(provider.id, path);
+      setData((current) => replaceAccountProvider(current, nextProvider));
+    } catch (nextError) {
+      setError(nextError);
+    } finally {
+      setSavingExecutable(null);
+    }
+  };
+
+  const refreshSession = async (provider) => {
+    setRefreshingSession(provider.id);
+    setError(null);
+    try {
+      const nextProvider = await api.refreshProviderSession(provider.id);
+      setData((current) => replaceAccountProvider(current, nextProvider));
+    } catch (nextError) {
+      setError(nextError);
+    } finally {
+      setRefreshingSession(null);
+    }
+  };
+
   return (
     <div className="accounts-page" style={{ padding: '30px 32px 56px', maxWidth: 1240 }}>
       <div className="accounts-heading">
         <div>
           <div style={{ fontSize: 27, fontWeight: 600, letterSpacing: '-0.02em' }}>Accounts</div>
           <div style={{ color: 'var(--text-2)', marginTop: 7, maxWidth: 680, lineHeight: 1.5 }}>
-            See which model providers are ready. Sign in to Codex or Claude with their official login flows, or add an
-            OpenRouter API key. Secret values are never returned by the API.
+            See which model providers are ready. Open Kritt uses an existing authenticated Codex or Claude Code CLI
+            session immediately when one is available, or you can start the sign-in flow here. Secret values are never
+            returned by the API.
+            {' '}
+            <Link to="/custom-providers" style={{ color: 'var(--accent)' }}>
+              Manage custom OpenAI-compatible providers
+            </Link>
+            .
           </div>
         </div>
         {data && (
@@ -200,6 +259,12 @@ export default function Accounts() {
                 onRemoveAccount={(account) => removeLoginAccount(provider, account)}
                 onStartWeeklyUsage={startWeeklyUsage}
                 onUseManualReset={useManualReset}
+                onUseLocalSession={(account) => useLocalSession(provider, account)}
+                onSaveExecutable={(path) => saveExecutable(provider, path)}
+                onRefreshSession={() => refreshSession(provider)}
+                selectedLocalSessionId={selectedLocalSessions[provider.id]}
+                savingExecutable={savingExecutable === provider.id}
+                refreshingSession={refreshingSession === provider.id}
                 removingAccount={removingAccount}
                 startingUsage={startingUsage}
                 resettingUsage={resettingUsage}
@@ -237,6 +302,12 @@ function ProviderCard({
   onRemoveAccount,
   onStartWeeklyUsage,
   onUseManualReset,
+  onUseLocalSession,
+  onSaveExecutable,
+  onRefreshSession,
+  selectedLocalSessionId,
+  savingExecutable,
+  refreshingSession,
   removingAccount,
   startingUsage,
   resettingUsage,
@@ -245,8 +316,10 @@ function ProviderCard({
 }) {
   const accountPages = usePagination(provider.accounts || [], { pageSize: 5, resetKey: provider.id });
   const ready = provider.configured && provider.active > 0;
-  const signInRequired =
-    ['codex', 'claude'].includes(provider.id) && provider.accounts.some((account) => account.statusKind === 'expired');
+  const signInRequired = providerRequiresRelogin(provider);
+  const primaryAction = providerPrimaryAction(provider);
+  const secondaryLoginAction = providerSecondaryLoginAction(provider);
+  const activeLocalAccount = provider.accounts?.find((account) => account.active) || null;
   const status = loading
     ? 'Loading'
     : loadError
@@ -255,8 +328,10 @@ function ProviderCard({
         ? 'Sign-in required'
         : provider.limited
           ? 'Limited'
-          : ready
-            ? 'Ready'
+          : ready && provider.management === 'login'
+            ? 'Connected'
+            : ready
+              ? 'Ready'
             : provider.configured
               ? 'Needs attention'
               : 'Not configured';
@@ -289,6 +364,14 @@ function ProviderCard({
         <span>{provider.total || 0} total</span>
         {provider.source && <span>{SOURCE_LABELS[provider.source] || provider.source}</span>}
       </div>
+      {provider.runtime && (
+        <ProviderRuntimeStatus
+          runtime={provider.runtime}
+          provider={provider}
+          onSaveExecutable={onSaveExecutable}
+          saving={savingExecutable}
+        />
+      )}
 
       <div className="account-list">
         {loading ? (
@@ -309,6 +392,8 @@ function ProviderCard({
               onRemove={() => onRemoveAccount(account)}
               onStartWeeklyUsage={() => onStartWeeklyUsage(account)}
               onUseManualReset={() => onUseManualReset(account)}
+              onUseLocalSession={() => onUseLocalSession(account)}
+              selected={selectedLocalSessionId === account.id}
               removing={removingAccount === `${provider.id}:${account.id}`}
               startingUsage={startingUsage === account.id}
               resettingUsage={resettingUsage === account.id}
@@ -325,7 +410,7 @@ function ProviderCard({
               {provider.configured
                 ? `Refresh or reconnect ${provider.label} to load its accounts.`
                 : provider.management === 'login'
-                  ? `Sign in to ${provider.label} to make this provider available.`
+                  ? `Use an authenticated ${provider.label} CLI session or sign in to make this provider available.`
                   : `Add ${provider.credentialLabel.toLowerCase()} to make this provider available.`}
             </div>
           </div>
@@ -334,7 +419,30 @@ function ProviderCard({
       <Pagination {...accountPages} itemLabel="accounts" compact />
 
       <div className="account-provider-actions">
-        <Button onClick={onEdit}>{providerActionLabel(provider)}</Button>
+        <Button
+          onClick={
+            primaryAction.mode === 'local_session'
+              ? () => activeLocalAccount && onUseLocalSession(activeLocalAccount)
+              : primaryAction.mode === 'login'
+                ? onEdit
+                : primaryAction.mode === 'credential'
+                  ? onEdit
+                : undefined
+          }
+          disabled={primaryAction.disabled}
+        >
+          {primaryAction.label}
+        </Button>
+        {secondaryLoginAction && (
+          <Button variant="ghost" onClick={onEdit}>
+            {secondaryLoginAction.label}
+          </Button>
+        )}
+        {provider.management === 'login' && (
+          <Button variant="ghost" onClick={onRefreshSession} disabled={refreshingSession}>
+            {refreshingSession ? 'Refreshing...' : 'Refresh session'}
+          </Button>
+        )}
         {provider.canRemove && (
           <Button variant="ghost" onClick={onRemove}>
             Remove key
@@ -350,12 +458,80 @@ function ProviderCard({
   );
 }
 
+function ProviderRuntimeStatus({ runtime, provider, onSaveExecutable, saving }) {
+  const [path, setPath] = useState(runtime.executablePath || '');
+  useEffect(() => {
+    setPath(runtime.executablePath || '');
+  }, [runtime.executablePath]);
+  return (
+    <div className="account-runtime-status">
+      <div>
+        <div className="mono account-kicker">Executable</div>
+        <div className="mono" style={{ overflowWrap: 'anywhere' }}>
+          {runtime.executableFound ? runtime.executablePath : 'Not found'}
+        </div>
+      </div>
+      <div>
+        <div className="mono account-kicker">Account</div>
+        <div>{runtime.authenticated ? 'Connected local CLI session' : 'No authenticated local session'}</div>
+      </div>
+      {runtime.setupMessage && <div className="account-runtime-message">{runtime.setupMessage}</div>}
+      <form
+        className="account-executable-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSaveExecutable(path);
+        }}
+      >
+        <label htmlFor={`${provider.id}-executable`} className="mono account-kicker">
+          Manual executable path
+        </label>
+        <input
+          id={`${provider.id}-executable`}
+          className="account-credential-input mono"
+          value={path}
+          onChange={(event) => setPath(event.target.value)}
+          placeholder={provider.id === 'codex' ? 'Path to codex executable' : 'Path to claude executable'}
+        />
+        <Button variant="ghost" type="submit" disabled={saving || !path.trim()}>
+          {saving ? 'Saving...' : 'Save executable'}
+        </Button>
+      </form>
+    </div>
+  );
+}
+
 export function providerActionLabel(provider) {
-  if (provider.management !== 'login') return provider.configured ? 'Add or replace key' : 'Add OpenRouter key';
-  const signInRequired = provider.accounts.some((account) => account.statusKind === 'expired');
-  if (provider.id === 'codex') return signInRequired ? 'Sign in to Codex again' : 'Add Codex account';
-  if (signInRequired) return 'Sign in to Claude again';
-  return 'Add Claude account';
+  return providerPrimaryAction(provider).label;
+}
+
+export function providerHasActiveLogin(provider) {
+  return ['codex', 'claude'].includes(provider?.id) && provider?.accounts?.some((account) => account.active);
+}
+
+export function providerRequiresRelogin(provider) {
+  return ['codex', 'claude'].includes(provider?.id) && provider?.accounts?.some((account) => account.statusKind === 'expired');
+}
+
+export function providerPrimaryAction(provider) {
+  if (provider.management !== 'login') {
+    return { label: provider.configured ? 'Add or replace key' : 'Add OpenRouter key', mode: 'credential', disabled: false };
+  }
+  if (providerRequiresRelogin(provider)) {
+    return { label: provider.id === 'codex' ? 'Sign in to Codex again' : 'Sign in to Claude again', mode: 'login', disabled: false };
+  }
+  if (providerHasActiveLogin(provider)) {
+    return { label: 'Use Local CLI Session', mode: 'local_session', disabled: false };
+  }
+  if (provider.id === 'codex') return { label: 'Add Codex account', mode: 'login', disabled: false };
+  return { label: provider.configured ? 'Reconnect Claude' : 'Sign in to Claude', mode: 'login', disabled: false };
+}
+
+export function providerSecondaryLoginAction(provider) {
+  if (provider.management !== 'login') return null;
+  if (providerHasActiveLogin(provider)) return null;
+  if (providerRequiresRelogin(provider)) return null;
+  return null;
 }
 
 export function providerReloginAccountId(provider) {
@@ -430,6 +606,8 @@ function AccountDetail({
   onRemove,
   onStartWeeklyUsage,
   onUseManualReset,
+  onUseLocalSession,
+  selected,
   removing,
   startingUsage,
   resettingUsage,
@@ -442,7 +620,10 @@ function AccountDetail({
     <div className="account-detail">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
         <div style={{ minWidth: 0 }}>
-          <div style={{ fontWeight: 550, overflowWrap: 'anywhere' }}>{account.email || account.label}</div>
+          <div style={{ fontWeight: 550, overflowWrap: 'anywhere' }}>
+            {account.email || account.label}
+            {selected && <span style={{ color: 'var(--ok)', marginLeft: 8 }}>Selected for scans</span>}
+          </div>
           {account.path && (
             <div
               className="mono"
@@ -496,11 +677,18 @@ function AccountDetail({
         <AccountRateLimits providerId={providerId} rateLimits={account.rateLimits} authenticated={account.active} />
       )}
 
-      {account.canRemove && (
+      {(account.canRemove || (["codex", "claude"].includes(providerId) && account.active)) && (
         <div className="account-detail-actions">
-          <Button variant="ghost" onClick={onRemove} disabled={removing} aria-label={`Remove ${account.label} account`}>
-            {removing ? 'Removing…' : 'Remove account'}
-          </Button>
+          {["codex", "claude"].includes(providerId) && account.active && (
+            <Button variant={selected ? "primary" : "ghost"} onClick={onUseLocalSession} disabled={selected}>
+              {selected ? "Using Local Session" : "Use Local Session"}
+            </Button>
+          )}
+          {account.canRemove && (
+            <Button variant="ghost" onClick={onRemove} disabled={removing} aria-label={`Remove ${account.label} account`}>
+              {removing ? "Logging out..." : ["codex", "claude"].includes(providerId) ? "Logout" : "Remove account"}
+            </Button>
+          )}
         </div>
       )}
     </div>
@@ -844,7 +1032,7 @@ function LoginDialog({ provider, onClose, onComplete }) {
                 ? `Sign in to ${provider.label} again`
                 : provider.id === 'codex'
                   ? 'Add Codex account'
-                  : 'Add Claude account'}
+                  : 'Sign in to Claude'}
             </div>
           </div>
           <button className="account-dialog-close" type="button" aria-label="Close" onClick={cancel}>
@@ -862,7 +1050,7 @@ function LoginDialog({ provider, onClose, onComplete }) {
             ) : (
               <>
                 Claude will open its subscription sign-in page. After authentication, copy the callback code into this
-                dialog to {relogin ? 'replace the expired login on this account' : 'add this Claude account'}.
+                dialog to {relogin ? 'replace the expired login on this account' : 'finish linking Claude Code'}.
               </>
             )}
           </div>

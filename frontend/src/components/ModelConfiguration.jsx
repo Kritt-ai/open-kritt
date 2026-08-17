@@ -5,11 +5,11 @@ import {
   defaultHarnessForModelProvider,
   harnessesForModelProvider,
   isModelSelectionValid,
-  MODEL_PROVIDER_IDS,
   modelCatalogForProvider,
   modelCatalogIsReady,
   modelForCatalogChange,
   modelsForModelProvider,
+  providerIds,
   providerLabel,
   thinkingEffortForModelChange,
   thinkingEffortsForModel,
@@ -18,17 +18,11 @@ import {
 
 export const THINKING_EFFORTS = ['default', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 
-const PROVIDER_LABELS = {
-  codex: 'Codex',
-  claude: 'Claude',
-  openrouter: 'OpenRouter',
-};
-
 export function modelConfigurationForCatalog(current, providers, catalog) {
   const previousProvider = current?.model_provider || '';
   const modelProvider = providers.includes(previousProvider)
     ? previousProvider
-    : MODEL_PROVIDER_IDS.find((provider) => providers.includes(provider)) || providers[0] || '';
+    : providerIds(providers).find((provider) => providers.includes(provider)) || '';
   const model = modelForCatalogChange(current?.model || '', previousProvider, modelProvider, catalog);
   const harness = harnessesForModelProvider(modelProvider, catalog).includes(current?.harness)
     ? current.harness
@@ -62,8 +56,8 @@ export default function ModelConfiguration({
   providers,
   catalog,
   catalogError,
+  accountProviders = [],
   disabled = false,
-  showAvailabilityHelp = true,
 }) {
   const providerConfigured = providers.includes(value.model_provider);
   const compatibleHarnesses = harnessesForModelProvider(value.model_provider, catalog);
@@ -81,6 +75,20 @@ export default function ModelConfiguration({
     value.harness
   );
   const providerName = providerLabel(value.model_provider, catalog) || 'selected provider';
+  const providerOptionIds = providerIds(providers);
+  const unavailableProviders = providerOptionIds.filter(
+    (provider) => !providers.includes(provider) && ['codex', 'claude', 'openrouter'].includes(provider)
+  );
+  const selectedAccountProvider = accountProviders.find((provider) => provider.id === value.model_provider);
+  const localSessionAccounts =
+    ['codex', 'claude'].includes(value.model_provider) && selectedAccountProvider?.accounts?.length
+      ? selectedAccountProvider.accounts.filter((account) => account.active)
+      : [];
+  const selectedAccountId =
+    localSessionAccounts.find((account) => account.id === value.provider_account_id)?.id ||
+    localSessionAccounts[0]?.id ||
+    '';
+
   let catalogMessage = '';
   if (providerConfigured && freeTextModel && !suggestionsReady) {
     if (catalogError) {
@@ -101,11 +109,6 @@ export default function ModelConfiguration({
           ? `No ${providerName} models are available.`
           : `${providerName} model catalog is unavailable.`;
   }
-  const unavailableProviders = MODEL_PROVIDER_IDS.filter((provider) => !providers.includes(provider));
-  const providerOptions = [
-    ...MODEL_PROVIDER_IDS,
-    ...providers.filter((provider) => !MODEL_PROVIDER_IDS.includes(provider)),
-  ];
 
   const changeProvider = (modelProvider) => {
     const model = modelForCatalogChange(value.model, value.model_provider, modelProvider, catalog);
@@ -115,6 +118,10 @@ export default function ModelConfiguration({
       model_provider: modelProvider,
       model,
       harness,
+      provider_account_id:
+        accountProviders
+          .find((provider) => provider.id === modelProvider)
+          ?.accounts?.find((account) => account.active)?.id || '',
       thinking_effort: thinkingEffortForModelChange(
         value.thinking_effort,
         thinkingEffortsForModel(catalog, modelProvider, model, THINKING_EFFORTS, harness)
@@ -158,8 +165,8 @@ export default function ModelConfiguration({
               value={value.model_provider}
               onChange={(event) => changeProvider(event.target.value)}
               configuredProviders={providers}
+              providerOptionIds={providerOptionIds}
               catalog={catalog}
-              providers={providerOptions}
               disabled={disabled}
             />
           )}
@@ -241,6 +248,35 @@ export default function ModelConfiguration({
             />
           )}
         </Field>
+        {['codex', 'claude'].includes(value.model_provider) && (
+          <Field label="account">
+            {(fieldId) =>
+              localSessionAccounts.length ? (
+                <Select
+                  id={fieldId}
+                  value={selectedAccountId}
+                  onChange={(event) => onChange({ ...value, provider_account_id: event.target.value })}
+                  options={localSessionAccounts.map((account) => ({
+                    value: account.id,
+                    label: `${account.email || account.label} - local session`,
+                  }))}
+                  disabled={disabled}
+                  emptyLabel="No local sessions"
+                />
+              ) : (
+                <select
+                  id={fieldId}
+                  value=""
+                  disabled
+                  className="mono"
+                  style={selectStyle(true)}
+                >
+                  <option value="">No local session detected</option>
+                </select>
+              )
+            }
+          </Field>
+        )}
       </div>
       <div
         role={selectedModel?.note ? 'note' : undefined}
@@ -269,13 +305,13 @@ export default function ModelConfiguration({
           </>
         )}
       </div>
-      {showAvailabilityHelp && (unavailableProviders.length > 0 || catalogMessage) && (
+      {(unavailableProviders.length > 0 || catalogMessage) && (
         <div style={{ marginTop: 10, color: 'var(--text-2)', fontSize: 12.5, lineHeight: 1.5 }}>
           {unavailableProviders.length > 0 && (
             <div>
               {providers.length === 0
                 ? 'No model providers are configured.'
-                : `${unavailableProviders.map((provider) => PROVIDER_LABELS[provider]).join(' and ')} ${
+                : `${unavailableProviders.map((provider) => providerLabel(provider, catalog)).join(' and ')} ${
                     unavailableProviders.length === 1 ? 'is' : 'are'
                   } greyed out because ${unavailableProviders.length === 1 ? 'it has' : 'they have'} no account.`}{' '}
               <Link to="/accounts" style={{ color: 'var(--accent)' }}>
@@ -307,7 +343,7 @@ function Field({ label, children }) {
   );
 }
 
-function ProviderSelect({ id, value, onChange, configuredProviders, catalog, providers, disabled }) {
+function ProviderSelect({ id, value, onChange, configuredProviders, providerOptionIds, catalog, disabled }) {
   return (
     <select
       id={id}
@@ -315,21 +351,10 @@ function ProviderSelect({ id, value, onChange, configuredProviders, catalog, pro
       onChange={onChange}
       disabled={disabled}
       className="mono"
-      style={{
-        width: '100%',
-        height: 38,
-        padding: '0 11px',
-        border: '1px solid var(--border)',
-        borderRadius: 8,
-        background: 'var(--surface)',
-        fontSize: 13,
-        outline: 'none',
-        color: disabled ? 'var(--text-3)' : 'var(--text)',
-        cursor: disabled ? 'not-allowed' : 'pointer',
-      }}
+      style={selectStyle(disabled)}
     >
       {!value && <option value="">No configured providers</option>}
-      {providers.map((provider) => {
+      {providerOptionIds.map((provider) => {
         const configured = configuredProviders.includes(provider);
         return (
           <option key={provider} value={provider} disabled={!configured}>
@@ -351,28 +376,36 @@ function Select({ id, value, onChange, options, disabled = false, emptyLabel }) 
       onChange={onChange}
       disabled={disabled || !hasOptions}
       className="mono"
-      style={{
-        width: '100%',
-        height: 38,
-        padding: '0 11px',
-        border: '1px solid var(--border)',
-        borderRadius: 8,
-        background: 'var(--surface)',
-        fontSize: 13,
-        outline: 'none',
-        color: disabled || !hasOptions ? 'var(--text-3)' : 'var(--text)',
-        cursor: disabled || !hasOptions ? 'not-allowed' : 'pointer',
-      }}
+      style={selectStyle(disabled || !hasOptions)}
     >
       {hasOptions ? (
-        options.map((option) => (
-          <option key={option} value={option}>
-            {PROVIDER_LABELS[option] || option}
+        options.map((option) => {
+          const value = typeof option === 'string' ? option : option.value;
+          const label = typeof option === 'string' ? option : option.label;
+          return (
+          <option key={value} value={value}>
+            {label}
           </option>
-        ))
+          );
+        })
       ) : (
         <option value="">{emptyLabel}</option>
       )}
     </select>
   );
+}
+
+function selectStyle(disabled) {
+  return {
+    width: '100%',
+    height: 38,
+    padding: '0 11px',
+    border: '1px solid var(--border)',
+    borderRadius: 8,
+    background: 'var(--surface)',
+    fontSize: 13,
+    outline: 'none',
+    color: disabled ? 'var(--text-3)' : 'var(--text)',
+    cursor: disabled ? 'not-allowed' : 'pointer',
+  };
 }

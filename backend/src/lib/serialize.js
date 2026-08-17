@@ -257,35 +257,10 @@ function serializeDependencies(scan) {
   }));
 }
 
-function serializeModelOverrides(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
-  return Object.fromEntries(
-    Object.entries(value)
-      .filter(
-        ([depth, configuration]) =>
-          /^(?:0|[1-9]\d*)$/.test(depth) &&
-          configuration &&
-          typeof configuration === 'object' &&
-          !Array.isArray(configuration)
-      )
-      .sort(([left], [right]) => Number(left) - Number(right))
-      .map(([depth, configuration]) => [
-        depth,
-        {
-          model: configuration.model ?? '',
-          modelProvider: configuration.model_provider ?? configuration.modelProvider ?? null,
-          harness: configuration.harness ?? '',
-          thinkingEffort: configuration.thinking_effort ?? configuration.thinkingEffort ?? null,
-        },
-      ])
-  );
-}
-
 export function serializeScan(
   scan,
   {
     workflowName,
-    workflowDepths = [],
     postScriptName,
     postScripts = [],
     agentSkills = [],
@@ -316,16 +291,9 @@ export function serializeScan(
     modelProvider: scan.modelProvider ?? null,
     harness: scan.harness,
     thinkingEffort: scan.thinkingEffort ?? null,
-    postProcessingThinkingEffort:
-      scan.configuration?.post_processing_thinking_effort ??
-      scan.configuration?.postProcessingThinkingEffort ??
-      scan.thinkingEffort ??
-      null,
-    modelOverrides: serializeModelOverrides(scan.modelOverrides),
     status: scan.status,
     workflowId: scan.workflowId.toString(),
     workflowName: workflowName ?? null,
-    workflowDepths,
     postScriptId: scan.postScriptId.toString(),
     postScriptName: postScriptName ?? null,
     postScripts: postScripts.map((postScript) => ({

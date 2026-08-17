@@ -235,17 +235,67 @@ def test_post_script_generation_rejects_unknown_context_reference():
     assert any("non-reserved" in item["message"] for item in exc_info.value.errors)
 
 
-def test_generation_schema_uses_output_field_arrays_not_dynamic_maps():
+def test_generation_schema_uses_output_format_maps():
     schema = generation_response_schema("workflow")
     item = schema["properties"]["results"]["items"]
     level = item["properties"]["levels"]["items"]
-    output_field = level["properties"]["outputFields"]["items"]
+    output_format = level["properties"]["outputFormat"]
 
-    assert "outputFields" in level["properties"]
-    assert "outputFormat" not in level["properties"]
+    assert "outputFormat" in level["properties"]
+    assert "outputFields" not in level["properties"]
     assert schema["properties"]["results"]["maxItems"] == 1
     assert schema["properties"][EXTRACTOR_HELPER_FIELD] == {"type": "boolean", "const": True}
-    assert output_field["properties"]["type"]["type"] == "string"
+    assert output_format["type"] == "object"
+    assert output_format["additionalProperties"]["enum"] == ["string", "number", "boolean", "array", "object"]
+
+
+def test_generation_schema_accepts_strict_output_format_workflows():
+    payload = marked(
+        {
+            "results": [
+                {
+                    "name": "generated-security-review",
+                    "description": "Find concrete vulnerabilities in externally reachable production flows.",
+                    "levels": [
+                        {
+                            "depth": 0,
+                            "multiOutput": True,
+                            "consumesAll": False,
+                            "outputFormat": {
+                                "explanation": "string",
+                                "file_path": "string",
+                                "line": "number",
+                                "malicious_input_example": "string",
+                                "summary": "string",
+                                "trigger_flow": "array",
+                                "vulnerability_type": "string",
+                                "malicious_actor": "string",
+                            },
+                            "steps": [{"name": "Investigate attack surface", "content": "Analyze {{repo_full}}."}],
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+
+    artifact = validate_generation_payload("workflow", payload)
+
+    assert artifact["levels"][0]["outputFormat"]["line"] == "number"
+
+
+def test_generation_job_allows_custom_providers_with_openai_compatible_harness(monkeypatch):
+    monkeypatch.setattr(generation_module, "is_custom_provider", lambda provider, source=None: provider == "custom-gateway")
+    job = generation_job()
+    job.update(
+        {
+            "model_provider": "custom-gateway",
+            "harness": "openai-compatible",
+            "thinking_effort": "high",
+        }
+    )
+
+    validate_generation_job(job)
 
 
 def test_generation_prompts_explain_public_workflow_contracts_and_review_guidance():
@@ -384,10 +434,14 @@ def test_generation_runner_retries_validation_with_feedback_and_no_tools(monkeyp
     assert "GITHUB_TOKEN" not in fake_harness.calls[0]["env"]
     assert "previous JSON draft failed validation" in fake_harness.calls[1]["prompt"]
     assert Path(fake_harness.calls[0]["repo_dir"]).is_dir()
+    artifacts = sorted((tmp_path / "generation-artifacts").glob("*"))
+    assert len(artifacts) == 2
+    validation_errors = json.loads((artifacts[0] / "validation-errors.json").read_text(encoding="utf-8"))
+    assert any(error["field"] == "terminal.outputFormat" for error in validation_errors)
+    assert json.loads((artifacts[1] / "final-workflow.json").read_text(encoding="utf-8"))["name"] == "generated-security-review"
 
 
 def test_generation_runner_persists_codex_refresh_and_restores_private_mode(monkeypatch, tmp_path):
-    monkeypatch.delenv("ENGINE_RUNTIME_CONFIG_PATH", raising=False)
     codex_home = tmp_path / "codex-home"
     codex_home.mkdir()
     auth_path = codex_home / "auth.json"
@@ -404,7 +458,6 @@ def test_generation_runner_persists_codex_refresh_and_restores_private_mode(monk
 
     monkeypatch.setattr(generation_module, "harness_for", lambda *_args, **_kwargs: RefreshingHarness())
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
-    monkeypatch.setenv("ENGINE_CODEX_HOME", str(codex_home))
 
     GenerationRunner(SimpleNamespace(data_dir=str(tmp_path))).generate(generation_job())
 
@@ -496,7 +549,6 @@ def test_tool_free_codex_command_disables_search_and_execution_features():
         model_provider="codex",
         thinking_effort="medium",
         allow_tools=True,
-        max_subagents=5,
     )
 
     assert "--search" not in tool_free
@@ -509,7 +561,6 @@ def test_tool_free_codex_command_disables_search_and_execution_features():
     assert not any(value.startswith("model_provider=") for value in tool_free)
     assert "--search" in scan_mode
     assert "--dangerously-bypass-approvals-and-sandbox" in scan_mode
-    assert "agents.max_concurrent_threads_per_session=5" in scan_mode
     assert not any(value.startswith("model_provider=") for value in scan_mode)
 
     provider_default = codex_exec_command(
@@ -1123,7 +1174,6 @@ def test_run_forever_starts_a_dedicated_generation_worker(monkeypatch, tmp_path)
     worker._schedule_codex_update = lambda: None
     worker._schedule_model_catalog_refresh = lambda: None
     monkeypatch.setattr(worker_module, "cleanup_stale_scan_sandboxes", lambda: None)
-    monkeypatch.setattr(worker_module, "cleanup_stale_workspace_snapshot_builders", lambda: None)
     monkeypatch.setattr(worker_module.threading, "Thread", FakeThread)
     monkeypatch.setattr(worker_module.time, "sleep", lambda _seconds: (_ for _ in ()).throw(StopRunForever()))
 
@@ -1333,133 +1383,3 @@ def test_generation_validation_errors_are_bounded_and_strip_controls():
     assert all("\x00" not in item["field"] for item in sanitized)
     assert all("\n" not in item["message"] and "\t" not in item["message"] for item in sanitized)
     assert all("\x1b" not in item["message"] for item in sanitized)
-
-
-def test_generation_runner_records_schema_validation_failure_artifacts(caplog, monkeypatch, tmp_path):
-    class InvalidHarness:
-        def __init__(self):
-            self.calls = 0
-
-        def run(self, **_kwargs):
-            self.calls += 1
-            return HarnessResult(
-                payload=marked({"results": [raw_workflow(line_type="string")]}),
-                usage={"total_tokens": 3},
-                codex_session_id="thread-1",
-                output=harnesses.HarnessOutput(
-                    stdout="raw model text",
-                    stderr="",
-                    returncode=0,
-                    files={
-                        "chat.completions.plain-request.json": '{"model":"gpt-test","max_tokens":8000}',
-                        "chat.completions.plain-raw-response.txt": "raw model text",
-                    },
-                ),
-            )
-
-    fake_harness = InvalidHarness()
-    monkeypatch.setattr(generation_module, "harness_for", lambda *_args, **_kwargs: fake_harness)
-    monkeypatch.setattr(generation_module, "codex_home_for_job", lambda *_args, **_kwargs: "/runtime-codex")
-    monkeypatch.setenv("CODEX_API_KEY", "codex-secret")
-    config = SimpleNamespace(
-        data_dir=str(tmp_path),
-        harness_timeout_seconds=5,
-        retry_count=1,
-        codex_model_provider=None,
-    )
-
-    with caplog.at_level("DEBUG", logger="open_kritt_engine"):
-        with pytest.raises(GenerationValidationError):
-            GenerationRunner(config).generate(generation_job())
-
-    assert fake_harness.calls == 2
-    assert "generation schema validation failed" in caplog.text
-    assert "provider=codex" in caplog.text
-    assert "model=gpt-test" in caplog.text
-
-    artifact_root = tmp_path / "model-error-outputs"
-    dirs = sorted(path for path in artifact_root.iterdir() if path.is_dir())
-    assert len(dirs) == 2
-    for directory in dirs:
-        assert "generation" in directory.name
-        assert "metadata-41" in directory.name
-        assert (directory / "schema-validation-errors.json").exists()
-        assert (directory / "chat.completions.plain-request.json").exists()
-        assert (directory / "chat.completions.plain-raw-response.txt").read_text(encoding="utf-8") == "raw model text"
-        assert (directory / "stdout.txt").read_text(encoding="utf-8") == "raw model text"
-        validation_errors = json.loads((directory / "schema-validation-errors.json").read_text(encoding="utf-8"))
-        assert any(item["field"] == "terminal.outputFormat" for item in validation_errors)
-
-
-def test_generation_runner_records_harness_failure_artifacts(monkeypatch, tmp_path):
-    class FailingHarness:
-        def __init__(self):
-            self.calls = 0
-
-        def run(self, **_kwargs):
-            self.calls += 1
-            raise harnesses.HarnessError(
-                "OpenAI-compatible provider did not return a usable structured response.",
-                code="invalid_output",
-                harness="openai-compatible",
-                output=harnesses.HarnessOutput(
-                    stdout="no json here",
-                    stderr="",
-                    returncode=200,
-                    files={
-                        "chat.completions.plain-request.json": '{"model":"gpt-test"}',
-                        "chat.completions.plain-raw-response.txt": "no json here",
-                        "chat.completions.plain-parse-error.txt": "Expecting value: line 1",
-                    },
-                ),
-            )
-
-    fake_harness = FailingHarness()
-    monkeypatch.setattr(generation_module, "harness_for", lambda *_args, **_kwargs: fake_harness)
-    monkeypatch.setattr(generation_module, "codex_home_for_job", lambda *_args, **_kwargs: "/runtime-codex")
-    monkeypatch.setenv("CODEX_API_KEY", "codex-secret")
-    config = SimpleNamespace(
-        data_dir=str(tmp_path),
-        harness_timeout_seconds=5,
-        retry_count=0,
-        codex_model_provider=None,
-    )
-
-    with pytest.raises(harnesses.HarnessError) as exc_info:
-        GenerationRunner(config).generate(generation_job())
-
-    assert exc_info.value.code == "invalid_output"
-    assert fake_harness.calls == 1
-
-    artifact_root = tmp_path / "model-error-outputs"
-    dirs = sorted(path for path in artifact_root.iterdir() if path.is_dir())
-    assert len(dirs) == 1
-    directory = dirs[0]
-    assert "generation" in directory.name
-    assert "metadata-41" in directory.name
-    assert "attempt-1" in directory.name
-    assert (directory / "chat.completions.plain-request.json").exists()
-    assert (directory / "chat.completions.plain-raw-response.txt").read_text(encoding="utf-8") == "no json here"
-    assert (directory / "chat.completions.plain-parse-error.txt").read_text(encoding="utf-8") == "Expecting value: line 1"
-
-
-def test_generation_runner_skips_artifacts_without_harness_output(monkeypatch, tmp_path):
-    class InvalidHarness:
-        def run(self, **_kwargs):
-            return HarnessResult(payload=marked({"results": [raw_workflow(line_type="string")]}))
-
-    monkeypatch.setattr(generation_module, "harness_for", lambda *_args, **_kwargs: InvalidHarness())
-    monkeypatch.setattr(generation_module, "codex_home_for_job", lambda *_args, **_kwargs: "/runtime-codex")
-    monkeypatch.setenv("CODEX_API_KEY", "codex-secret")
-    config = SimpleNamespace(
-        data_dir=str(tmp_path),
-        harness_timeout_seconds=5,
-        retry_count=0,
-        codex_model_provider=None,
-    )
-
-    with pytest.raises(GenerationValidationError):
-        GenerationRunner(config).generate(generation_job())
-
-    artifact_root = tmp_path / "model-error-outputs"
-    assert not artifact_root.exists() or not any(path.is_dir() for path in artifact_root.iterdir())

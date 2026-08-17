@@ -6,6 +6,7 @@ import { usePageChrome } from '../context/ui.jsx';
 import { CardLinkOverlay, Spinner, ErrorState, StatusBadge, Button } from '../components/ui.jsx';
 import LinkifiedText from '../components/LinkifiedText.jsx';
 import {
+  formatDuration,
   sevColor,
   findingSeverity,
   providerCapacityAutoscalePresentation,
@@ -18,11 +19,10 @@ import { configuredModelCatalog, configuredModelProviders } from '../lib/modelPr
 import { createLatestFieldMutationQueue } from '../lib/latestMutation.js';
 import { duplicateScanPath } from '../lib/scanDuplication.js';
 import { useUnsavedChangesPrompt } from '../lib/useUnsavedChangesPrompt.js';
-import WorkflowModelConfiguration, {
-  workflowModelConfigurationForCatalog,
-  workflowModelConfigurationIsValid,
-} from '../components/WorkflowModelConfiguration.jsx';
-import { modelOverridesDraft, modelOverridesEqual, reconcileModelOverrides } from '../lib/modelOverrides.js';
+import ModelConfiguration, {
+  modelConfigurationForCatalog,
+  modelConfigurationIsValid,
+} from '../components/ModelConfiguration.jsx';
 import { usePagination } from '../lib/usePagination.js';
 import Pagination from '../components/Pagination.jsx';
 
@@ -254,11 +254,8 @@ export default function ScanDetail() {
             <div className="mono" style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 7 }}>
               {scan.workflowName} · {scan.modelProvider ? `${scan.modelProvider} · ` : ''}
               {scan.model} · {scan.harness}
-              {scan.thinkingEffort ? ` · ${scan.thinkingEffort}` : ''}
-              {Object.keys(scan.modelOverrides || {}).length
-                ? ` · ${Object.keys(scan.modelOverrides).length} depth overrides`
-                : ''}{' '}
-              · {scan.repoKind === 'local' ? 'local snapshot' : `@${scan.commitShort}`}
+              {scan.thinkingEffort ? ` · ${scan.thinkingEffort}` : ''} ·{' '}
+              {scan.repoKind === 'local' ? 'local snapshot' : `@${scan.commitShort}`}
             </div>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
@@ -354,6 +351,20 @@ export default function ScanDetail() {
               <strong>{rateLimit.label}.</strong>
             )}{' '}
             {rateLimit.message} {rateLimitRetryText(scan.reasoning)} Completed work is preserved.
+            {scan.statusSummary?.retryState && (
+              <div className="mono" style={{ marginTop: 6 }}>
+                Retry state:
+                {scan.statusSummary.retryState.retryStrategy
+                  ? ` ${scan.statusSummary.retryState.retryStrategy.replaceAll('_', ' ')}`
+                  : ' waiting'}
+                {Number.isFinite(scan.statusSummary.retryState.etaSeconds)
+                  ? `, ETA ${formatDuration(scan.statusSummary.retryState.etaSeconds)}`
+                  : ''}
+                {Number.isFinite(scan.statusSummary.retryState.backoffSeconds)
+                  ? `, backoff ${formatDuration(scan.statusSummary.retryState.backoffSeconds)}`
+                  : ''}
+              </div>
+            )}
             {rateLimit.accountRelated && (
               <div style={{ marginTop: 6 }}>
                 <Link to="/accounts" style={{ color: 'inherit', fontWeight: 600 }}>
@@ -857,30 +868,21 @@ function ScanRunSettings({
   const activeDraft = mergeRunSettingsDraft(current, draft);
   const payload = draft ? runSettingsPayload(draft, current) : {};
   const dirty = Object.keys(payload).length > 0;
-  const workflowDepths = Array.isArray(scan.workflowDepths)
-    ? scan.workflowDepths
-    : Object.keys(current.model_overrides).map(Number);
   const jobLimit = activeDraft.job_limit.trim();
   const jobLimitValid = !jobLimit || (/^\d+$/.test(jobLimit) && Number(jobLimit) >= 1 && Number(jobLimit) <= 1_000_000);
   const valid =
-    jobLimitValid &&
-    !!references &&
-    workflowModelConfigurationIsValid(activeDraft, workflowDepths, references.providers, references.catalog);
+    jobLimitValid && !!references && modelConfigurationIsValid(activeDraft, references.providers, references.catalog);
   useUnsavedChangesPrompt(editing && (dirty || saving));
 
   const open = () => {
     const currentDraft = runSettingsDraft(scan);
-    const reconciledDraft = {
-      ...currentDraft,
-      model_overrides: reconcileModelOverrides(currentDraft.model_overrides, workflowDepths, currentDraft),
-    };
     setDraft(
       references
         ? mergeRunSettingsDraft(
-            reconciledDraft,
-            workflowModelConfigurationForCatalog(reconciledDraft, references.providers, references.catalog)
+            currentDraft,
+            modelConfigurationForCatalog(currentDraft, references.providers, references.catalog)
           )
-        : reconciledDraft
+        : currentDraft
     );
     setError(null);
     setEditing(true);
@@ -988,7 +990,7 @@ function ScanRunSettings({
 
       {editing ? (
         <>
-          <WorkflowModelConfiguration
+          <ModelConfiguration
             value={activeDraft}
             onChange={(nextDraft) =>
               setDraft((currentDraft) => mergeRunSettingsDraft(currentDraft || current, nextDraft))
@@ -997,7 +999,6 @@ function ScanRunSettings({
             catalog={references?.catalog || {}}
             catalogError={catalogError}
             disabled={saving}
-            depths={workflowDepths}
           />
           <label style={{ display: 'block', maxWidth: 280, marginTop: 13 }}>
             <span
@@ -1070,9 +1071,7 @@ function ScanRunSettings({
           <RuntimeSetting label="model" value={current.model} />
           <RuntimeSetting label="model_provider" value={current.model_provider || '—'} />
           <RuntimeSetting label="thinking_effort" value={current.thinking_effort || '—'} />
-          <RuntimeSetting label="post-processing effort" value={current.post_processing_thinking_effort || '—'} />
           <RuntimeSetting label="harness" value={current.harness} />
-          <RuntimeSetting label="depth overrides" value={Object.keys(current.model_overrides).length || 'none'} />
           <RuntimeSetting
             label="model jobs"
             value={`${scan.jobsStarted || 0} / ${scan.jobLimit == null ? 'unlimited' : scan.jobLimit}`}
@@ -1088,9 +1087,7 @@ export function runSettingsDraft(scan = {}) {
     model: scan.model || '',
     model_provider: scan.modelProvider || 'openrouter',
     thinking_effort: scan.thinkingEffort || 'medium',
-    post_processing_thinking_effort: scan.postProcessingThinkingEffort || scan.thinkingEffort || 'medium',
     harness: scan.harness || 'codex',
-    model_overrides: modelOverridesDraft(scan.modelOverrides),
     job_limit: scan.jobLimit == null ? '' : `${scan.jobLimit}`,
   };
 }
@@ -1102,29 +1099,18 @@ function runSettingsValue(value, fallback) {
 }
 
 export function mergeRunSettingsDraft(current = {}, patch = {}) {
-  const hasModelOverrides = Object.prototype.hasOwnProperty.call(patch || {}, 'model_overrides');
   const base = {
     model: runSettingsValue(current?.model, ''),
     model_provider: runSettingsValue(current?.model_provider, 'openrouter'),
     thinking_effort: runSettingsValue(current?.thinking_effort, 'medium'),
-    post_processing_thinking_effort: runSettingsValue(
-      current?.post_processing_thinking_effort,
-      current?.thinking_effort || 'medium'
-    ),
     harness: runSettingsValue(current?.harness, 'codex'),
-    model_overrides: modelOverridesDraft(current?.model_overrides),
     job_limit: runSettingsValue(current?.job_limit, ''),
   };
   return {
     model: runSettingsValue(patch?.model, base.model),
     model_provider: runSettingsValue(patch?.model_provider, base.model_provider),
     thinking_effort: runSettingsValue(patch?.thinking_effort, base.thinking_effort),
-    post_processing_thinking_effort: runSettingsValue(
-      patch?.post_processing_thinking_effort,
-      base.post_processing_thinking_effort
-    ),
     harness: runSettingsValue(patch?.harness, base.harness),
-    model_overrides: hasModelOverrides ? modelOverridesDraft(patch.model_overrides) : base.model_overrides,
     job_limit: runSettingsValue(patch?.job_limit, base.job_limit),
   };
 }
@@ -1140,11 +1126,7 @@ export function runSettingsPayload(draft, current) {
     payload.model_provider = normalizedDraft.model_provider;
   if (normalizedDraft.thinking_effort !== normalizedCurrent.thinking_effort)
     payload.thinking_effort = normalizedDraft.thinking_effort;
-  if (normalizedDraft.post_processing_thinking_effort !== normalizedCurrent.post_processing_thinking_effort)
-    payload.post_processing_thinking_effort = normalizedDraft.post_processing_thinking_effort;
   if (normalizedDraft.harness !== normalizedCurrent.harness) payload.harness = normalizedDraft.harness;
-  if (!modelOverridesEqual(normalizedDraft.model_overrides, normalizedCurrent.model_overrides))
-    payload.model_overrides = normalizedDraft.model_overrides;
   if (normalizedDraft.job_limit !== normalizedCurrent.job_limit) payload.jobLimit = jobLimit ? Number(jobLimit) : null;
   return payload;
 }
@@ -1207,6 +1189,7 @@ function scanErrorTimestamp(error) {
 export function ScanStatusPanel({ scan }) {
   const summary = scan.statusSummary || {};
   const rateLimited = scan.status === 'rate_limited';
+  const retryState = summary.retryState || null;
   const completedLineages = summary.completedStepLineages ?? summary.stepCompletedAttempts ?? 0;
   const expectedLineages = summary.expectedStepLineages ?? summary.stepAttempts ?? 0;
   const activeJobs = summary.activeJobs || [];
@@ -1265,7 +1248,7 @@ export function ScanStatusPanel({ scan }) {
             <RuntimeMetric label="Post" value={`${summary.postCompletedAttempts || 0}/${summary.postAttempts || 0}`} />
           </div>
         </div>
-        {summary.progress && (
+        {(summary.progress || retryState) && (
           <div style={{ minWidth: 160, flex: '0 0 220px' }}>
             <div
               className="mono"
@@ -1277,22 +1260,36 @@ export function ScanStatusPanel({ scan }) {
             >
               {summary.progressLabel || 'progress'}
             </div>
-            <div
-              style={{
-                height: 6,
-                background: 'var(--surface-2)',
-                borderRadius: 4,
-                overflow: 'hidden',
-              }}
-            >
+            {summary.progress && (
               <div
                 style={{
-                  height: '100%',
-                  width: summary.progress,
-                  background: 'var(--run)',
+                  height: 6,
+                  background: 'var(--surface-2)',
+                  borderRadius: 4,
+                  overflow: 'hidden',
                 }}
-              />
-            </div>
+              >
+                <div
+                  style={{
+                    height: '100%',
+                    width: summary.progress,
+                    background: 'var(--run)',
+                  }}
+                />
+              </div>
+            )}
+            {retryState && (
+              <div className="mono" style={{ marginTop: 8, fontSize: 11.5, color: 'var(--text-2)', lineHeight: 1.45 }}>
+                <div>
+                  Strategy: {(retryState.retryStrategy || 'automatic_retry').replaceAll('_', ' ')}
+                  {retryState.limitKind ? ` · ${String(retryState.limitKind).replaceAll('_', ' ')}` : ''}
+                </div>
+                {Number.isFinite(retryState.etaSeconds) && <div>ETA: {formatDuration(retryState.etaSeconds)}</div>}
+                {Number.isFinite(retryState.backoffSeconds) && (
+                  <div>Backoff: {formatDuration(retryState.backoffSeconds)}</div>
+                )}
+              </div>
+            )}
           </div>
         )}
       </div>

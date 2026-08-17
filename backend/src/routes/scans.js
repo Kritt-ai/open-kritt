@@ -4,7 +4,6 @@ import { prisma } from '../db.js';
 import {
   validateScan,
   validateScanJobLimit,
-  validateModelOverrides,
   validateProspectiveScanRuntimeSettings,
   ValidationError,
 } from '../lib/validation.js';
@@ -17,6 +16,7 @@ import { lockWorkflowForScan } from '../lib/workflowLocks.js';
 import { lockPostScriptForScan } from '../lib/postScriptLocks.js';
 import { lockAgentSkillForScan } from '../lib/agentSkillLocks.js';
 import { lockScanForMutation } from '../lib/scanLocks.js';
+import { discoverConfiguredModelProviders } from '../lib/providerDiscovery.js';
 
 const router = Router();
 const DELETABLE_SCAN_STATUSES = new Set(['completed', 'stopped', 'failed', 'paused']);
@@ -118,70 +118,19 @@ export function requiredScanExtraKeys(workflow, workflowSteps = [], postScripts 
   return [...new Set([...declared, ...workflowPromptKeys, ...postScriptPromptKeys])];
 }
 
-function modelOverrideSelection(configuration) {
-  return {
-    model: configuration.model,
-    modelProvider: configuration.model_provider ?? configuration.modelProvider,
-    harness: configuration.harness,
-    thinkingEffort: configuration.thinking_effort ?? configuration.thinkingEffort,
-  };
-}
-
-async function assertSelectionAvailable(assertAvailable, selection, fieldPrefix = '') {
-  try {
-    await assertAvailable(selection);
-  } catch (error) {
-    if (!(error instanceof ValidationError) || !fieldPrefix) throw error;
-    throw new ValidationError(
-      error.errors.map((item) => ({
-        ...item,
-        field: `${fieldPrefix}.${item.field}`,
-      }))
-    );
-  }
-}
-
-export async function assertModelOverridesAvailable(modelOverrides, assertAvailable) {
-  const checked = new Set();
-  for (const [depth, configuration] of Object.entries(modelOverrides || {})) {
-    const selection = modelOverrideSelection(configuration);
-    const signature = JSON.stringify(selection);
-    if (checked.has(signature)) continue;
-    checked.add(signature);
-    await assertSelectionAvailable(assertAvailable, selection, `model_overrides.${depth}`);
-  }
-}
-
-export async function validateScanRuntimeUpdate(body, current, { assertAvailable, allowedDepths = null } = {}) {
-  const runtime = validateProspectiveScanRuntimeSettings(body, current, { allowedDepths });
-  if (!runtime.selection && !runtime.postProcessingSelection && runtime.modelOverrides === null) return {};
+export async function validateScanRuntimeUpdate(body, current, { assertAvailable } = {}) {
+  const runtime = validateProspectiveScanRuntimeSettings(body, current);
+  if (!runtime.selection) return {};
   if (typeof assertAvailable !== 'function') {
     throw new TypeError('Runtime model availability validation requires a transaction-aware checker.');
   }
-  const data = {};
-  if (runtime.selection) {
-    await assertSelectionAvailable(assertAvailable, runtime.selection);
-    Object.assign(data, {
-      model: runtime.selection.model,
-      modelProvider: runtime.selection.modelProvider,
-      harness: runtime.selection.harness,
-      thinkingEffort: runtime.selection.thinkingEffort,
-    });
-  }
-  if (
-    runtime.postProcessingSelection &&
-    JSON.stringify(runtime.postProcessingSelection) !== JSON.stringify(runtime.selection)
-  ) {
-    await assertSelectionAvailable(assertAvailable, runtime.postProcessingSelection, 'post_processing');
-  }
-  if (Object.prototype.hasOwnProperty.call(runtime.data, 'postProcessingThinkingEffort')) {
-    data.postProcessingThinkingEffort = runtime.data.postProcessingThinkingEffort;
-  }
-  if (runtime.modelOverrides !== null) {
-    await assertModelOverridesAvailable(runtime.modelOverrides, assertAvailable);
-    data.modelOverrides = runtime.modelOverrides;
-  }
-  return data;
+  await assertAvailable(runtime.selection);
+  return {
+    model: runtime.selection.model,
+    modelProvider: runtime.selection.modelProvider,
+    harness: runtime.selection.harness,
+    thinkingEffort: runtime.selection.thinkingEffort,
+  };
 }
 
 function transactionModelAvailabilityChecker(tx, options = {}) {
@@ -190,19 +139,6 @@ function transactionModelAvailabilityChecker(tx, options = {}) {
       ...options,
       getCatalog: (provider) => tx.modelCatalog.findUnique({ where: { provider } }),
     });
-}
-
-async function scanWorkflowDepths(tx, workflowId) {
-  const workflow = await tx.workflow.findUnique({ where: { id: workflowId }, select: { stepIds: true } });
-  if (!workflow) {
-    throw new ValidationError([{ field: 'workflowId', message: 'Workflow does not exist.' }]);
-  }
-  if (!workflow.stepIds?.length) return [];
-  const steps = await tx.step.findMany({
-    where: { id: { in: workflow.stepIds } },
-    select: { depth: true },
-  });
-  return [...new Set(steps.map((step) => step.depth))];
 }
 
 export async function patchScanIfPresent(tx, scanId, body, { assertAvailable, availabilityOptions } = {}) {
@@ -236,24 +172,7 @@ export async function patchScanIfPresent(tx, scanId, body, { assertAvailable, av
   }
 
   const availabilityChecker = assertAvailable || transactionModelAvailabilityChecker(tx, availabilityOptions);
-  const hasModelOverrides =
-    Object.prototype.hasOwnProperty.call(body, 'model_overrides') ||
-    Object.prototype.hasOwnProperty.call(body, 'modelOverrides');
-  const allowedDepths = hasModelOverrides ? await scanWorkflowDepths(tx, existing.workflowId) : null;
-  const runtimeData = await validateScanRuntimeUpdate(body, existing, {
-    assertAvailable: availabilityChecker,
-    allowedDepths,
-  });
-  if (Object.prototype.hasOwnProperty.call(runtimeData, 'postProcessingThinkingEffort')) {
-    data.configuration = {
-      ...(existing.configuration && typeof existing.configuration === 'object' && !Array.isArray(existing.configuration)
-        ? existing.configuration
-        : {}),
-      post_processing_thinking_effort: runtimeData.postProcessingThinkingEffort,
-    };
-    delete runtimeData.postProcessingThinkingEffort;
-  }
-  Object.assign(data, runtimeData);
+  Object.assign(data, await validateScanRuntimeUpdate(body, existing, { assertAvailable: availabilityChecker }));
   if (Object.keys(data).length === 0) {
     throw new ValidationError([{ field: 'scan', message: 'Provide a status or runtime setting to update.' }]);
   }
@@ -377,11 +296,10 @@ router.get('/:id/vulnerabilities', async (req, res, next) => {
 // POST /api/scans — create a scan now or place it behind active scans.
 router.post('/', async (req, res, next) => {
   try {
-    const valid = validateScan(req.body, { localNames: localRepoNames() });
-    await assertModelSelectionAvailable(valid);
-    await assertModelSelectionAvailable({
-      ...valid,
-      thinkingEffort: valid.postProcessingThinkingEffort,
+    const knownProviders = await discoverConfiguredModelProviders();
+    const valid = validateScan(req.body, { localNames: localRepoNames(), knownProviders });
+    await assertModelSelectionAvailable(valid, {
+      providerConfigured: async (provider) => knownProviders.includes(provider),
     });
     const activeScanCount = await prisma.scan.count({ where: { status: { in: ACTIVE_SCAN_STATUSES } } });
     const launchDecision = scanLaunchDecision(req.body, activeScanCount);
@@ -485,10 +403,8 @@ router.post('/', async (req, res, next) => {
       // unioned with the stored array, so this also supports workflows saved before
       // the extra field existed. Every selected-config key must be supplied.
       const wfSteps = workflow.stepIds?.length
-        ? await tx.step.findMany({ where: { id: { in: workflow.stepIds } }, select: { content: true, depth: true } })
+        ? await tx.step.findMany({ where: { id: { in: workflow.stepIds } }, select: { content: true } })
         : [];
-      validateModelOverrides(valid.modelOverrides, { allowedDepths: wfSteps.map((step) => step.depth) });
-      await assertModelOverridesAvailable(valid.modelOverrides, transactionModelAvailabilityChecker(tx));
       const selectedPostScripts = queryPostScriptIds.map((id) => postScriptMap.get(id));
       const expectedExtra = requiredScanExtraKeys(workflow, wfSteps, selectedPostScripts);
       const providedExtra = valid.extra && typeof valid.extra === 'object' ? valid.extra : {};
@@ -530,13 +446,11 @@ router.post('/', async (req, res, next) => {
             ...configurationObject,
             post_script_ids: configuredPostScriptIds,
             agent_skill_ids: configuredAgentSkillIds,
-            post_processing_thinking_effort: valid.postProcessingThinkingEffort,
           },
           model: valid.model,
           modelProvider: valid.modelProvider,
           harness: valid.harness,
           thinkingEffort: valid.thinkingEffort,
-          modelOverrides: valid.modelOverrides,
           severityRanker: valid.severityRanker,
           status: launchDecision.status,
           jobLimit: valid.jobLimit,
@@ -559,7 +473,14 @@ router.patch('/:id', async (req, res, next) => {
   try {
     const id = BigInt(req.params.id);
     const body = req.body || {};
-    const result = await prisma.$transaction((tx) => patchScanIfPresent(tx, id, body));
+    const knownProviders = await discoverConfiguredModelProviders();
+    const result = await prisma.$transaction((tx) =>
+      patchScanIfPresent(tx, id, body, {
+        availabilityOptions: {
+          providerConfigured: async (provider) => knownProviders.includes(provider),
+        },
+      })
+    );
     if (result.kind === 'not-found') return res.status(404).json({ error: 'Scan not found.' });
     res.json(await assembleScan(result.scan));
   } catch (e) {

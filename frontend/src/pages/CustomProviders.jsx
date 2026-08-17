@@ -10,7 +10,7 @@ const EMPTY_FORM = {
   apiKey: '',
   model: '',
   organization: '',
-  extraHeaders: '{}',
+  extraHeaders: '{\n  \n}',
 };
 
 function parseHeaders(value) {
@@ -98,8 +98,7 @@ export default function CustomProviders() {
       const response = editingId ? await api.updateCustomProvider(editingId, body) : await api.createCustomProvider(body);
       const saved = response.provider;
       setProviders((current) => {
-        const next = Array.isArray(current) ? current.filter((provider) => provider.id !== saved.id) : [];
-        next.push(saved);
+        const next = Array.isArray(current) ? [...current.filter((provider) => provider.id !== saved.id), saved] : [saved];
         next.sort((left, right) => left.label.localeCompare(right.label));
         return next;
       });
@@ -168,7 +167,7 @@ export default function CustomProviders() {
             <div>
               <div style={{ fontSize: 27, fontWeight: 600 }}>Custom Providers</div>
               <div style={{ color: 'var(--text-2)', marginTop: 7, lineHeight: 1.5 }}>
-                Add OpenAI-compatible endpoints for scans and draft generation.
+                Add OpenAI-compatible endpoints for Codex scans.
               </div>
             </div>
             <Button variant="ghost" onClick={resetForm}>
@@ -196,7 +195,7 @@ export default function CustomProviders() {
                       </div>
                     </div>
                     <div className="mono" style={{ fontSize: 11, color: 'var(--text-3)' }}>
-                      {provider.harnesses?.join(', ') || 'openai-compatible'}
+                      {provider.harnesses?.join(', ') || 'codex'}
                     </div>
                   </div>
                   <div style={{ fontSize: 12.5, color: 'var(--text-2)', marginTop: 10, lineHeight: 1.5 }}>
@@ -205,7 +204,7 @@ export default function CustomProviders() {
                       {provider.model}
                     </div>
                   </div>
-                  <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
+                  <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
                     <Button variant="ghost" onClick={() => startEdit(provider)}>
                       Edit
                     </Button>

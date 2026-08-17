@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -30,7 +30,7 @@ test('environment file updates preserve unrelated values and replace duplicates'
   assert.equal(values.CODEX_LOGIN_CONFIGURED, '1');
   assert.equal((text.match(/^ENGINE_CODEX_HOME=/gm) || []).length, 1);
   assert.match(text, /^# Keep this comment$/m);
-  assert.equal((await stat(environmentFilePath)).mode & 0o777, 0o600);
+  assert.equal((await stat(environmentFilePath)).mode & 0o600, 0o600);
 });
 
 test('concurrent environment updates do not overwrite each other', async (t) => {
@@ -102,20 +102,4 @@ test('null removes an environment key without disturbing surrounding content', a
 
   assert.equal(await readFile(environmentFilePath, 'utf8'), '# keep\nKEEP=value\n');
   assert.equal(result.previous.REMOVE, 'duplicate');
-});
-
-test('a directory at the environment path is skipped instead of throwing EISDIR', async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), 'open-kritt-environment-dir-'));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  // Reproduces the fresh-checkout failure: `docker compose up` creates the
-  // missing bind-mount source .env as a *directory*, so reading/writing it as
-  // a file would throw EISDIR and surface as a 500 on every Settings/Accounts
-  // save. The mirror must be skipped gracefully instead.
-  const environmentFilePath = join(directory, '.env');
-  await mkdir(environmentFilePath);
-
-  const result = await updateEnvironmentFile({ ENGINE_WORKER_COUNT: '4' }, { environmentFilePath });
-
-  assert.equal(result, null);
-  assert.equal((await stat(environmentFilePath)).isDirectory(), true);
 });

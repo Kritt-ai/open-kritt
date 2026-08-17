@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -23,8 +23,11 @@ async function settingsFiles(t) {
   };
 }
 
-test('settings API exposes the whitelisted runtime settings', async () => {
-  const server = createApp().listen(0, '127.0.0.1');
+test('settings API exposes the whitelisted runtime settings', async (t) => {
+  const paths = await settingsFiles(t);
+  await writeFile(paths.runtimeConfigPath, '');
+  await writeFile(paths.environmentFilePath, '');
+  const server = createApp({ runtimeSettingsOptions: { ...paths, env: {} } }).listen(0, '127.0.0.1');
   await once(server, 'listening');
   const { port } = server.address();
 
@@ -36,16 +39,13 @@ test('settings API exposes the whitelisted runtime settings', async () => {
       'workerCount',
       'maxConcurrentScans',
       'maxWorkersPerScan',
-      'workersPerAccount',
       'autoscaleScanWorkersOnProviderCapacity',
-      'codexMaxSubagentsPerSession',
-      'minFreeStorageGb',
-      'ignoreLowStorage',
       'workspaceSetupConcurrency',
       'retryCount',
       'harnessTimeoutSeconds',
     ]);
     assert.equal(body.capabilities.dedicatedScanConcurrency.available, true);
+    assert.deepEqual(body.warnings, []);
   } finally {
     await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }
@@ -61,7 +61,7 @@ test('runtime settings expose only whitelisted effective values and their source
 
   const result = await readRuntimeSettings({
     ...paths,
-    env: { ENGINE_HARNESS_TIMEOUT_SECONDS: '3600', ENGINE_MIN_FREE_STORAGE_GB: '23.5' },
+    env: { ENGINE_HARNESS_TIMEOUT_SECONDS: '3600' },
   });
 
   assert.equal(result.settings.workerCount.value, 6);
@@ -74,18 +74,10 @@ test('runtime settings expose only whitelisted effective values and their source
   assert.equal(result.settings.workspaceSetupConcurrency.source, 'default');
   assert.equal(result.settings.maxConcurrentScans.value, 1);
   assert.equal(result.settings.maxWorkersPerScan.value, 0);
-  assert.equal(result.settings.workersPerAccount.value, 15);
   assert.equal(result.settings.autoscaleScanWorkersOnProviderCapacity.value, true);
   assert.equal(result.settings.autoscaleScanWorkersOnProviderCapacity.source, 'default');
-  assert.equal(result.settings.codexMaxSubagentsPerSession.value, 5);
-  assert.equal(result.settings.minFreeStorageGb.value, 23.5);
-  assert.equal(result.settings.minFreeStorageGb.source, 'process_environment');
-  assert.equal(result.settings.minFreeStorageGb.type, 'number');
-  assert.equal(result.settings.minFreeStorageGb.step, 0.1);
-  assert.equal(result.settings.ignoreLowStorage.value, false);
-  assert.equal(result.settings.ignoreLowStorage.source, 'default');
-  assert.equal(result.settings.ignoreLowStorage.type, 'boolean');
   assert.equal(result.capabilities.perScanConcurrency.available, true);
+  assert.deepEqual(result.warnings, []);
   assert.doesNotMatch(JSON.stringify(result), /must-not-leak|secret\/account|GITHUB_TOKEN|OPENROUTER_API_KEY/);
 });
 
@@ -95,15 +87,7 @@ test('runtime setting updates apply live and persist without overwriting unrelat
   await writeFile(paths.environmentFilePath, '# project settings\nENGINE_WORKER_COUNT=2\nKEEP=value\n');
 
   const result = await updateRuntimeSettings(
-    {
-      workerCount: 5,
-      workersPerAccount: 12,
-      retryCount: 4,
-      autoscaleScanWorkersOnProviderCapacity: false,
-      codexMaxSubagentsPerSession: 5,
-      minFreeStorageGb: 18.5,
-      ignoreLowStorage: true,
-    },
+    { workerCount: 5, retryCount: 4, autoscaleScanWorkersOnProviderCapacity: false },
     {
       ...paths,
       env: {},
@@ -115,31 +99,19 @@ test('runtime setting updates apply live and persist without overwriting unrelat
   const runtimeValues = parseEnvironmentText(runtimeText);
   const projectValues = parseEnvironmentText(projectText);
   assert.equal(runtimeValues.ENGINE_WORKER_COUNT, '5');
-  assert.equal(runtimeValues.ENGINE_WORKERS_PER_ACCOUNT, '12');
   assert.equal(runtimeValues.ENGINE_RETRY_COUNT, '4');
   assert.equal(runtimeValues.ENGINE_AUTOSCALE_SCAN_WORKERS_ON_PROVIDER_CAPACITY, 'false');
-  assert.equal(runtimeValues.ENGINE_CODEX_MAX_SUBAGENTS_PER_SESSION, '5');
-  assert.equal(runtimeValues.ENGINE_MIN_FREE_STORAGE_GB, '18.5');
-  assert.equal(runtimeValues.ENGINE_IGNORE_LOW_STORAGE, 'true');
   assert.equal(runtimeValues.ENGINE_CODEX_HOME, '/account');
   assert.equal(projectValues.ENGINE_WORKER_COUNT, '5');
-  assert.equal(projectValues.ENGINE_WORKERS_PER_ACCOUNT, '12');
   assert.equal(projectValues.ENGINE_RETRY_COUNT, '4');
   assert.equal(projectValues.ENGINE_AUTOSCALE_SCAN_WORKERS_ON_PROVIDER_CAPACITY, 'false');
-  assert.equal(projectValues.ENGINE_CODEX_MAX_SUBAGENTS_PER_SESSION, '5');
-  assert.equal(projectValues.ENGINE_MIN_FREE_STORAGE_GB, '18.5');
-  assert.equal(projectValues.ENGINE_IGNORE_LOW_STORAGE, 'true');
   assert.equal(projectValues.KEEP, 'value');
   assert.match(runtimeText, /^# live settings$/m);
   assert.match(projectText, /^# project settings$/m);
   assert.equal(result.settings.workerCount.value, 5);
-  assert.equal(result.settings.workersPerAccount.value, 12);
   assert.equal(result.settings.workerCount.source, 'runtime_config');
   assert.equal(result.settings.retryCount.value, 4);
   assert.equal(result.settings.autoscaleScanWorkersOnProviderCapacity.value, false);
-  assert.equal(result.settings.codexMaxSubagentsPerSession.value, 5);
-  assert.equal(result.settings.minFreeStorageGb.value, 18.5);
-  assert.equal(result.settings.ignoreLowStorage.value, true);
 });
 
 test('runtime setting validation rejects unknown, fractional, and out-of-range values', () => {
@@ -166,23 +138,6 @@ test('runtime setting validation rejects unknown, fractional, and out-of-range v
     () => validateRuntimeSettingsPatch({ autoscaleScanWorkersOnProviderCapacity: 'true' }),
     ValidationError
   );
-  assert.deepEqual(validateRuntimeSettingsPatch({ codexMaxSubagentsPerSession: 5 }), {
-    codexMaxSubagentsPerSession: 5,
-  });
-  assert.throws(() => validateRuntimeSettingsPatch({ codexMaxSubagentsPerSession: 6 }), ValidationError);
-  assert.deepEqual(validateRuntimeSettingsPatch({ workersPerAccount: 15 }), {
-    workersPerAccount: 15,
-  });
-  assert.throws(() => validateRuntimeSettingsPatch({ workersPerAccount: 0 }), ValidationError);
-  assert.deepEqual(validateRuntimeSettingsPatch({ minFreeStorageGb: '17.5' }), {
-    minFreeStorageGb: 17.5,
-  });
-  assert.deepEqual(validateRuntimeSettingsPatch({ ignoreLowStorage: true }), {
-    ignoreLowStorage: true,
-  });
-  assert.throws(() => validateRuntimeSettingsPatch({ ignoreLowStorage: 'true' }), ValidationError);
-  assert.throws(() => validateRuntimeSettingsPatch({ minFreeStorageGb: 'not-a-number' }), ValidationError);
-  assert.throws(() => validateRuntimeSettingsPatch({ minFreeStorageGb: 1025 }), ValidationError);
 });
 
 test('invalid persisted values fall back safely and are flagged', async (t) => {
@@ -195,6 +150,146 @@ test('invalid persisted values fall back safely and are flagged', async (t) => {
   assert.equal(result.settings.workerCount.valid, false);
   assert.equal(result.settings.retryCount.value, 2);
   assert.equal(result.settings.retryCount.valid, false);
+  assert.deepEqual(result.warnings.map((warning) => warning.code), ['missing']);
+});
+
+test('settings read tolerates a project environment path mounted as a directory', async (t) => {
+  const paths = await settingsFiles(t);
+  const projectEnvironmentDirectory = join(paths.environmentFilePath, 'directory');
+  await mkdir(projectEnvironmentDirectory, { recursive: true });
+  await writeFile(paths.runtimeConfigPath, 'ENGINE_WORKER_COUNT=6\n');
+
+  const result = await readRuntimeSettings({
+    runtimeConfigPath: paths.runtimeConfigPath,
+    environmentFilePath: projectEnvironmentDirectory,
+    env: {},
+  });
+
+  assert.equal(result.settings.workerCount.value, 6);
+  assert.equal(result.settings.workerCount.source, 'runtime_config');
+  assert.equal(result.settings.retryCount.value, 2);
+  assert.equal(result.settings.retryCount.source, 'default');
+  assert.equal(result.persistence.projectEnvironment, false);
+  assert.deepEqual(result.warnings.map((warning) => warning.code), ['directory']);
+});
+
+test('settings read tolerates a missing project environment file', async (t) => {
+  const paths = await settingsFiles(t);
+  await writeFile(paths.runtimeConfigPath, 'ENGINE_WORKER_COUNT=6\n');
+
+  const result = await readRuntimeSettings({
+    runtimeConfigPath: paths.runtimeConfigPath,
+    environmentFilePath: paths.environmentFilePath,
+    env: {},
+  });
+
+  assert.equal(result.settings.workerCount.value, 6);
+  assert.equal(result.persistence.projectEnvironment, false);
+  assert.deepEqual(result.warnings.map((warning) => warning.code), ['missing']);
+});
+
+test('settings read tolerates an unreadable project environment file', async (t) => {
+  const paths = await settingsFiles(t);
+  await writeFile(paths.runtimeConfigPath, 'ENGINE_WORKER_COUNT=6\n');
+
+  const result = await readRuntimeSettings({
+    runtimeConfigPath: paths.runtimeConfigPath,
+    environmentFilePath: paths.environmentFilePath,
+    env: {},
+    readText: async (path) => {
+      if (path === paths.environmentFilePath) {
+        const error = new Error('permission denied');
+        error.code = 'EACCES';
+        throw error;
+      }
+      return readFile(path, 'utf8');
+    },
+  });
+
+  assert.equal(result.settings.workerCount.value, 6);
+  assert.equal(result.persistence.projectEnvironment, false);
+  assert.deepEqual(result.warnings.map((warning) => warning.code), ['unreadable']);
+});
+
+test('settings read tolerates malformed env files and keeps valid entries', async (t) => {
+  const paths = await settingsFiles(t);
+  await writeFile(paths.runtimeConfigPath, 'ENGINE_WORKER_COUNT=6\nBROKEN LINE\n');
+  await writeFile(paths.environmentFilePath, 'ENGINE_RETRY_COUNT=4\nmissing equals\n');
+
+  const result = await readRuntimeSettings({
+    ...paths,
+    env: {},
+  });
+
+  assert.equal(result.settings.workerCount.value, 6);
+  assert.equal(result.settings.retryCount.value, 4);
+  assert.deepEqual(
+    result.warnings.map((warning) => warning.code).sort(),
+    ['malformed', 'malformed']
+  );
+});
+
+test('settings read tolerates empty env files', async (t) => {
+  const paths = await settingsFiles(t);
+  await writeFile(paths.runtimeConfigPath, '');
+  await writeFile(paths.environmentFilePath, '');
+
+  const result = await readRuntimeSettings({
+    ...paths,
+    env: {},
+  });
+
+  assert.equal(result.settings.workerCount.value, 2);
+  assert.equal(result.persistence.runtimeConfig, true);
+  assert.equal(result.persistence.projectEnvironment, true);
+  assert.deepEqual(result.warnings, []);
+});
+
+test('settings read tolerates a missing runtime config file', async (t) => {
+  const paths = await settingsFiles(t);
+  await writeFile(paths.environmentFilePath, 'ENGINE_RETRY_COUNT=4\n');
+
+  const result = await readRuntimeSettings({
+    ...paths,
+    env: {},
+  });
+
+  assert.equal(result.settings.retryCount.value, 4);
+  assert.equal(result.settings.retryCount.source, 'project_environment');
+  assert.equal(result.persistence.runtimeConfig, false);
+  assert.deepEqual(result.warnings.map((warning) => warning.code), ['missing']);
+});
+
+test('settings API returns 200 with partial data when config files degrade', async () => {
+  const server = createApp({
+    runtimeSettingsOptions: {
+      runtimeConfigPath: '/runtime.env',
+      environmentFilePath: '/project.env',
+      env: {},
+      readText: async (path) => {
+        if (path === '/runtime.env') return 'ENGINE_WORKER_COUNT=7\ninvalid runtime line\n';
+        const error = new Error('permission denied');
+        error.code = 'EPERM';
+        throw error;
+      },
+    },
+  }).listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const { port } = server.address();
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/api/settings`);
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(body.settings.workerCount.value, 7);
+    assert.equal(body.settings.retryCount.value, 2);
+    assert.deepEqual(
+      body.warnings.map((warning) => warning.code).sort(),
+      ['malformed', 'unreadable']
+    );
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
 });
 
 test('failed project persistence rolls back newly added live settings', async (t) => {

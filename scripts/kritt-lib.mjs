@@ -349,15 +349,15 @@ function splitConfiguredHomes(value) {
     .filter(Boolean);
 }
 
-async function updateRuntimeProviderHome(runtimeConfigPath, key, home, present, initialHomes = []) {
+export async function updateRuntimeCodexHome(runtimeConfigPath, home, present, initialHomes = []) {
   let text = '';
   try {
     text = await readFile(runtimeConfigPath, 'utf8');
   } catch (error) {
     if (error?.code !== 'ENOENT') throw error;
-    if (initialHomes.length) text = `${key}=${initialHomes.join(',')}\n`;
+    if (initialHomes.length) text = `ENGINE_CODEX_HOME=${initialHomes.join(',')}\n`;
   }
-  const homes = splitConfiguredHomes(runtimeEnvValue(text, key));
+  const homes = splitConfiguredHomes(runtimeEnvValue(text, 'ENGINE_CODEX_HOME'));
   const nextHomes = present
     ? homes.includes(home)
       ? homes
@@ -366,8 +366,8 @@ async function updateRuntimeProviderHome(runtimeConfigPath, key, home, present, 
   if (nextHomes.length === homes.length && nextHomes.every((candidate, index) => candidate === homes[index])) {
     return false;
   }
-  const line = `${key}=${nextHomes.join(',')}`;
-  const pattern = new RegExp(`^\\s*(?:export\\s+)?${key}=.*$`, 'm');
+  const line = `ENGINE_CODEX_HOME=${nextHomes.join(',')}`;
+  const pattern = /^\s*(?:export\s+)?ENGINE_CODEX_HOME=.*$/m;
   const updated = pattern.test(text)
     ? text.replace(pattern, line)
     : `${text}${text && !text.endsWith('\n') ? '\n' : ''}${line}\n`;
@@ -376,34 +376,12 @@ async function updateRuntimeProviderHome(runtimeConfigPath, key, home, present, 
   return true;
 }
 
-export function updateRuntimeCodexHome(runtimeConfigPath, home, present, initialHomes = []) {
-  return updateRuntimeProviderHome(runtimeConfigPath, 'ENGINE_CODEX_HOME', home, present, initialHomes);
-}
-
-export function updateRuntimeClaudeHome(runtimeConfigPath, home, present, initialHomes = []) {
-  return updateRuntimeProviderHome(runtimeConfigPath, 'ENGINE_CLAUDE_HOME', home, present, initialHomes);
-}
-
-async function readRuntimeHomes(runtimeConfigPath) {
+async function readRuntimeCodexHomes(runtimeConfigPath) {
   try {
     const text = await readFile(runtimeConfigPath, 'utf8');
-    return {
-      exists: true,
-      codexDefined: /^\s*(?:export\s+)?ENGINE_CODEX_HOME=/m.test(text),
-      codexHomes: splitConfiguredHomes(runtimeEnvValue(text, 'ENGINE_CODEX_HOME')),
-      claudeDefined: /^\s*(?:export\s+)?ENGINE_CLAUDE_HOME=/m.test(text),
-      claudeHomes: splitConfiguredHomes(runtimeEnvValue(text, 'ENGINE_CLAUDE_HOME')),
-    };
+    return { exists: true, homes: splitConfiguredHomes(runtimeEnvValue(text, 'ENGINE_CODEX_HOME')) };
   } catch (error) {
-    if (error?.code === 'ENOENT') {
-      return {
-        exists: false,
-        codexDefined: false,
-        codexHomes: [],
-        claudeDefined: false,
-        claudeHomes: [],
-      };
-    }
+    if (error?.code === 'ENOENT') return { exists: false, homes: [] };
     throw error;
   }
 }
@@ -447,19 +425,6 @@ function configuredCodexHomes(rootDir, values, homeDir) {
   return homes;
 }
 
-function configuredClaudeHomes(primary, accountsRoot, runtimeHomes) {
-  const homes = [];
-  for (const configured of runtimeHomes) {
-    let hostPath = null;
-    if (configured === '/root/.claude') hostPath = primary;
-    else if (configured.startsWith('/claude-accounts/')) {
-      hostPath = resolve(accountsRoot, configured.slice('/claude-accounts/'.length));
-    }
-    if (hostPath && !homes.includes(hostPath)) homes.push(hostPath);
-  }
-  return homes;
-}
-
 export function resolveHomePath(configuredPath, homeDir = homedir()) {
   const rawPath = configuredPath.trim();
   if (rawPath === '~' || rawPath.startsWith('~/')) return resolve(join(homeDir, rawPath.slice(2)));
@@ -487,30 +452,16 @@ export async function getSetupStatus({ rootDir, envFile = join(rootDir, '.env'),
     engineDataDirectory,
     basename(values.ENGINE_RUNTIME_CONFIG_PATH || 'engine-runtime.env')
   );
-  const runtimeRegistry = await readRuntimeHomes(runtimeConfigPath);
-  const configuredValues =
-    runtimeRegistry.exists && runtimeRegistry.codexDefined
-      ? { ...values, ENGINE_CODEX_HOME: runtimeRegistry.codexHomes.join(',') }
-      : values;
+  const runtimeRegistry = await readRuntimeCodexHomes(runtimeConfigPath);
+  const configuredValues = runtimeRegistry.exists
+    ? { ...values, ENGINE_CODEX_HOME: runtimeRegistry.homes.join(',') }
+    : values;
   const codexHomes = configuredCodexHomes(rootDir, configuredValues, homeDir);
   if (!codexHomes.includes(codexHome)) codexHomes.push(codexHome);
-  const runtimeCodexHomes =
-    runtimeRegistry.exists && runtimeRegistry.codexDefined
-      ? runtimeRegistry.codexHomes
-      : splitConfiguredHomes(values.ENGINE_CODEX_HOME || '/root/.codex');
-  const claudeHome = resolveProjectPath(
-    rootDir,
-    values.ENGINE_CLAUDE_HOME_HOST || values.ENGINE_CLAUDE_HOME || './.data/claude',
-    homeDir
-  );
-  const claudeAccountsRoot = resolveProjectPath(
-    rootDir,
-    values.ENGINE_CLAUDE_ACCOUNTS_HOST || './.data/claude-accounts',
-    homeDir
-  );
-  const runtimeClaudeHomes =
-    runtimeRegistry.exists && runtimeRegistry.claudeDefined ? runtimeRegistry.claudeHomes : ['/root/.claude'];
-  const claudeHomes = configuredClaudeHomes(claudeHome, claudeAccountsRoot, runtimeClaudeHomes);
+  const runtimeCodexHomes = runtimeRegistry.exists
+    ? runtimeRegistry.homes
+    : splitConfiguredHomes(values.ENGINE_CODEX_HOME || '/root/.codex');
+  const claudeHome = resolveProjectPath(rootDir, values.ENGINE_CLAUDE_HOME || './.data/claude', homeDir);
   const credentialsDirectory = resolveProjectPath(
     rootDir,
     values.ENGINE_CREDENTIALS_HOST || './.data/engine/credentials',
@@ -533,7 +484,7 @@ export async function getSetupStatus({ rootDir, envFile = join(rootDir, '.env'),
   const codexLoginIssue = codexLoginPresent
     ? null
     : codexAuthInspections.find((inspection) => inspection.issue !== 'missing')?.issue || null;
-  const claudeLoginPresent = (await Promise.all(claudeHomes.map((home) => usableClaudeLogin(home)))).some(Boolean);
+  const claudeLoginPresent = await usableClaudeLogin(claudeHome);
   const managedProviders = Object.keys(managedState.credentials);
   const providerPresent =
     PROVIDER_KEYS.some((key) => valuesPresent[key]) ||
@@ -551,13 +502,10 @@ export async function getSetupStatus({ rootDir, envFile = join(rootDir, '.env'),
     codexLoginPresent,
     primaryCodexLoginPresent,
     claudeHome,
-    claudeAccountsRoot,
-    claudeHomes,
     claudeLoginPresent,
     credentialsPath,
     runtimeConfigPath,
     runtimeCodexHomes,
-    runtimeClaudeHomes,
     runtimeRegistryExists: runtimeRegistry.exists,
     disabledProviders,
     envExists,
@@ -633,25 +581,6 @@ export async function syncCodexLoginStatus({
     envChanged = true;
   }
   return envChanged ? getSetupStatus({ rootDir, envFile, homeDir }) : status;
-}
-
-export async function syncClaudeLoginStatus({
-  rootDir = process.cwd(),
-  envFile = join(rootDir, '.env'),
-  homeDir = homedir(),
-} = {}) {
-  let status = await getSetupStatus({ rootDir, envFile, homeDir });
-  if (!status.envExists || !status.runtimeRegistryExists) return status;
-
-  const primaryPresent = await usableClaudeLogin(status.claudeHome);
-  await updateRuntimeClaudeHome(status.runtimeConfigPath, '/root/.claude', primaryPresent, status.runtimeClaudeHomes);
-  status = await getSetupStatus({ rootDir, envFile, homeDir });
-  return status;
-}
-
-async function syncProviderLoginStatus(context) {
-  await syncCodexLoginStatus(context);
-  return syncClaudeLoginStatus(context);
 }
 
 function renderStatus(status, io) {
@@ -1104,7 +1033,8 @@ async function manageCodexLogin(context) {
       if (result.ok) {
         await syncCodexLoginStatus(context);
         write(io, result.message);
-      } else writeError(io, result.message);
+      }
+      else writeError(io, result.message);
     }
   } else if (action === '4') {
     write(io, itemInfo(CODEX_LOGIN));
@@ -1115,7 +1045,7 @@ async function manageCodexLogin(context) {
 
 async function manageClaudeLogin(context) {
   const { io, prompter } = context;
-  const status = await syncClaudeLoginStatus(context);
+  const status = await getSetupStatus(context);
   write(io, '\nClaude login');
   write(io, '1) Sign in with Docker');
   write(io, '2) Remove the saved login');
@@ -1130,11 +1060,9 @@ async function manageClaudeLogin(context) {
       runner: context.runner,
       home: status.claudeHome,
     });
-    await syncClaudeLoginStatus(context);
   } else if (action === '2') {
     if (await prompter.confirm('Remove the saved Claude login for this project?')) {
       await removeClaudeAuth(status.claudeHome);
-      await syncClaudeLoginStatus(context);
       write(io, 'Saved Claude login removed.');
     }
   } else if (action === '3') {
@@ -1193,7 +1121,7 @@ export async function runSetup(options = {}) {
     await manageEnvironmentItem(context, item);
   }
 
-  const status = await syncProviderLoginStatus(context);
+  const status = await syncCodexLoginStatus(context);
   if (status.providerPresent) write(context.io, 'Setup complete. Run ./kritt start when you are ready.');
   else write(context.io, 'Setup saved. Add one provider key or a Codex or Claude login before running ./kritt start.');
   return 0;
@@ -1206,7 +1134,7 @@ export async function runStart(options = {}) {
     return 1;
   }
 
-  const status = await syncProviderLoginStatus(context);
+  const status = await syncCodexLoginStatus(context);
   if (!status.providerPresent) {
     if (status.codexLoginIssue === 'permission') {
       writeError(context.io, await codexHomePermissionMessage(status.codexHome, context.rootDir));

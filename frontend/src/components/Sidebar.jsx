@@ -41,36 +41,6 @@ function NavItem({ label, to, active }) {
 
 const GROUP_LABEL = { fontSize: 10, letterSpacing: '0.09em', color: 'var(--text-3)' };
 
-export const COMMUNITY_LINKS = [
-  { label: 'GitHub', href: 'https://github.com/Kritt-ai/open-kritt' },
-  { label: 'X / Twitter', href: 'https://x.com/Kritt_AI' },
-  { label: 'Website', href: 'https://kritt.ai/' },
-  { label: 'Discord', href: 'https://discord.gg/JJr2CbBjc' },
-  { label: 'Contact us', href: 'mailto:info@kritt.ai', external: false },
-];
-
-export function CommunityLinks() {
-  return (
-    <nav className="sidebar-community-links" aria-label="Project and community links">
-      {COMMUNITY_LINKS.map(({ label, href, external = true }) => (
-        <a
-          className="sidebar-community-link"
-          href={href}
-          key={href}
-          {...(external ? { target: '_blank', rel: 'noreferrer' } : {})}
-        >
-          <span>{label}</span>
-          {external && (
-            <span className="sidebar-community-external" aria-hidden="true">
-              ↗
-            </span>
-          )}
-        </a>
-      ))}
-    </nav>
-  );
-}
-
 export default function Sidebar() {
   const { pathname } = useLocation();
   const { theme, toggle } = useTheme();
@@ -154,14 +124,10 @@ export default function Sidebar() {
         <NavItem label="Settings" to="/settings" active={isActive('/settings')} />
       </div>
 
-      <div className="sidebar-community">
-        <div className="mono sidebar-community-label" style={GROUP_LABEL}>
-          COMMUNITY
-        </div>
-        <CommunityLinks />
-      </div>
-
-      <div className="sidebar-footer" style={{ paddingTop: 12, borderTop: '1px solid var(--border)' }}>
+      <div
+        className="sidebar-footer"
+        style={{ marginTop: 'auto', paddingTop: 12, borderTop: '1px solid var(--border)' }}
+      >
         <button
           className="sidebar-theme-toggle"
           type="button"

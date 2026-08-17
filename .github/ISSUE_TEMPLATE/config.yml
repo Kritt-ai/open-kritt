@@ -1,8 +1,0 @@
-blank_issues_enabled: false
-contact_links:
-  - name: 💬 Questions & ideas (Discussions)
-    url: https://github.com/Kritt-ai/open-kritt/discussions
-    about: Ask questions, share ideas, or discuss usage. Please don't use issues for support.
-  - name: 🔒 Report a security vulnerability (private)
-    url: https://github.com/Kritt-ai/open-kritt/security/advisories/new
-    about: Do NOT open a public issue for security problems. This opens a private advisory.

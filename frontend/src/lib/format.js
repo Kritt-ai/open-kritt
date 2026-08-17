@@ -8,14 +8,6 @@ export function rateLimitPresentation(reasoning) {
       accountRelated: false,
     };
   }
-  if (reasoning?.limit_kind === 'subagent_limited') {
-    return {
-      label: 'Subagent limit',
-      message:
-        'Codex reached a separate premium limit while starting a subagent; the account usage quota was not exhausted.',
-      accountRelated: false,
-    };
-  }
   if (reasoning?.limit_kind === 'account_quota_limited') {
     return {
       label: 'Quota exhausted',
@@ -43,17 +35,14 @@ export function providerCapacityAutoscalePresentation(reasoning) {
   )
     return null;
   const reductions = Number.isInteger(events) && events > 0 ? events : Math.max(0, initialCap - workerCap);
-  const subagentLimited = reasoning?.limit_kind === 'subagent_limited';
-  const label = subagentLimited ? 'Subagent-limit autoscale' : 'Provider-capacity autoscale';
-  const cause = subagentLimited ? 'subagent-limit' : 'capacity';
   return {
     initialCap,
     workerCap,
     reductions,
-    compact: `${label}: ${initialCap} → ${workerCap} worker${workerCap === 1 ? '' : 's'}`,
-    message: `${label} reduced this scan from ${initialCap} to ${workerCap} worker${
+    compact: `Provider-capacity autoscale: ${initialCap} → ${workerCap} worker${workerCap === 1 ? '' : 's'}`,
+    message: `Provider-capacity autoscaling reduced this scan from ${initialCap} to ${workerCap} worker${
       workerCap === 1 ? '' : 's'
-    } after ${reductions} ${cause} ${reductions === 1 ? 'event' : 'events'}. Future ${cause} errors lower it one worker at a time.`,
+    } after ${reductions} capacity ${reductions === 1 ? 'event' : 'events'}. Future capacity errors lower it one worker at a time.`,
   };
 }
 
@@ -116,25 +105,34 @@ export function rateLimitRetryText(reasoning, now = Date.now()) {
   const retryCount =
     Number.isInteger(reasoning?.retry_count) && reasoning.retry_count > 0 ? reasoning.retry_count : null;
   const retryAt = Date.parse(reasoning?.retry_after || '');
+  const backoffSeconds =
+    typeof reasoning?.backoff_seconds === 'number' && Number.isFinite(reasoning.backoff_seconds)
+      ? Math.max(0, Math.ceil(reasoning.backoff_seconds))
+      : null;
+  const providerRetryAfterSeconds =
+    typeof reasoning?.provider_retry_after_seconds === 'number' && Number.isFinite(reasoning.provider_retry_after_seconds)
+      ? Math.max(0, Math.ceil(reasoning.provider_retry_after_seconds))
+      : null;
   let timing = 'when the retry is due';
   if (Number.isFinite(retryAt)) {
     const remainingSeconds = Math.max(0, Math.ceil((retryAt - now) / 1000));
     if (remainingSeconds === 0) timing = 'shortly';
-    else {
-      const hours = Math.floor(remainingSeconds / 3600);
-      const minutes = Math.floor((remainingSeconds % 3600) / 60);
-      const seconds = remainingSeconds % 60;
-      const countdown = [
-        hours ? `${hours}h` : '',
-        hours || minutes ? `${minutes}m` : '',
-        `${String(seconds).padStart(2, '0')}s`,
-      ]
-        .filter(Boolean)
-        .join(' ');
-      timing = `in ${countdown}`;
-    }
+    else timing = `in ${formatDuration(remainingSeconds)}`;
   }
-  return `Automatic retry${retryCount ? ` #${retryCount}` : ''} ${timing}.`;
+  const details = [];
+  if (backoffSeconds != null) details.push(`backoff ${formatDuration(backoffSeconds)}`);
+  if (providerRetryAfterSeconds != null) details.push(`provider Retry-After ${formatDuration(providerRetryAfterSeconds)}`);
+  return `Automatic retry${retryCount ? ` #${retryCount}` : ''} ${timing}${details.length ? ` (${details.join(', ')})` : ''}.`;
+}
+
+export function formatDuration(totalSeconds) {
+  const seconds = Math.max(0, Math.ceil(Number(totalSeconds) || 0));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainder = seconds % 60;
+  return [hours ? `${hours}h` : '', hours || minutes ? `${minutes}m` : '', `${String(remainder).padStart(2, '0')}s`]
+    .filter(Boolean)
+    .join(' ');
 }
 
 export function sevColor(sev) {

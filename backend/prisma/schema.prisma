@@ -155,9 +155,6 @@ model Scan {
   modelProvider String  @default("openrouter") @map("model_provider") // codex, claude, openrouter
   harness       String
   thinkingEffort String? @map("thinking_effort") // default, low, medium, high, xhigh, max, ultra
-  // Optional depth-keyed model tuples. The top-level tuple remains the fallback
-  // and is also used for post-processing.
-  modelOverrides Json   @default("{}") @map("model_overrides")
   status        String // queued, pending, prewarming_cache, running, rate_limited, paused, post_processing, completed, stopped, failed
   config        Json // legacy compatibility JSON; scan columns are authoritative
   scopes        Json // must include: files, lines

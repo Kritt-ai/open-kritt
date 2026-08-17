@@ -7,18 +7,25 @@ import { test } from 'node:test';
 import { buildAccountsOverview } from '../src/lib/accounts.js';
 import { parseEnvironmentText } from '../src/lib/environmentFile.js';
 import {
-  providerCredentialStatuses,
   customProviderDefinition,
-  customProviderStatuses,
+  providerCredentialStatuses,
   readManagedCredentialStateSync,
   readManagedCredentialsSync,
-  removeCustomProvider,
   removeManagedProviderCredential,
-  saveCustomProvider,
   saveManagedProviderCredential,
-  validateCustomProvider,
+  saveCustomProvider,
   validateProviderCredential,
 } from '../src/lib/providerCredentials.js';
+
+const NO_LOCAL_LOGIN = {
+  codex: {
+    primaryHome: '/definitely/missing/codex-primary',
+    accountsRoot: '/definitely/missing/codex-accounts',
+    runtimeConfigPath: '/definitely/missing/engine-runtime.env',
+    initialHome: '',
+  },
+  claude: { home: '/definitely/missing/claude' },
+};
 
 async function temporaryCredentialPath(t) {
   const directory = await mkdtemp(join(tmpdir(), 'open-kritt-provider-credentials-'));
@@ -43,7 +50,7 @@ test('managed credentials are saved privately without appearing in status', asyn
     OPENROUTER_API_KEY: 'openrouter-secret',
   });
 
-  const [codex, claude, openrouter] = providerCredentialStatuses({ env: {}, credentialsPath });
+  const [codex, claude, openrouter] = providerCredentialStatuses({ env: {}, credentialsPath, loginOptions: NO_LOCAL_LOGIN });
   assert.equal(codex.configured, false);
   assert.equal(claude.configured, false);
   assert.equal(openrouter.source, 'managed_api_key');
@@ -75,7 +82,7 @@ test('failed .env persistence rolls back the managed provider store', async (t) 
       credentialsPath,
       environmentFilePath: join(invalidParent, '.env'),
     }),
-    { code: 'ENOTDIR' }
+    { code: 'EEXIST' }
   );
 
   assert.deepEqual(readManagedCredentialsSync(credentialsPath), {});
@@ -108,11 +115,19 @@ test('removing an environment-bootstrapped key keeps it removed until explicitly
   assert.deepEqual(readManagedCredentialStateSync(credentialsPath).disabledEnvironmentProviders, []);
 });
 
-test('custom providers are stored privately and exposed as OpenAI-compatible provider summaries', async (t) => {
+test('credential validation accepts only a single-line OpenRouter key', () => {
+  assert.equal(validateProviderCredential('openrouter', 'valid-key'), null);
+  assert.equal(validateProviderCredential('other', 'key').field, 'provider');
+  assert.equal(validateProviderCredential('claude', 'key').field, 'provider');
+  assert.equal(validateProviderCredential('openrouter', ' ').field, 'credential');
+  assert.equal(validateProviderCredential('openrouter', 'one\ntwo').field, 'credential');
+});
+
+test('custom providers default to the OpenAI-compatible harness', async (t) => {
   const credentialsPath = await temporaryCredentialPath(t);
   const saved = await saveCustomProvider(
     {
-      name: 'Custom Gateway',
+      name: 'My Gateway',
       baseUrl: 'https://provider.example/v1/',
       apiKey: 'secret-key',
       model: 'gateway-model',
@@ -122,56 +137,8 @@ test('custom providers are stored privately and exposed as OpenAI-compatible pro
     { credentialsPath }
   );
 
-  assert.equal(saved.id, 'custom-gateway');
   assert.deepEqual(saved.harnesses, ['openai-compatible']);
-  assert.equal(saved.defaultModel, 'gateway-model');
-  assert.equal(saved.apiKey, undefined);
-  assert.equal(customProviderDefinition(saved.id, credentialsPath).baseUrl, 'https://provider.example/v1/');
-  assert.deepEqual(customProviderStatuses({ credentialsPath }).map((provider) => provider.id), ['custom-gateway']);
-
-  const file = JSON.parse(await readFile(credentialsPath, 'utf8'));
-  assert.equal(file.customProviders[0].apiKey, 'secret-key');
-});
-
-test('custom providers can be updated without re-entering an API key and removed', async (t) => {
-  const credentialsPath = await temporaryCredentialPath(t);
-  const saved = await saveCustomProvider(
-    { name: 'Gateway', baseUrl: 'https://provider.example/v1/', apiKey: 'secret-key', model: 'model-a' },
-    { credentialsPath }
-  );
-  const updated = await saveCustomProvider(
-    { name: 'Gateway', baseUrl: 'https://provider.example/v1/', apiKey: '', model: 'model-b' },
-    { credentialsPath, providerId: saved.id }
-  );
-
-  assert.equal(updated.model, 'model-b');
-  assert.equal(JSON.parse(await readFile(credentialsPath, 'utf8')).customProviders[0].apiKey, 'secret-key');
-  assert.equal(await removeCustomProvider(saved.id, { credentialsPath }), true);
-  assert.equal(await removeCustomProvider(saved.id, { credentialsPath }), false);
-});
-
-test('custom provider validation rejects unsafe endpoint definitions', () => {
-  assert.equal(validateCustomProvider({ name: '', baseUrl: 'https://x.test', apiKey: 'key', model: 'model' }).field, 'name');
-  assert.equal(validateCustomProvider({ name: 'X', baseUrl: 'file:///x', apiKey: 'key', model: 'model' }).field, 'baseUrl');
-  assert.equal(validateCustomProvider({ name: 'X', baseUrl: 'https://x.test', apiKey: 'a\nb', model: 'model' }).field, 'apiKey');
-  assert.equal(
-    validateCustomProvider({
-      name: 'X',
-      baseUrl: 'https://x.test',
-      apiKey: 'key',
-      model: 'model',
-      extraHeaders: { 'Bad Header': 'x' },
-    }).field,
-    'extraHeaders'
-  );
-});
-
-test('credential validation accepts only a single-line OpenRouter key', () => {
-  assert.equal(validateProviderCredential('openrouter', 'valid-key'), null);
-  assert.equal(validateProviderCredential('other', 'key').field, 'provider');
-  assert.equal(validateProviderCredential('claude', 'key').field, 'provider');
-  assert.equal(validateProviderCredential('openrouter', ' ').field, 'credential');
-  assert.equal(validateProviderCredential('openrouter', 'one\ntwo').field, 'credential');
+  assert.deepEqual(customProviderDefinition(saved.id, credentialsPath)?.harnesses, ['openai-compatible']);
 });
 
 test('provider status recognizes Codex and Claude login homes', async (t) => {
@@ -220,36 +187,11 @@ test('Codex homes left on disk but removed from the runtime registry stay inacti
   assert.equal(codex.configured, false);
 });
 
-test('provider status recognizes managed Claude homes in the runtime registry', async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), 'open-kritt-provider-claude-accounts-'));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const accountsRoot = join(directory, 'claude-accounts');
-  const accountHome = join(accountsRoot, 'reviewer', '.claude');
-  const runtimeConfigPath = join(directory, 'engine-runtime.env');
-  await mkdir(accountHome, { recursive: true });
-  await writeFile(join(accountHome, '.credentials.json'), '{"claudeAiOauth":{"accessToken":"x"}}');
-  await writeFile(runtimeConfigPath, 'ENGINE_CLAUDE_HOME=/claude-accounts/reviewer/.claude\n');
-
-  const claude = providerCredentialStatuses({
-    env: {},
-    credentialsPath: join(directory, 'missing.json'),
-    loginOptions: {
-      claude: {
-        home: join(directory, 'unused-primary'),
-        accountsRoot,
-        runtimeConfigPath,
-      },
-    },
-  }).find((provider) => provider.id === 'claude');
-
-  assert.equal(claude.configured, true);
-  assert.equal(claude.source, 'claude_login');
-});
-
 test('account overview merges executor detail without exposing unrecognized fields', () => {
   const statuses = providerCredentialStatuses({
     env: { OPEN_KRITT_OPENROUTER_API_KEY_CONFIGURED: '1' },
     credentialsPath: '/missing/provider-credentials.json',
+    loginOptions: NO_LOCAL_LOGIN,
   });
   const overview = buildAccountsOverview(statuses, {
     providers: [

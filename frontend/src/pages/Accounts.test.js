@@ -10,7 +10,10 @@ import {
   creditUsageNote,
   formatResetRemaining,
   providerActionLabel,
+  providerHasActiveLogin,
+  providerPrimaryAction,
   providerReloginAccountId,
+  providerSecondaryLoginAction,
   rateLimitLabel,
   removeAccountFromOverview,
   removeProviderFromOverview,
@@ -50,6 +53,23 @@ describe('expired Codex login', () => {
       })
     ).toBe('expired');
   });
+
+  it('treats an active Codex session as connected instead of reopening login', () => {
+    const provider = {
+      id: 'codex',
+      management: 'login',
+      configured: true,
+      accounts: [{ id: 'primary', active: true, statusKind: 'available' }],
+    };
+
+    expect(providerHasActiveLogin(provider)).toBe(true);
+    expect(providerPrimaryAction(provider)).toEqual({
+      label: 'Use Local CLI Session',
+      mode: 'local_session',
+      disabled: false,
+    });
+    expect(providerSecondaryLoginAction(provider)).toBeNull();
+  });
 });
 
 describe('Claude usage bars', () => {
@@ -77,27 +97,6 @@ describe('Claude usage bars', () => {
   });
 });
 
-describe('multiple Claude accounts', () => {
-  it('offers another account instead of reconnecting the configured provider', () => {
-    expect(
-      providerActionLabel({
-        id: 'claude',
-        management: 'login',
-        configured: true,
-        accounts: [{ id: 'default', statusKind: 'available' }],
-      })
-    ).toBe('Add Claude account');
-    expect(
-      providerActionLabel({
-        id: 'claude',
-        management: 'login',
-        configured: false,
-        accounts: [],
-      })
-    ).toBe('Add Claude account');
-  });
-});
-
 describe('expired Claude login', () => {
   it('shows the provider authentication error and a same-account login action', () => {
     const html = renderToStaticMarkup(
@@ -117,6 +116,23 @@ describe('expired Claude login', () => {
     expect(html).toContain('HTTP 401');
     expect(providerActionLabel(provider)).toBe('Sign in to Claude again');
     expect(providerReloginAccountId(provider)).toBe('default');
+  });
+
+  it('treats an active Claude session as a selectable local CLI session', () => {
+    const provider = {
+      id: 'claude',
+      management: 'login',
+      configured: true,
+      accounts: [{ id: 'default', active: true, statusKind: 'available' }],
+    };
+
+    expect(providerHasActiveLogin(provider)).toBe(true);
+    expect(providerPrimaryAction(provider)).toEqual({
+      label: 'Use Local CLI Session',
+      mode: 'local_session',
+      disabled: false,
+    });
+    expect(providerSecondaryLoginAction(provider)).toBeNull();
   });
 });
 

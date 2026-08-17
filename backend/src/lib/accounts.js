@@ -1,17 +1,14 @@
 import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
 
-import { renewClaudeCredential } from './claudeCredentials.js';
 import { providerCredentialStatuses } from './providerCredentials.js';
-import { CLAUDE_ACCOUNTS_ROOT, CLAUDE_HOME } from './providerLogins.js';
+import { localAccountProviders } from './runtimeAccounts.js';
 
 const EXECUTOR_VIEW_URL = process.env.EXECUTOR_VIEW_URL || 'http://executor-view:8090';
 const EXECUTOR_VIEW_INTERNAL_TOKEN_FILE =
   process.env.EXECUTOR_VIEW_INTERNAL_TOKEN_FILE || '/executor-auth/internal-token';
 const ACCOUNT_PROVIDER_IDS = ['codex', 'claude', 'openrouter'];
-const EXECUTOR_ACCOUNT_TIMEOUT_MS = 180000;
+const EXECUTOR_ACCOUNT_TIMEOUT_MS = 45000;
 const ACCOUNT_STATUS_KINDS = new Set(['available', 'limited', 'stale', 'expired', 'warning', 'missing']);
-const ACCOUNT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 function safeText(value, limit = 500) {
   return typeof value === 'string' ? value.slice(0, limit) : null;
@@ -98,6 +95,18 @@ function safeAccount(account) {
   };
 }
 
+function safeRuntime(runtime) {
+  if (!runtime || typeof runtime !== 'object') return null;
+  return {
+    kind: safeText(runtime.kind, 50) || 'local_cli',
+    executableFound: Boolean(runtime.executableFound),
+    executablePath: safeText(runtime.executablePath, 1000),
+    authenticated: Boolean(runtime.authenticated),
+    status: safeText(runtime.status, 100) || 'unknown',
+    setupMessage: safeText(runtime.setupMessage, 500),
+  };
+}
+
 async function executorInternalToken({ internalToken, internalTokenFile = EXECUTOR_VIEW_INTERNAL_TOKEN_FILE } = {}) {
   const configured = String(internalToken ?? process.env.EXECUTOR_VIEW_INTERNAL_TOKEN ?? '').trim();
   if (configured) return configured;
@@ -152,52 +161,22 @@ export async function fetchExecutorProvider(
     internalToken,
     internalTokenFile,
     timeoutMs = EXECUTOR_ACCOUNT_TIMEOUT_MS,
-    claudeHome = CLAUDE_HOME,
-    claudeAccountsRoot = CLAUDE_ACCOUNTS_ROOT,
-    renewClaudeLogin = renewClaudeCredential,
   } = {}
 ) {
   if (!ACCOUNT_PROVIDER_IDS.includes(providerId)) return null;
   try {
     const token = await executorInternalToken({ internalToken, internalTokenFile });
     if (!token) return null;
-    const requestProvider = async () => {
-      const url = new URL(`/api/accounts/${providerId}`, executorViewUrl);
-      if (refresh) url.searchParams.set('refresh', '1');
-      const response = await fetch(url, {
-        headers: { Authorization: `Bearer ${token}` },
-        redirect: 'error',
-        signal: AbortSignal.timeout(timeoutMs),
-      });
-      if (!response.ok) return null;
-      const payload = await response.json();
-      return payload?.kind === providerId ? payload : null;
-    };
-
-    let provider = await requestProvider();
-    const claudeLoginRejected =
-      providerId === 'claude' && refresh && provider?.accounts?.some((account) => account?.statusKind === 'expired');
-    if (claudeLoginRejected) {
-      let renewed = false;
-      const homes = new Set(
-        provider.accounts
-          .filter((account) => account?.statusKind === 'expired')
-          .map((account) => {
-            if (!account?.id || account.id === 'default') return claudeHome;
-            return ACCOUNT_ID_PATTERN.test(account?.id || '') ? join(claudeAccountsRoot, account.id, '.claude') : null;
-          })
-          .filter(Boolean)
-      );
-      for (const home of homes) {
-        try {
-          renewed = (await renewClaudeLogin(home)) || renewed;
-        } catch {
-          // Preserve the sanitized sign-in response when local renewal cannot run.
-        }
-      }
-      if (renewed) provider = await requestProvider();
-    }
-    return provider;
+    const url = new URL(`/api/accounts/${providerId}`, executorViewUrl);
+    if (refresh) url.searchParams.set('refresh', '1');
+    const response = await fetch(url, {
+      headers: { Authorization: `Bearer ${token}` },
+      redirect: 'error',
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!response.ok) return null;
+    const payload = await response.json();
+    return payload?.kind === providerId ? payload : null;
   } catch {
     return null;
   }
@@ -208,9 +187,6 @@ export async function fetchExecutorAccounts({
   executorViewUrl = EXECUTOR_VIEW_URL,
   internalToken,
   internalTokenFile,
-  claudeHome,
-  claudeAccountsRoot,
-  renewClaudeLogin,
 } = {}) {
   const providers = await Promise.all(
     ACCOUNT_PROVIDER_IDS.map((providerId) =>
@@ -219,9 +195,6 @@ export async function fetchExecutorAccounts({
         executorViewUrl,
         internalToken,
         internalTokenFile,
-        claudeHome,
-        claudeAccountsRoot,
-        renewClaudeLogin,
       })
     )
   );
@@ -229,23 +202,29 @@ export async function fetchExecutorAccounts({
   return loaded.length ? { providers: loaded } : null;
 }
 
-export function buildAccountsOverview(statuses, executorAccounts) {
-  const executorProviders = new Map(
-    (Array.isArray(executorAccounts?.providers) ? executorAccounts.providers : [])
+function providerAccountMap(payload) {
+  return new Map(
+    (Array.isArray(payload?.providers) ? payload.providers : [])
       .filter((provider) => provider && typeof provider.kind === 'string')
       .map((provider) => [provider.kind, provider])
   );
+}
+
+export function buildAccountsOverview(statuses, executorAccounts, localAccounts = null) {
+  const executorProviders = providerAccountMap(executorAccounts);
+  const localProviders = providerAccountMap(localAccounts);
 
   const providers = statuses.map((status) => {
-    const executorProvider = executorProviders.get(status.id);
-    const accounts = Array.isArray(executorProvider?.accounts)
-      ? executorProvider.accounts.map(safeAccount).filter(Boolean)
+    const accountProvider = executorProviders.get(status.id) || localProviders.get(status.id);
+    const accounts = Array.isArray(accountProvider?.accounts)
+      ? accountProvider.accounts.map(safeAccount).filter(Boolean)
       : [];
     const hasActiveAccount = accounts.some((account) => account.active);
     const configured = status.configured || hasActiveAccount;
     return {
       ...status,
       configured,
+      runtime: safeRuntime(accountProvider?.runtime),
       active: accounts.filter((account) => account.active).length,
       total: accounts.length,
       limited: accounts.filter((account) => account.statusKind === 'limited').length,
@@ -265,11 +244,12 @@ export function buildAccountsOverview(statuses, executorAccounts) {
 }
 
 export async function getAccountsOverview({ refresh = false, statusOptions, executorOptions } = {}) {
-  const [statuses, executorAccounts] = await Promise.all([
+  const [statuses, executorAccounts, localAccounts] = await Promise.all([
     Promise.resolve(providerCredentialStatuses(statusOptions)),
     fetchExecutorAccounts({ refresh, ...executorOptions }),
+    localAccountProviders(statusOptions?.loginOptions),
   ]);
-  return buildAccountsOverview(statuses, executorAccounts);
+  return buildAccountsOverview(statuses, executorAccounts, localAccounts);
 }
 
 export function getAccountsSummary({ statusOptions } = {}) {
@@ -279,11 +259,16 @@ export function getAccountsSummary({ statusOptions } = {}) {
 export async function getAccountProvider(providerId, { refresh = false, statusOptions, executorOptions } = {}) {
   const status = providerCredentialStatuses(statusOptions).find((provider) => provider.id === providerId);
   if (!status) return null;
+  const localAccounts = await localAccountProviders(statusOptions?.loginOptions);
   const executorProvider = await fetchExecutorProvider(providerId, { refresh, ...executorOptions });
-  const provider = buildAccountsOverview([status], executorProvider ? { providers: [executorProvider] } : null)
+  const provider = buildAccountsOverview(
+    [status],
+    executorProvider ? { providers: [executorProvider] } : null,
+    localAccounts
+  )
     .providers[0];
   return {
     ...provider,
-    loadError: executorProvider ? null : 'Account status is unavailable.',
+    loadError: executorProvider || provider.accounts.length || provider.runtime ? null : 'Account status is unavailable.',
   };
 }

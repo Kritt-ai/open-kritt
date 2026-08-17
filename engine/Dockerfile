@@ -4,6 +4,10 @@ FROM node:24.15.0-bookworm-slim AS node_runtime
 
 FROM python:3.12.7-slim-bookworm
 
+ARG OPEN_KRITT_ENABLE_CODEX=
+ARG CODEX_API_KEY_CONFIGURED=
+ARG CODEX_LOGIN_CONFIGURED=
+
 WORKDIR /app
 
 # Copy the Node runtime as a tree so the npm/npx symlinks retain their targets.
@@ -12,7 +16,7 @@ COPY --from=node_runtime /usr/local/ /usr/local/
 RUN apt-get update \
     && apt-get install -y --no-install-recommends bash ca-certificates curl git util-linux \
     && npm install --global --no-audit --no-fund npm@12.0.1 \
-    && npm install --global --no-audit --no-fund @openai/codex@0.145.0 \
+    && if [ "$OPEN_KRITT_ENABLE_CODEX" = "1" ] || [ "$OPEN_KRITT_ENABLE_CODEX" = "true" ] || [ -n "$CODEX_API_KEY_CONFIGURED" ] || [ -n "$CODEX_LOGIN_CONFIGURED" ]; then npm install --global --no-audit --no-fund @openai/codex@0.144.6; fi \
     && npm install --global --no-audit --no-fund --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code@2.1.215 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
@@ -23,7 +27,6 @@ RUN mkdir -p /run/open-kritt-secrets \
     && chmod 0700 /run/open-kritt-secrets \
     && ln -s /run/open-kritt-secrets/credentials /credentials \
     && ln -s /run/open-kritt-secrets/codex-accounts /codex-accounts \
-    && ln -s /run/open-kritt-secrets/claude-accounts /claude-accounts \
     && ln -s /run/open-kritt-secrets/codex-home-source /codex-home-source \
     && ln -s /run/open-kritt-secrets/local-repos /local_repos
 
@@ -54,7 +57,6 @@ COPY . .
 ENV ENGINE_DATA_DIR=/data \
     ENGINE_CHECKOUT_CACHE_DIR=/checkout-cache \
     ENGINE_WORKER_COUNT=25 \
-    CODEX_HOME=/root/.codex \
     PATH="/root/.local/bin:${PATH}"
 
 CMD ["python", "-m", "open_kritt_engine"]

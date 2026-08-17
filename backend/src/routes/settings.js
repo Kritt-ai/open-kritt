@@ -6,7 +6,7 @@ const router = Router();
 
 router.get('/', async (req, res, next) => {
   try {
-    res.json(await readRuntimeSettings());
+    res.json(await readRuntimeSettings(req.app.locals.runtimeSettingsOptions));
   } catch (error) {
     next(error);
   }
@@ -14,7 +14,7 @@ router.get('/', async (req, res, next) => {
 
 router.patch('/', async (req, res, next) => {
   try {
-    res.json(await updateRuntimeSettings(req.body));
+    res.json(await updateRuntimeSettings(req.body, req.app.locals.runtimeSettingsOptions));
   } catch (error) {
     next(error);
   }

@@ -117,9 +117,16 @@ class CodexUpdater:
             self.gate.end_update()
 
     def _version(self) -> str | None:
+        executable = "codex"
+        try:
+            from .llm.runtime.cli import CodexRuntime
+
+            executable = CodexRuntime().detect_executable() or executable
+        except Exception:
+            pass
         try:
             completed = self._run_command(
-                ["codex", "--version"],
+                [executable, "--version"],
                 capture_output=True,
                 check=False,
                 text=True,

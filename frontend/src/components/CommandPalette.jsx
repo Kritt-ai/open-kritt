@@ -10,6 +10,7 @@ const STATIC = [
   { type: 'Page', label: 'Scans', to: '/scans' },
   { type: 'Page', label: 'Settings', to: '/settings' },
   { type: 'Page', label: 'Accounts', to: '/accounts' },
+  { type: 'Page', label: 'Custom providers', to: '/custom-providers' },
   { type: 'Page', label: 'Steps', to: '/steps' },
   { type: 'Page', label: 'Agent skills', to: '/agent-skills' },
   { type: 'Page', label: 'Severity rankers', to: '/severity-rankers' },
@@ -56,16 +57,7 @@ export default function CommandPalette({ open, onClose }) {
           ...sc.map((s) => ({
             type: 'Scan',
             label: s.repoDisplay || s.repoFull,
-            sub: [
-              s.workflowName,
-              s.model,
-              Object.keys(s.modelOverrides || {}).length
-                ? `${Object.keys(s.modelOverrides).length} depth overrides`
-                : null,
-              s.status,
-            ]
-              .filter(Boolean)
-              .join(' · '),
+            sub: [s.workflowName, s.model, s.status].filter(Boolean).join(' · '),
             to: `/scans/${s.id}`,
           })),
           ...ps.map((p) => ({ type: 'Post-script', label: p.name, sub: p.description, to: `/post-scripts/${p.id}` })),

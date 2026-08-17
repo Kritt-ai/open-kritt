@@ -1,22 +1,21 @@
+import json
 import logging
+import math
 import random
 import shutil
 import threading
 import time
+import traceback
 import unicodedata
 from datetime import timedelta
 from typing import Any
 
 from .artifact_cleanup import (
     ArtifactCleanupResult,
-    cleanup_checkout_caches,
     cleanup_legacy_checkout_cache,
-    cleanup_legacy_repo_cache,
     cleanup_legacy_scan_workspaces,
     cleanup_orphaned_job_workspaces,
     cleanup_persisted_scan_caches,
-    collect_quarantined_artifacts,
-    delete_quarantined_artifacts,
 )
 from .claude_auth import ClaudeCredentialRateLimited
 from .codex_updater import CodexCliGate, CodexUpdater
@@ -24,7 +23,6 @@ from .config import EngineConfig
 from .db import Database, now_utc
 from .generation import GenerationRunner, GenerationValidationError
 from .harnesses import (
-    CAPACITY_RATE_LIMIT_FAILURES,
     RETRYABLE_RATE_LIMIT_FAILURES,
     HarnessError,
     cleanup_stale_scan_sandboxes,
@@ -34,35 +32,28 @@ from .harnesses import (
     validate_scan_runner_configuration,
 )
 from .model_catalog import ModelCatalogRefresher
-from .model_output_artifacts import record_model_error_output
-from .models import ModelSelection, model_selection_for_depth
+from .model_output_artifacts import record_model_error_output, record_model_output_artifact
 from .post_processing import PostProcessor, PostProcessRateLimited
 from .prompting import harness_prompt, native_agent_skills_prompt, render_prompt, repeat_append_prompt
-from .provider_credentials import provider_environment
+from .provider_credentials import codex_runtime_enabled, provider_environment
 from .queue import build_pending_jobs
-from .runtime_config import runtime_bool, runtime_config_path, runtime_float, runtime_int, runtime_value
+from .runtime_config import runtime_bool, runtime_config_path, runtime_int, runtime_value
 from .schema import OutputValidationError, output_schema, validate_payload
-from .storage_cleanup import prune_docker_build_cache, prune_stopped_scan_containers, prune_unused_docker_images
 from .workspace import (
     cleanup_job_workspace,
     cleanup_workspace,
-    image_workspace_enabled,
     mark_provider_account_available,
     mark_provider_account_rate_limited,
     prepare_dependency_workspace,
     prewarm_scan_checkout_cache,
-    provider_account_lease,
     provider_accounts_all_rate_limited,
     resolve_scan_checkout_revisions,
     restore_persistent_scan_checkout_cache,
     save_persistent_scan_checkout_cache,
-    scan_checkout_cache_entry_names,
-    scan_checkout_cache_entry_prefixes,
     scan_checkout_cache_key,
     workspace_context,
     workspace_prompt_context,
 )
-from .workspace_snapshots import cleanup_stale_workspace_snapshot_builders
 
 LOGGER = logging.getLogger("open_kritt_engine")
 NON_RUNNABLE_SCAN_STATUSES = {"queued", "pending", "rate_limited", "paused", "stopped", "failed", "completed"}
@@ -78,7 +69,6 @@ GENERATION_PERSISTENCE_ERROR = "Generated draft could not be saved. Please try a
 RATE_LIMIT_BACKOFF_BASE_SECONDS = 5.0
 RATE_LIMIT_BACKOFF_MAX_SECONDS = 60.0
 RATE_LIMIT_RETRY_AFTER_MAX_SECONDS = 300.0
-QUOTA_RETRY_AFTER_MAX_SECONDS = 8 * 24 * 60 * 60.0
 RATE_LIMIT_RESUME_DELAY_SECONDS = 60.0
 ARTIFACT_CLEANUP_INTERVAL_SECONDS = 5 * 60.0
 ARTIFACT_CLEANUP_GRACE_SECONDS = 5 * 60.0
@@ -107,12 +97,7 @@ class RateLimitExhausted(StepExecutionError):
 
 def _rate_limit_retry_delay(error: HarnessError, attempt: int) -> float:
     if error.retry_after_seconds is not None:
-        maximum = (
-            QUOTA_RETRY_AFTER_MAX_SECONDS
-            if error.code in {"account_quota_limited", "subagent_limited"}
-            else RATE_LIMIT_RETRY_AFTER_MAX_SECONDS
-        )
-        return min(max(0.0, error.retry_after_seconds), maximum)
+        return min(max(0.0, error.retry_after_seconds), RATE_LIMIT_RETRY_AFTER_MAX_SECONDS)
     base = min(RATE_LIMIT_BACKOFF_BASE_SECONDS * (2 ** max(0, attempt - 1)), RATE_LIMIT_BACKOFF_MAX_SECONDS)
     return base * random.uniform(0.8, 1.2)
 
@@ -148,17 +133,66 @@ def generation_harness_failure_message(error: HarnessError, generation_id: int) 
     return f"{message} Diagnostic: {code} (generation {generation_id})."
 
 
+def step_validation_feedback(errors: list[dict[str, str]], *, multi_output: bool) -> str:
+    details = "\n".join(
+        f"- {item['field']}: {item['message']}" for item in sanitize_generation_validation_errors(errors)
+    )
+    cardinality = (
+        "This step may return zero, one, or many application records in `results`."
+        if multi_output
+        else "This step may return zero or one application record in `results`, never more than one."
+    )
+    return (
+        "\n\nYour previous response did not validate against the exact Open-Kritt extractor schema.\n"
+        "Return a completely new JSON object that fixes every issue below.\n"
+        "Do not return prose, markdown fences, commentary, or partial JSON.\n"
+        "The final top-level JSON object must include `_kritt_extractor_helper: true`, "
+        "`stub` as a boolean, `stub_explanation` as a string, and `results` as an array.\n"
+        "Do not omit any required fields inside each result object.\n"
+        "If you found no qualifying result, return `stub: true`, a non-empty `stub_explanation`, and `results: []`.\n"
+        "If you found one or more qualifying results, return `stub: false`, `stub_explanation: \"\"`, "
+        "and only schema-valid records inside `results`.\n"
+        f"{cardinality}\n"
+        "Validation errors to fix:\n"
+        f"{details}\n"
+        "Rebuild the full extractor JSON from scratch and return only that JSON object."
+    )
+
+
+def _error_message_with_diagnostic(message: str, code: str) -> str:
+    normalized = (message or "").strip()
+    if not normalized:
+        normalized = "Unknown error."
+    if f"Diagnostic: {code}" in normalized:
+        return normalized
+    return f"{normalized} Diagnostic: {code}."
+
+
+def _unexpected_scan_error_message(exc: BaseException) -> str:
+    return _error_message_with_diagnostic(
+        "Open-Kritt hit an internal application error while processing this scan. Review the engine logs.",
+        "app_bug",
+    )
+
+
+def _classify_step_exception(exc: BaseException) -> tuple[str, str]:
+    if isinstance(exc, HarnessError):
+        return (
+            _error_message_with_diagnostic(exc.public_message, exc.code),
+            "provider_error" if exc.retryable or exc.code in RETRYABLE_RATE_LIMIT_FAILURES else "model_output_error",
+        )
+    if isinstance(exc, OutputValidationError):
+        return (_error_message_with_diagnostic(str(exc), "schema_validation_error"), "schema_validation_error")
+    return (_error_message_with_diagnostic(str(exc), "app_bug"), "app_bug")
+
+
 class Worker:
     def __init__(self, config: EngineConfig, db: Database | None = None):
         self.config = config
         self.db = db or Database(config.database_url)
+        self.post_processor = PostProcessor(config, self.db)
         setup_concurrency = max(1, int(getattr(config, "workspace_setup_concurrency", 1)))
         self.workspace_setup_slots = threading.BoundedSemaphore(setup_concurrency)
-        self.post_processor = PostProcessor(
-            config,
-            self.db,
-            workspace_setup_slots=self.workspace_setup_slots,
-        )
         self._prewarm_lock = threading.Lock()
         self._prewarmed_scan_cache_keys: set[tuple[int, str]] = set()
         self._prewarm_events: dict[tuple[int, str], threading.Event] = {}
@@ -166,14 +200,13 @@ class Worker:
         self._scan_scheduler_lock = threading.Lock()
         self._scan_allocations: dict[int, int] = {}
         self._scan_last_dispatch: dict[int, int] = {}
-        self._scan_no_work_until: dict[int, float] = {}
         self._scan_dispatch_sequence = 0
-        self.codex_cli_gate = CodexCliGate()
-        self.generation_runner = GenerationRunner(config, codex_cli_gate=self.codex_cli_gate)
+        self.codex_cli_gate = None
+        self.generation_runner = GenerationRunner(config, codex_cli_gate_factory=self._ensure_codex_cli_gate)
         self.model_catalog_refresher = ModelCatalogRefresher(
             self.db,
             timeout_seconds=float(getattr(config, "model_catalog_timeout_seconds", 10.0) or 10.0),
-            codex_cli_gate=self.codex_cli_gate,
+            codex_cli_gate=None,
         )
         self._model_catalog_refresh_seconds = max(
             30.0, float(getattr(config, "model_catalog_refresh_seconds", 300.0) or 300.0)
@@ -187,16 +220,10 @@ class Worker:
         self._codex_update_retry_seconds = min(300.0, self._codex_update_interval_seconds)
         self._next_codex_update = 0.0
         self._codex_update_lock = threading.Lock()
-        self.codex_updater = CodexUpdater(
-            timeout_seconds=max(10.0, float(getattr(config, "codex_update_timeout_seconds", 120.0) or 120.0)),
-            gate=self.codex_cli_gate,
-        )
+        self.codex_updater = None
         self._generation_stale_after_seconds = GENERATION_STALE_AFTER_SECONDS
         self._artifact_cleanup_lock = threading.Lock()
         self._next_artifact_cleanup = 0.0
-        self._artifact_cleanup_requested = False
-        self._docker_storage_cleanup_lock = threading.Lock()
-        self._next_docker_storage_cleanup = 0.0
 
     def run_forever(self):
         workers: dict[int, tuple[threading.Thread, threading.Event]] = {}
@@ -204,7 +231,6 @@ class Worker:
         last_desired: int | None = None
         LOGGER.info("open-kritt engine started; live config: %s", runtime_config_path(self.config.data_dir))
         cleanup_stale_scan_sandboxes()
-        cleanup_stale_workspace_snapshot_builders()
         if hasattr(self.db, "connect"):
             self.recover_orphaned_metadata(now_utc())
             try:
@@ -212,12 +238,13 @@ class Worker:
             except Exception:
                 LOGGER.exception("startup artifact cleanup failed")
             self._next_artifact_cleanup = time.monotonic() + ARTIFACT_CLEANUP_INTERVAL_SECONDS
-        self._schedule_docker_storage_cleanup()
-        self._update_codex_at_startup()
+        if self._codex_runtime_enabled():
+            self._update_codex_at_startup()
 
         while True:
             self._schedule_artifact_cleanup()
-            self._schedule_codex_update()
+            if self._codex_runtime_enabled():
+                self._schedule_codex_update()
             self._schedule_model_catalog_refresh()
             for worker_id, (thread, _stop_event) in list(workers.items()):
                 if not thread.is_alive():
@@ -266,15 +293,44 @@ class Worker:
 
             time.sleep(max(1.0, min(self.config.poll_seconds, 5.0)))
 
+    def _codex_runtime_enabled(self) -> bool:
+        env = provider_environment()
+        configured_codex_home = runtime_value(
+            "ENGINE_CODEX_HOME",
+            env.get("CODEX_HOME") or "/root/.codex",
+            data_dir=getattr(self.config, "data_dir", None),
+        )
+        if configured_codex_home:
+            env["ENGINE_CODEX_HOME"] = configured_codex_home
+        return codex_runtime_enabled(env)
+
+    def _ensure_codex_cli_gate(self):
+        if not self._codex_runtime_enabled():
+            return None
+        if self.codex_cli_gate is None:
+            self.codex_cli_gate = CodexCliGate()
+        return self.codex_cli_gate
+
+    def _ensure_codex_updater(self):
+        gate = self._ensure_codex_cli_gate()
+        if gate is None:
+            return None
+        if self.codex_updater is None:
+            self.codex_updater = CodexUpdater(
+                timeout_seconds=max(10.0, float(getattr(self.config, "codex_update_timeout_seconds", 120.0) or 120.0)),
+                gate=gate,
+            )
+        return self.codex_updater
+
     def _update_codex_at_startup(self) -> None:
-        if not self._codex_auto_update:
+        if not self._codex_auto_update or not self._codex_runtime_enabled():
             LOGGER.info("Codex CLI auto-update is disabled")
             return
         self._run_codex_update()
         self._next_codex_update = time.monotonic() + self._codex_update_interval_seconds
 
     def _schedule_codex_update(self) -> None:
-        if not self._codex_auto_update:
+        if not self._codex_auto_update or not self._codex_runtime_enabled():
             return
         now = time.monotonic()
         if now < self._next_codex_update or not self._codex_update_lock.acquire(blocking=False):
@@ -295,7 +351,10 @@ class Worker:
             self._codex_update_lock.release()
 
     def _run_codex_update(self):
-        result = self.codex_updater.update()
+        updater = self._ensure_codex_updater()
+        if updater is None:
+            return type("CodexUpdateResultShim", (), {"attempted": False})()
+        result = updater.update()
         if result.attempted:
             # Fetch against the post-update CLI instead of waiting for the normal cadence.
             self._next_model_catalog_refresh = 0.0
@@ -320,13 +379,17 @@ class Worker:
     def _refresh_model_catalogs(self) -> None:
         try:
             env = provider_environment()
-            configured_codex_home = runtime_value(
-                "ENGINE_CODEX_HOME",
-                env.get("CODEX_HOME") or "/root/.codex",
-                data_dir=getattr(self.config, "data_dir", None),
-            )
-            if configured_codex_home:
-                env["ENGINE_CODEX_HOME"] = configured_codex_home
+            if self._codex_runtime_enabled():
+                configured_codex_home = runtime_value(
+                    "ENGINE_CODEX_HOME",
+                    env.get("CODEX_HOME") or "/root/.codex",
+                    data_dir=getattr(self.config, "data_dir", None),
+                )
+                if configured_codex_home:
+                    env["ENGINE_CODEX_HOME"] = configured_codex_home
+                self.model_catalog_refresher.codex_cli_gate = self._ensure_codex_cli_gate()
+            else:
+                self.model_catalog_refresher.codex_cli_gate = None
             self.model_catalog_refresher.refresh(env=env)
         except Exception:
             # Catalog refresh must never interrupt scan workers. The refresher
@@ -387,49 +450,6 @@ class Worker:
             maximum=86400,
         )
 
-    def runtime_codex_max_subagents(self) -> int:
-        return runtime_int(
-            "ENGINE_CODEX_MAX_SUBAGENTS_PER_SESSION",
-            5,
-            data_dir=getattr(self.config, "data_dir", None),
-            minimum=1,
-            maximum=5,
-        )
-
-    def runtime_min_free_storage_bytes(self) -> int:
-        configured_default = max(0, int(getattr(self.config, "min_free_storage_bytes", 0) or 0))
-        data_dir = getattr(self.config, "data_dir", None)
-        if not data_dir:
-            return configured_default
-        default_gib = configured_default / 1024**3
-        return int(
-            runtime_float(
-                "ENGINE_MIN_FREE_STORAGE_GB",
-                default_gib,
-                data_dir=data_dir,
-                minimum=0.0,
-                maximum=1024.0,
-            )
-            * 1024**3
-        )
-
-    def runtime_ignore_low_storage(self) -> bool:
-        return runtime_bool(
-            "ENGINE_IGNORE_LOW_STORAGE",
-            bool(getattr(self.config, "ignore_low_storage", False)),
-            data_dir=getattr(self.config, "data_dir", None),
-        )
-
-    def _harness_for_model_selection(self, selection: ModelSelection):
-        return harness_for(
-            normalize_harness_name(selection.harness),
-            timeout_seconds=self.runtime_harness_timeout_seconds(),
-            model_provider=selection.model_provider,
-            codex_model_provider=getattr(self.config, "codex_model_provider", None),
-            codex_cli_gate=self.codex_cli_gate,
-            codex_max_subagents=self.runtime_codex_max_subagents(),
-        )
-
     def recover_orphaned_metadata(self, engine_started_at):
         with self.db.connect() as conn:
             counts = self.db.mark_orphaned_running_metadata_interrupted(
@@ -443,197 +463,71 @@ class Worker:
             LOGGER.info("marked %s orphaned running metadata rows interrupted: %s", repaired, counts)
         return counts
 
-    def cleanup_orphaned_artifacts(
-        self,
-        *,
-        minimum_age_seconds: float,
-        persisted_cache_minimum_age_seconds: float | None = None,
-    ) -> ArtifactCleanupResult:
+    def cleanup_orphaned_artifacts(self, *, minimum_age_seconds: float) -> ArtifactCleanupResult:
         load_state = getattr(self.db, "load_artifact_cleanup_state", None)
         if not callable(load_state):
             return ArtifactCleanupResult()
-        persisted_cache_minimum_age_seconds = (
-            minimum_age_seconds if persisted_cache_minimum_age_seconds is None else persisted_cache_minimum_age_seconds
-        )
-        retention_days = max(0.0, float(getattr(self.config, "scan_cache_retention_days", 0.0) or 0.0))
+        retention_days = max(0.0, float(getattr(self.config, "scan_cache_retention_days", 7.0) or 0.0))
         retain_after = now_utc() - timedelta(days=retention_days)
-        quarantine = collect_quarantined_artifacts(
-            [
-                self.config.data_dir,
-                f"{self.config.data_dir}/jobs",
-                f"{self.config.data_dir}/scan-workspaces",
-                getattr(self.config, "checkout_cache_persist_dir", None),
-                getattr(self.config, "checkout_cache_dir", None),
-            ]
-        )
         with self.db.connect() as conn:
             active_workspace_ids, retained_scan_ids = load_state(
                 conn,
                 retain_inactive_scan_caches_after=retain_after,
-                retain_finished_workspaces_after=now_utc() - timedelta(seconds=max(0.0, minimum_age_seconds)),
             )
-            load_active_scans = getattr(self.db, "load_active_scan_cache_specs", None)
-            active_scans = load_active_scans(conn) if callable(load_active_scans) else []
-            retained_checkout_names = {name for scan in active_scans for name in scan_checkout_cache_entry_names(scan)}
-            retained_checkout_prefixes = {
-                prefix for scan in active_scans for prefix in scan_checkout_cache_entry_prefixes(scan)
-            }
             result = ArtifactCleanupResult(
                 job_workspaces=cleanup_orphaned_job_workspaces(
                     self.config.data_dir,
                     active_workspace_ids=active_workspace_ids,
                     minimum_age_seconds=minimum_age_seconds,
-                    quarantine=quarantine,
                 ),
                 persisted_scan_caches=cleanup_persisted_scan_caches(
                     getattr(self.config, "checkout_cache_persist_dir", None),
                     retained_scan_ids=retained_scan_ids,
-                    minimum_age_seconds=persisted_cache_minimum_age_seconds,
-                    quarantine=quarantine,
-                ),
-                checkout_caches=cleanup_checkout_caches(
-                    getattr(self.config, "checkout_cache_dir", None),
-                    retained_entry_names=retained_checkout_names,
-                    retained_entry_prefixes=retained_checkout_prefixes,
                     minimum_age_seconds=minimum_age_seconds,
-                    quarantine=quarantine,
                 ),
                 legacy_scan_workspaces=cleanup_legacy_scan_workspaces(
                     self.config.data_dir,
                     minimum_age_seconds=minimum_age_seconds,
-                    quarantine=quarantine,
                 ),
                 legacy_checkout_caches=cleanup_legacy_checkout_cache(
                     self.config.data_dir,
                     getattr(self.config, "checkout_cache_dir", None),
-                    quarantine=quarantine,
-                ),
-                legacy_repo_caches=cleanup_legacy_repo_cache(
-                    self.config.data_dir,
-                    getattr(self.config, "repo_dir", None),
-                    quarantine=quarantine,
                 ),
             )
             conn.commit()
-        delete_quarantined_artifacts(quarantine)
-        active_scan_ids = {int(scan["id"]) for scan in active_scans}
-        prewarm_lock = getattr(self, "_prewarm_lock", None)
-        if prewarm_lock is not None:
-            with prewarm_lock:
-                self._prewarmed_scan_cache_keys = {
-                    key for key in self._prewarmed_scan_cache_keys if key[0] in active_scan_ids
-                }
         if result.total:
             LOGGER.info(
-                "removed stale engine artifacts: jobs=%s persisted_scan_caches=%s checkout_caches=%s "
-                "legacy_scan_workspaces=%s legacy_checkout_caches=%s legacy_repo_caches=%s",
+                "removed stale engine artifacts: jobs=%s persisted_scan_caches=%s "
+                "legacy_scan_workspaces=%s legacy_checkout_caches=%s",
                 result.job_workspaces,
                 result.persisted_scan_caches,
-                result.checkout_caches,
                 result.legacy_scan_workspaces,
                 result.legacy_checkout_caches,
-                result.legacy_repo_caches,
             )
         return result
 
-    def _schedule_artifact_cleanup(self, *, completion_triggered: bool = False) -> None:
+    def _schedule_artifact_cleanup(self) -> None:
         if not callable(getattr(self.db, "connect", None)) or not callable(
             getattr(self.db, "load_artifact_cleanup_state", None)
         ):
             return
         now = time.monotonic()
-        if not completion_triggered and now < getattr(self, "_next_artifact_cleanup", 0.0):
-            return
-        cleanup_lock = getattr(self, "_artifact_cleanup_lock", None)
-        if cleanup_lock is None:
-            cleanup_lock = threading.Lock()
-            self._artifact_cleanup_lock = cleanup_lock
-        if not cleanup_lock.acquire(blocking=False):
-            if completion_triggered:
-                self._artifact_cleanup_requested = True
+        if now < self._next_artifact_cleanup or not self._artifact_cleanup_lock.acquire(blocking=False):
             return
         self._next_artifact_cleanup = now + ARTIFACT_CLEANUP_INTERVAL_SECONDS
         threading.Thread(
             target=self._run_scheduled_artifact_cleanup,
-            args=(completion_triggered,),
             name="artifact-cleaner",
             daemon=True,
         ).start()
 
-    def _run_scheduled_artifact_cleanup(self, completion_triggered: bool = False) -> None:
+    def _run_scheduled_artifact_cleanup(self) -> None:
         try:
-            self.cleanup_orphaned_artifacts(
-                minimum_age_seconds=ARTIFACT_CLEANUP_GRACE_SECONDS,
-                persisted_cache_minimum_age_seconds=0 if completion_triggered else ARTIFACT_CLEANUP_GRACE_SECONDS,
-            )
+            self.cleanup_orphaned_artifacts(minimum_age_seconds=ARTIFACT_CLEANUP_GRACE_SECONDS)
         except Exception:
             LOGGER.exception("scheduled artifact cleanup failed")
         finally:
             self._artifact_cleanup_lock.release()
-            if getattr(self, "_artifact_cleanup_requested", False):
-                self._artifact_cleanup_requested = False
-                self._schedule_artifact_cleanup(completion_triggered=True)
-
-    def _schedule_docker_storage_cleanup(self) -> bool:
-        if not (
-            bool(getattr(self.config, "auto_prune_docker_build_cache", False))
-            or bool(getattr(self.config, "auto_prune_unused_docker_images", False))
-        ):
-            return False
-        now = time.monotonic()
-        if now < getattr(self, "_next_docker_storage_cleanup", 0.0):
-            return False
-        cleanup_lock = getattr(self, "_docker_storage_cleanup_lock", None)
-        if cleanup_lock is None:
-            cleanup_lock = threading.Lock()
-            self._docker_storage_cleanup_lock = cleanup_lock
-        if not cleanup_lock.acquire(blocking=False):
-            return False
-        interval = max(
-            30.0,
-            float(getattr(self.config, "docker_build_cache_prune_interval_seconds", 300.0) or 300.0),
-        )
-        self._next_docker_storage_cleanup = now + interval
-        threading.Thread(
-            target=self._run_docker_storage_cleanup,
-            name="docker-storage-cleaner",
-            daemon=True,
-        ).start()
-        return True
-
-    def _run_docker_storage_cleanup(self) -> None:
-        try:
-            if bool(getattr(self.config, "auto_prune_docker_build_cache", False)):
-                try:
-                    summary = prune_docker_build_cache(
-                        keep_storage_bytes=int(getattr(self.config, "docker_build_cache_keep_bytes", 0) or 0)
-                    )
-                    if summary:
-                        LOGGER.info("pruned unused Docker builder cache: %s", summary)
-                except Exception as exc:
-                    LOGGER.warning("Docker builder cache cleanup failed: %s", str(exc)[-1000:])
-            if bool(getattr(self.config, "auto_prune_unused_docker_images", False)):
-                try:
-                    container_summary = prune_stopped_scan_containers()
-                    if container_summary:
-                        LOGGER.info("pruned stopped scan containers: %s", container_summary)
-                except Exception as exc:
-                    LOGGER.warning("Stopped scan container cleanup failed: %s", str(exc)[-1000:])
-                try:
-                    image_summary = prune_unused_docker_images()
-                    if image_summary:
-                        LOGGER.info("pruned unused Docker images: %s", image_summary)
-                except Exception as exc:
-                    LOGGER.warning("Unused Docker image cleanup failed: %s", str(exc)[-1000:])
-        finally:
-            self._docker_storage_cleanup_lock.release()
-
-    def _schedule_post_task_cleanup(self) -> None:
-        try:
-            self._schedule_artifact_cleanup(completion_triggered=True)
-            self._schedule_docker_storage_cleanup()
-        except Exception:
-            LOGGER.exception("could not schedule post-task storage cleanup")
 
     def _worker_can_pick_job(self, worker_id: int) -> bool:
         return worker_id <= self.runtime_worker_count()
@@ -714,17 +608,14 @@ class Worker:
         if not scan:
             return False
 
-        task_finished = False
         try:
             try:
                 did_work = self.process_scan(scan, worker_id=worker_id)
-                task_finished = did_work
             except (RateLimitExhausted, PostProcessRateLimited) as exc:
-                task_finished = True
                 provider = getattr(exc, "provider", None)
                 account_home = getattr(exc, "account_home", None)
                 limit_kind = getattr(exc, "limit_kind", "rate_limited")
-                if limit_kind not in CAPACITY_RATE_LIMIT_FAILURES:
+                if limit_kind != "provider_throttled":
                     mark_provider_account_rate_limited(provider, account_home)
                     if account_home and not provider_accounts_all_rate_limited(
                         provider, data_dir=getattr(self.config, "data_dir", None)
@@ -738,8 +629,7 @@ class Worker:
                         return True
                 retry_after_seconds = max(exc.retry_after_seconds, RATE_LIMIT_RESUME_DELAY_SECONDS)
                 autoscale_workers = (
-                    limit_kind in CAPACITY_RATE_LIMIT_FAILURES
-                    and self.runtime_autoscale_scan_workers_on_provider_capacity()
+                    limit_kind == "provider_throttled" and self.runtime_autoscale_scan_workers_on_provider_capacity()
                 )
                 with self.db.connect() as conn:
                     deferred = self.db.defer_scan_after_rate_limit(
@@ -755,37 +645,37 @@ class Worker:
                 if deferred:
                     if autoscale_workers:
                         LOGGER.warning(
-                            "scan %s hit a provider or subagent capacity limit; applied its scan worker cap and "
-                            "scheduled a retry",
+                            "scan %s hit provider capacity; applied its scan worker cap and scheduled a retry after %.3fs",
                             scan["id"],
+                            retry_after_seconds,
                         )
                     else:
-                        LOGGER.warning("scan %s is rate limited and scheduled for automatic retry", scan["id"])
+                        LOGGER.warning(
+                            "scan %s is rate limited and scheduled for automatic retry after %.3fs",
+                            scan["id"],
+                            retry_after_seconds,
+                        )
                 return True
             except Exception as exc:
-                task_finished = True
                 LOGGER.exception("scan %s failed", scan["id"])
                 with self.db.connect() as conn:
-                    self.db.set_scan_status_if_active(conn, int(scan["id"]), "failed", error=str(exc))
+                    self.db.set_scan_status_if_active(
+                        conn,
+                        int(scan["id"]),
+                        "failed",
+                        error=_unexpected_scan_error_message(exc),
+                    )
                     conn.commit()
                 return True
-            self._record_scan_claim_result(int(scan["id"]), did_work=did_work)
             if did_work:
                 LOGGER.info("worker %s made progress on scan %s (%s)", worker_id, scan["id"], scan["repo_full"])
             return did_work
         finally:
             self._release_scan(int(scan["id"]))
-            if task_finished:
-                self._schedule_post_task_cleanup()
 
     def _new_scan_container_allowed(self, scan_id: int) -> bool:
-        required_bytes = self.runtime_min_free_storage_bytes()
-        if self.runtime_ignore_low_storage() or required_bytes <= 0:
-            warning_clearer = getattr(self.db, "clear_scan_storage_warning", None)
-            if callable(warning_clearer):
-                with self.db.connect() as conn:
-                    warning_clearer(conn, scan_id)
-                    conn.commit()
+        required_bytes = int(getattr(self.config, "min_free_storage_bytes", 0) or 0)
+        if required_bytes <= 0:
             return True
 
         free_bytes: int | None = None
@@ -796,8 +686,6 @@ class Worker:
             check_error = str(exc)
 
         blocked = check_error is not None or free_bytes is None or free_bytes < required_bytes
-        if blocked:
-            self._schedule_docker_storage_cleanup()
         warning_changed = False
         warning_setter = getattr(self.db, "set_scan_storage_warning", None)
         warning_clearer = getattr(self.db, "clear_scan_storage_warning", None)
@@ -831,17 +719,8 @@ class Worker:
             self._scan_scheduler_lock = threading.Lock()
             self._scan_allocations = {}
             self._scan_last_dispatch = {}
-            self._scan_no_work_until = {}
             self._scan_dispatch_sequence = 0
         return self._scan_scheduler_lock
-
-    def _record_scan_claim_result(self, scan_id: int, *, did_work: bool) -> None:
-        with self._scheduler_state():
-            if did_work:
-                self._scan_no_work_until.pop(scan_id, None)
-                return
-            retry_seconds = max(0.01, float(getattr(self.config, "poll_seconds", 5.0) or 5.0))
-            self._scan_no_work_until[scan_id] = time.monotonic() + retry_seconds
 
     def _reserve_scan(self) -> dict[str, Any] | None:
         with self._scheduler_state():
@@ -865,15 +744,10 @@ class Worker:
             self._scan_last_dispatch = {
                 scan_id: sequence for scan_id, sequence in self._scan_last_dispatch.items() if scan_id in active_ids
             }
-            self._scan_no_work_until = {
-                scan_id: retry_at for scan_id, retry_at in self._scan_no_work_until.items() if scan_id in active_ids
-            }
 
-            worker_limit = max(1, self.runtime_worker_count())
-            if sum(self._scan_allocations.values()) >= worker_limit:
-                return None
+            fair_cap = max(1, math.ceil(self.runtime_worker_count() / len(scans)))
             configured_cap = self.runtime_max_workers_per_scan()
-            default_scan_cap = min(worker_limit, configured_cap) if configured_cap > 0 else worker_limit
+            default_scan_cap = min(fair_cap, configured_cap) if configured_cap > 0 else fair_cap
 
             def scan_cap(scan: dict[str, Any]) -> int:
                 reasoning = scan.get("reasoning")
@@ -882,14 +756,19 @@ class Worker:
                     return min(default_scan_cap, adaptive_cap)
                 return default_scan_cap
 
-            now = time.monotonic()
-            eligible = [
-                scan
-                for scan in scans
-                if self._scan_allocations.get(int(scan["id"]), 0) < scan_cap(scan)
-                and self._scan_no_work_until.get(int(scan["id"]), 0.0) <= now
-            ]
+            eligible = [scan for scan in scans if self._scan_allocations.get(int(scan["id"]), 0) < scan_cap(scan)]
             if not eligible:
+                LOGGER.info(
+                    "scan scheduler waiting: claimed=%s allocations=%s",
+                    [int(scan["id"]) for scan in scans],
+                    {
+                        int(scan["id"]): {
+                            "allocated": self._scan_allocations.get(int(scan["id"]), 0),
+                            "cap": scan_cap(scan),
+                        }
+                        for scan in scans
+                    },
+                )
                 return None
             selected = min(
                 eligible,
@@ -905,6 +784,13 @@ class Worker:
             self._scan_dispatch_sequence += 1
             self._scan_last_dispatch[scan_id] = self._scan_dispatch_sequence
             selected["_reserved_worker_cap"] = scan_cap(selected)
+            LOGGER.info(
+                "scan scheduler reserved scan=%s allocated=%s cap=%s claimed=%s",
+                scan_id,
+                self._scan_allocations[scan_id],
+                selected["_reserved_worker_cap"],
+                [int(scan["id"]) for scan in scans],
+            )
             return selected
 
     def _release_scan(self, scan_id: int) -> None:
@@ -914,6 +800,11 @@ class Worker:
                 self._scan_allocations.pop(scan_id, None)
             else:
                 self._scan_allocations[scan_id] = count - 1
+            LOGGER.info(
+                "scan scheduler released scan=%s remaining_allocations=%s",
+                scan_id,
+                self._scan_allocations.get(scan_id, 0),
+            )
 
     def _scan_worker_cap_at_failure(self, scan: dict[str, Any]) -> int | None:
         scan_id = int(scan["id"])
@@ -943,6 +834,11 @@ class Worker:
                 )
                 if validation_errors is not None:
                     error = "Generated draft did not pass validation."
+                    LOGGER.warning(
+                        "generation %s validation errors=%s",
+                        generation_id,
+                        json.dumps(validation_errors, ensure_ascii=False, sort_keys=True),
+                    )
                 elif isinstance(exc, HarnessError):
                     error = generation_harness_failure_message(exc, generation_id)
                 else:
@@ -954,7 +850,7 @@ class Worker:
                 model = _sanitize_generation_error_text(generation.get("model"), 200)
                 LOGGER.warning(
                     "generation %s failed failure_code=%s exception_type=%s kind=%s provider=%s "
-                    "harness=%s model=%s retryable=%s attempts=%s exit_code=%s duration_seconds=%.3f",
+                    "harness=%s model=%s retryable=%s attempts=%s exit_code=%s duration_seconds=%.3f stack=%s",
                     generation_id,
                     failure_code,
                     type(exc).__name__,
@@ -966,6 +862,7 @@ class Worker:
                     attempts,
                     exit_code,
                     time.monotonic() - generation_started,
+                    "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
                 )
                 self._fail_generation_best_effort(
                     generation_id,
@@ -992,7 +889,6 @@ class Worker:
                 LOGGER.warning("generation %s was no longer running when completion was recorded", generation_id)
         finally:
             self._stop_generation_heartbeat(heartbeat)
-            self._schedule_post_task_cleanup()
 
     def _start_generation_heartbeat(self, generation_id: int) -> tuple[threading.Event, threading.Thread] | None:
         if not callable(getattr(self.db, "heartbeat_generation", None)):
@@ -1083,11 +979,30 @@ class Worker:
                         claimed=claimed,
                         step_results=step_results,
                     )
+                    LOGGER.info(
+                        "scan %s scheduler status=%s completed_metadata=%s claimed_metadata=%s step_results=%s pending_jobs=%s",
+                        scan_id,
+                        current["status"],
+                        len(completed),
+                        len(claimed),
+                        len(step_results),
+                        len(jobs),
+                    )
                     conn.commit()
 
             needs_new_container = current["status"] == "post_processing" or bool(jobs)
             if needs_new_container and not self._new_scan_container_allowed(scan_id):
                 return did_work
+
+            harness = harness_for(
+                normalize_harness_name(current["harness"]),
+                timeout_seconds=self.runtime_harness_timeout_seconds(),
+                model_provider=scan_model_provider(current),
+                codex_model_provider=getattr(self.config, "codex_model_provider", None),
+                codex_cli_gate=(
+                    self._ensure_codex_cli_gate() if normalize_harness_name(current["harness"]) == "codex" else None
+                ),
+            )
 
             if current["status"] == PREWARMING_SCAN_STATUS:
                 if self._ensure_scan_cache_prewarmed(current, restore_status="running"):
@@ -1105,7 +1020,6 @@ class Worker:
                     continue
                 if not self._worker_can_pick_job(worker_id):
                     return did_work
-                harness = self._harness_for_model_selection(model_selection_for_depth(current))
                 did_post_work = self.post_processor.process_once(current, harness)
                 if did_post_work:
                     return True
@@ -1127,20 +1041,18 @@ class Worker:
             for job in jobs:
                 if not self._worker_can_pick_job(worker_id):
                     return did_work
-                model_selection = model_selection_for_depth(current, getattr(job, "depth", 0))
                 did_claim = self.execute_job(
                     scan=current,
                     workflow_id=workflow.id,
                     job=job,
-                    harness=self._harness_for_model_selection(model_selection),
-                    model_selection=model_selection,
+                    harness=harness,
                 )
                 if did_claim:
                     return True
             if not did_claim:
                 return did_work
 
-    def execute_job(self, *, scan, workflow_id, job, harness, model_selection: ModelSelection | None = None):
+    def execute_job(self, *, scan, workflow_id, job, harness):
         step = job.step
         state = job.state
         metadata_id = None
@@ -1149,10 +1061,9 @@ class Worker:
         prepared = None
         try:
             schema = output_schema(step.output_format, step.multi_output)
-            selection = model_selection or model_selection_for_depth(scan, step.depth)
-            thinking_effort = selection.thinking_effort
-            harness_name = normalize_harness_name(selection.harness)
-            model_provider = scan_model_provider({"model_provider": selection.model_provider})
+            thinking_effort = scan.get("thinking_effort") or "medium"
+            harness_name = normalize_harness_name(scan["harness"])
+            model_provider = scan_model_provider(scan)
             with self.workspace_setup_slots:
                 started = now_utc()
                 with self.db.connect() as conn:
@@ -1172,7 +1083,7 @@ class Worker:
                         prompt_filled="",
                         checked_out_commit=None,
                         run_started_at=started,
-                        model=selection.model,
+                        model=scan["model"],
                         harness=harness_name,
                         thinking_effort=thinking_effort,
                         model_provider=model_provider,
@@ -1208,7 +1119,6 @@ class Worker:
                         agent_skills=agent_skills,
                         harness_name=harness_name,
                         model_provider=model_provider,
-                        use_snapshot_image=image_workspace_enabled(data_dir=getattr(self.config, "data_dir", None)),
                     )
                     checked_out_commit = prepared.checked_out_commit
                     context = {**state.context, **workspace_context(prepared)}
@@ -1239,8 +1149,8 @@ class Worker:
                                 prompt_filled=prompt_filled,
                                 phase="interrupted",
                                 codex_source_home=getattr(prepared.workspace, "codex_source_home", None),
-                                codex_account_id=getattr(prepared.workspace, "provider_account_id", None),
-                                codex_account_email=getattr(prepared.workspace, "provider_account_email", None),
+                                codex_account_id=getattr(prepared.workspace, "codex_account_id", None),
+                                codex_account_email=getattr(prepared.workspace, "codex_account_email", None),
                             )
                             conn.commit()
                             return True
@@ -1255,8 +1165,8 @@ class Worker:
                             prompt_filled=prompt_filled,
                             phase="running_harness",
                             codex_source_home=getattr(prepared.workspace, "codex_source_home", None),
-                            codex_account_id=getattr(prepared.workspace, "provider_account_id", None),
-                            codex_account_email=getattr(prepared.workspace, "provider_account_email", None),
+                            codex_account_id=getattr(prepared.workspace, "codex_account_id", None),
+                            codex_account_email=getattr(prepared.workspace, "codex_account_email", None),
                         )
                         conn.commit()
                 except ClaudeCredentialRateLimited as exc:
@@ -1297,12 +1207,15 @@ class Worker:
             last_exception: Exception | None = None
             attempt_errors: list[str] = []
             last_attempt = 1
+            base_prompt_filled = prompt_filled
+            validation_feedback = ""
             for attempt in range(1, max_attempts + 1):
                 last_attempt = attempt
                 started = now_utc()
                 usage = None
                 codex_session_id = None
                 result = None
+                prompt_for_attempt = base_prompt_filled + validation_feedback
                 try:
                     if not self._new_scan_container_allowed(int(scan["id"])):
                         with self.db.connect() as conn:
@@ -1317,25 +1230,31 @@ class Worker:
                             )
                             conn.commit()
                         return True
-                    with provider_account_lease(
-                        getattr(prepared.workspace, "provider_account_provider", None),
-                        getattr(prepared.workspace, "provider_account_home", None),
-                        data_dir=getattr(self.config, "data_dir", None),
-                    ):
-                        harness_arguments = {
-                            "prompt": prompt_filled,
-                            "schema": schema,
-                            "repo_dir": prepared.repo_dir,
-                            "model": selection.model,
-                            "thinking_effort": thinking_effort,
-                            "env": prepared.workspace.env,
-                        }
-                        runner_image = getattr(prepared, "runner_image", None)
-                        if runner_image:
-                            harness_arguments["runner_image"] = runner_image
-                        result = harness.run(
-                            **harness_arguments,
-                        )
+                    LOGGER.info(
+                        "scan %s metadata %s starting harness attempt %s/%s: harness=%s provider=%s model=%s timeout=%ss",
+                        scan["id"],
+                        metadata_id,
+                        attempt,
+                        max_attempts,
+                        harness_name,
+                        model_provider,
+                        scan["model"],
+                        self.runtime_harness_timeout_seconds(),
+                    )
+                    result = harness.run(
+                        prompt=prompt_for_attempt,
+                        schema=schema,
+                        repo_dir=prepared.repo_dir,
+                        model=scan["model"],
+                        thinking_effort=thinking_effort,
+                        env=prepared.workspace.env,
+                    )
+                    LOGGER.info(
+                        "scan %s metadata %s harness attempt %s returned; parsing and validating output",
+                        scan["id"],
+                        metadata_id,
+                        attempt,
+                    )
                     mark_provider_account_available(
                         getattr(prepared.workspace, "provider_account_provider", None),
                         getattr(prepared.workspace, "provider_account_home", None),
@@ -1345,6 +1264,15 @@ class Worker:
                     payload_stub = bool(result.payload.get("stub"))
                     stub_explanation = (result.payload.get("stub_explanation") or "").strip() or None
                     rows = validate_payload(result.payload, schema, step.multi_output)
+                    LOGGER.info(
+                        "scan %s metadata %s extraction result raw_results=%s validated_rows=%s stub=%s terminal=%s",
+                        scan["id"],
+                        metadata_id,
+                        len(result.payload.get("results") or []) if isinstance(result.payload.get("results"), list) else 0,
+                        len(rows),
+                        payload_stub,
+                        step.is_last_step,
+                    )
                     run_time_ms = int((now_utc() - started).total_seconds() * 1000)
                     with self.db.connect() as conn:
                         self.db.update_metadata(
@@ -1357,6 +1285,7 @@ class Worker:
                             codex_session_id=codex_session_id,
                             stub=payload_stub,
                             stub_explanation=stub_explanation,
+                            prompt_filled=prompt_for_attempt,
                             phase="writing_db",
                         )
                         conn.commit()
@@ -1371,6 +1300,7 @@ class Worker:
                             codex_session_id=codex_session_id,
                             stub=payload_stub,
                             stub_explanation=stub_explanation,
+                            prompt_filled=prompt_for_attempt,
                             phase="completed",
                         )
                         if step.is_last_step:
@@ -1378,6 +1308,13 @@ class Worker:
                                 "SELECT pg_advisory_xact_lock(hashtext(%s))", (f"vulnerability-rank:{int(scan['id'])}",)
                             )
                             rank = self.db.next_vulnerability_rank(conn, int(scan["id"]))
+                            LOGGER.info(
+                                "scan %s metadata %s inserting vulnerabilities count=%s starting_rank=%s",
+                                scan["id"],
+                                metadata_id,
+                                len(rows),
+                                rank,
+                            )
                             for offset, row in enumerate(rows):
                                 self.db.insert_vulnerability(
                                     conn,
@@ -1391,6 +1328,14 @@ class Worker:
                                     json_answer=row,
                                 )
                         else:
+                            LOGGER.info(
+                                "scan %s metadata %s inserting step results count=%s step=%s depth=%s",
+                                scan["id"],
+                                metadata_id,
+                                len(rows),
+                                step.id,
+                                step.depth,
+                            )
                             for row in rows:
                                 self.db.insert_step_result(
                                     conn,
@@ -1404,16 +1349,47 @@ class Worker:
                                     json_answer=row,
                                 )
                         conn.commit()
+                    if result.output is not None and result.output.files:
+                        artifact_dir = record_model_output_artifact(
+                            self.config.data_dir,
+                            scan_id=int(scan["id"]),
+                            workflow_id=workflow_id,
+                            step_id=step.id,
+                            metadata_id=metadata_id,
+                            attempt=attempt,
+                            output=result.output,
+                            kind="step",
+                        )
+                        if artifact_dir:
+                            LOGGER.info(
+                                "recorded model output artifacts for scan %s metadata %s: %s",
+                                scan["id"],
+                                metadata_id,
+                                artifact_dir,
+                            )
                     return True
                 except (HarnessError, OutputValidationError, ValueError) as exc:
                     last_exception = exc
-                    if isinstance(exc, HarnessError):
-                        last_error = f"{exc.public_message} Diagnostic: {exc.code}."
-                    else:
-                        last_error = str(exc)
+                    last_error, error_category = _classify_step_exception(exc)
+                    if isinstance(exc, OutputValidationError):
+                        validation_feedback = step_validation_feedback(exc.errors, multi_output=step.multi_output)
                     attempt_error = f"attempt {attempt}: {last_error}"
                     attempt_errors.append(attempt_error)
                     attempt_run_time_ms = int((now_utc() - started).total_seconds() * 1000)
+                    LOGGER.warning(
+                        "scan %s metadata %s harness attempt %s failed after %sms provider=%s harness=%s "
+                        "error_type=%s error_category=%s error=%s",
+                        scan["id"],
+                        metadata_id,
+                        attempt,
+                        attempt_run_time_ms,
+                        model_provider,
+                        harness_name,
+                        type(exc).__name__,
+                        error_category,
+                        last_error,
+                        exc_info=True,
+                    )
                     with self.db.connect() as conn:
                         failed_metadata_id = self.db.insert_metadata(
                             conn,
@@ -1426,23 +1402,23 @@ class Worker:
                             status="failed",
                             error=attempt_error,
                             prompt_template=step.content,
-                            prompt_filled=prompt_filled,
+                            prompt_filled=prompt_for_attempt,
                             checked_out_commit=checked_out_commit,
                             run_started_at=started,
                             run_time_ms=attempt_run_time_ms,
                             raw_token_usage=usage,
                             codex_session_id=codex_session_id,
-                            model=selection.model,
+                            model=scan["model"],
                             harness=harness_name,
                             thinking_effort=thinking_effort,
                             model_provider=model_provider,
                             codex_source_home=getattr(prepared.workspace, "codex_source_home", None)
                             if prepared
                             else None,
-                            codex_account_id=getattr(prepared.workspace, "provider_account_id", None)
+                            codex_account_id=getattr(prepared.workspace, "codex_account_id", None)
                             if prepared
                             else None,
-                            codex_account_email=getattr(prepared.workspace, "provider_account_email", None)
+                            codex_account_email=getattr(prepared.workspace, "codex_account_email", None)
                             if prepared
                             else None,
                             phase="failed",
@@ -1471,6 +1447,7 @@ class Worker:
                                     run_time_ms=attempt_run_time_ms,
                                     raw_token_usage=usage,
                                     codex_session_id=codex_session_id,
+                                    prompt_filled=prompt_for_attempt,
                                     phase="failed",
                                 )
                                 conn.commit()
@@ -1478,7 +1455,7 @@ class Worker:
                     if isinstance(exc, HarnessError) and not exc.retryable:
                         break
                     if isinstance(exc, HarnessError) and exc.code in RETRYABLE_RATE_LIMIT_FAILURES:
-                        if exc.code not in CAPACITY_RATE_LIMIT_FAILURES:
+                        if exc.code != "provider_throttled":
                             mark_provider_account_rate_limited(
                                 getattr(prepared.workspace, "provider_account_provider", None),
                                 getattr(prepared.workspace, "provider_account_home", None),

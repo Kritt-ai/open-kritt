@@ -25,36 +25,10 @@ const PRESENTATION = {
     unit: 'workers',
     description: 'Hard cap for one scan. Set 0 to divide worker slots automatically and fairly across active scans.',
   },
-  workersPerAccount: {
-    label: 'Workers per account',
-    unit: 'workers',
-    description:
-      'Maximum concurrent root model calls assigned to the same provider account across scans. Codex subagents inside each session use their separate cap.',
-  },
   autoscaleScanWorkersOnProviderCapacity: {
-    label: 'Autoscale scan workers on capacity errors',
+    label: 'Autoscale scan workers on provider capacity errors',
     description:
-      'When a provider reports temporary server-capacity throttling or Codex reaches its separate subagent limit, lower only that scan’s future worker cap by one and retry. Account quota errors are not autoscaled.',
-    enabledDescription: 'Capacity throttles reduce the affected scan by one worker.',
-    disabledDescription: 'Worker caps remain fixed.',
-  },
-  codexMaxSubagentsPerSession: {
-    label: 'Codex subagents per session',
-    unit: 'subagents',
-    description: 'Hard cap for concurrently running child agents inside each Codex scan session.',
-  },
-  minFreeStorageGb: {
-    label: 'Minimum free storage',
-    unit: 'GiB',
-    description:
-      'Pause new scan containers when free disk space falls below this level. Lowering it can keep scans moving, but increases the risk of filling the disk completely.',
-  },
-  ignoreLowStorage: {
-    label: 'Ignore low-storage safeguard',
-    description:
-      'Allow new scan containers to start regardless of available disk space. Use only when you accept the risk of exhausting the host disk.',
-    enabledDescription: 'The minimum free-storage threshold is not enforced.',
-    disabledDescription: 'New containers pause below the configured threshold.',
+      'When a provider reports temporary server-capacity throttling, lower only that scan’s future worker cap by one and retry. Account quota errors are not autoscaled.',
   },
   workspaceSetupConcurrency: {
     label: 'Workspace setup concurrency',
@@ -136,13 +110,6 @@ export default function Settings() {
       )
     )
       return;
-    if (
-      patch.ignoreLowStorage === true &&
-      !window.confirm(
-        'Ignore the low-storage safeguard? New scan containers may fill the host disk, causing scans or other services to fail.'
-      )
-    )
-      return;
 
     setSaving(true);
     setSaveError(null);
@@ -180,10 +147,15 @@ export default function Settings() {
       {error && <ErrorState error={error} onRetry={reload} />}
       {saveError && <SettingsError error={saveError} />}
       {notice && <div className="settings-notice">{notice}</div>}
+      {data?.warnings?.map((warning) => (
+        <div className="settings-warning" key={`${warning.source}-${warning.code}`}>
+          {warning.message}
+        </div>
+      ))}
 
       {data && draft && (
         <>
-          {!data.persistence.projectEnvironment && (
+          {!data.persistence.projectEnvironment && !data?.warnings?.some((warning) => warning.source === 'project_environment') && (
             <div className="settings-warning">
               The project environment file is unavailable. Live values can be updated, but an engine recreation may
               restore deployment-provided values.
@@ -234,7 +206,6 @@ export default function Settings() {
                     value={draft[key]}
                     issue={issues[key]}
                     disabled={saving}
-                    ignored={key === 'minFreeStorageGb' && draft.ignoreLowStorage}
                     onChange={(value) => set(key, value)}
                   />
                 )
@@ -282,7 +253,9 @@ function BooleanRuntimeSetting({ name, presentation, setting, value, issue, disa
       <label className="settings-toggle-row" htmlFor={`setting-${name}`}>
         <span>
           <strong>{value ? 'Enabled' : 'Disabled'}</strong>
-          <small>{value ? presentation.enabledDescription : presentation.disabledDescription}</small>
+          <small>
+            {value ? 'Capacity throttles reduce the affected scan by one worker.' : 'Worker caps remain fixed.'}
+          </small>
         </span>
         <input
           id={`setting-${name}`}
@@ -300,15 +273,14 @@ function BooleanRuntimeSetting({ name, presentation, setting, value, issue, disa
       <div className="settings-card-meta">
         <span className="mono settings-env-key">{setting.envKey}</span>
         <span>{SOURCE_LABELS[setting.source] || setting.source}</span>
-        <span>Default {setting.defaultValue ? 'enabled' : 'disabled'}</span>
+        <span>Default enabled</span>
       </div>
     </article>
   );
 }
 
-function RuntimeSetting({ name, presentation, setting, value, issue, disabled, ignored, onChange }) {
-  const rawValue = `${value}`.trim();
-  const numericValue = rawValue && Number.isFinite(Number(rawValue)) ? Number(rawValue) : null;
+function RuntimeSetting({ name, presentation, setting, value, issue, disabled, onChange }) {
+  const numericValue = /^-?\d+$/.test(`${value}`.trim()) ? Number(value) : null;
   const aboveRecommendation = numericValue !== null && numericValue > setting.recommendedMax;
   const paused = name === 'workerCount' && numericValue === 0;
   return (
@@ -328,10 +300,10 @@ function RuntimeSetting({ name, presentation, setting, value, issue, disabled, i
         id={`setting-${name}`}
         className="mono settings-number-input"
         type="number"
-        inputMode={setting.type === 'number' ? 'decimal' : 'numeric'}
+        inputMode="numeric"
         min={setting.min}
         max={setting.max}
-        step={setting.step || 1}
+        step="1"
         value={value}
         disabled={disabled}
         aria-invalid={Boolean(issue) || !setting.valid}
@@ -341,13 +313,11 @@ function RuntimeSetting({ name, presentation, setting, value, issue, disabled, i
       {!setting.valid && !issue && (
         <div className="settings-field-error">The stored value was invalid; the safe default is shown.</div>
       )}
-      {(aboveRecommendation || paused || ignored) && !issue && (
+      {(aboveRecommendation || paused) && !issue && (
         <div className="settings-field-warning">
-          {ignored
-            ? 'This threshold is preserved but not enforced while the low-storage safeguard is ignored.'
-            : paused
-              ? 'New engine work will remain queued until worker slots are raised above zero.'
-              : `Above the conservative recommendation of ${setting.recommendedMax}; verify provider and host capacity.`}
+          {paused
+            ? 'New engine work will remain queued until worker slots are raised above zero.'
+            : `Above the conservative recommendation of ${setting.recommendedMax}; verify provider and host capacity.`}
         </div>
       )}
       <div className="settings-card-meta">

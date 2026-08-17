@@ -18,7 +18,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from .codex_auth import isolated_codex_home
-from .provider_credentials import provider_environment
+from .provider_credentials import codex_runtime_enabled, provider_environment
 
 LOGGER = logging.getLogger("open_kritt_engine")
 ANTHROPIC_MODELS_URL = "https://api.anthropic.com/v1/models"
@@ -41,7 +41,6 @@ MODEL_NOTES = {
 }
 CLAUDE_MODEL_THINKING_EFFORTS = {
     "claude-fable-5": ("low", "medium", "high", "xhigh", "max"),
-    "claude-opus-5": ("low", "medium", "high", "xhigh", "max"),
     "claude-opus-4-8": ("low", "medium", "high", "xhigh", "max"),
     "claude-opus-4-7": ("low", "medium", "high", "xhigh", "max"),
     "claude-opus-4-6": ("low", "medium", "high", "max"),
@@ -283,8 +282,14 @@ def _fetch_codex_models(env: Mapping[str, str], timeout_seconds: float) -> tuple
 def _fetch_codex_models_from_env(env: Mapping[str, str], timeout_seconds: float) -> tuple[list[dict[str, Any]], str]:
     deadline = time.monotonic() + max(1.0, timeout_seconds)
     try:
+        from .llm.runtime.cli import CodexRuntime
+
+        executable = CodexRuntime().detect_executable(dict(env)) or "codex"
+    except Exception:
+        executable = "codex"
+    try:
         proc = subprocess.Popen(
-            ["codex", "app-server"],
+            [executable, "app-server"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -474,7 +479,7 @@ class ModelCatalogRefresher:
             else provider_environment()
         )
         outcomes: dict[str, bool] = {}
-        if codex_is_configured(env):
+        if codex_runtime_enabled(env) and codex_is_configured(env):
             fetch_codex = self.fetch_codex or (
                 lambda: fetch_codex_models(env, self.timeout_seconds, cli_gate=self.codex_cli_gate)
             )

@@ -39,14 +39,27 @@ JOB_COMMON_ENV_KEYS = frozenset(
     }
 )
 JOB_PROVIDER_ENV_KEYS = {
-    "codex": frozenset({"CODEX_API_KEY", "OPENAI_API_KEY"}),
-    "claude": frozenset({"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"}),
+    "codex": frozenset({"CODEX_API_KEY", "OPENAI_API_KEY", "OPEN_KRITT_CODEX_BIN", "CODEX_BIN", "CODEX_CLI_PATH"}),
+    "claude": frozenset(
+        {
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_BASE_URL",
+            "OPEN_KRITT_CLAUDE_BIN",
+            "CLAUDE_BIN",
+            "CLAUDE_CLI_PATH",
+        }
+    ),
     "openrouter": frozenset({"OPENROUTER_API_KEY"}),
 }
 JOB_HARNESS_ENV_KEYS = {
     "cursor": frozenset({"CURSOR_API_KEY", "CURSOR_AUTH_TOKEN", "CURSOR_AGENT_BIN"}),
     "openai-compatible": frozenset(),
 }
+
+
+def _credential_path(path: str | None = None) -> Path:
+    return Path(path or os.getenv("OPEN_KRITT_PROVIDER_CREDENTIALS_PATH", DEFAULT_PROVIDER_CREDENTIALS_PATH))
 
 
 def _normalize_custom_provider(value: object) -> dict[str, object] | None:
@@ -59,15 +72,11 @@ def _normalize_custom_provider(value: object) -> dict[str, object] | None:
     model = str(value.get("model") or "").strip()
     organization = str(value.get("organization") or "").strip()
     raw_headers = value.get("extraHeaders") or value.get("extra_headers")
-    headers = (
-        {
-            str(name).strip(): str(header_value).strip()
-            for name, header_value in raw_headers.items()
-            if str(name).strip() and str(header_value).strip()
-        }
-        if isinstance(raw_headers, Mapping)
-        else {}
-    )
+    headers = {
+        str(name).strip(): str(header_value).strip()
+        for name, header_value in raw_headers.items()
+        if isinstance(raw_headers, Mapping) and str(name).strip() and str(header_value).strip()
+    } if isinstance(raw_headers, Mapping) else {}
     if not (provider_id and label and base_url and api_key and model):
         return None
     return {
@@ -82,24 +91,24 @@ def _normalize_custom_provider(value: object) -> dict[str, object] | None:
 
 
 def read_managed_provider_state(path: str | None = None) -> tuple[dict[str, str], set[str], dict[str, dict[str, object]]]:
-    credential_path = Path(path or os.getenv("OPEN_KRITT_PROVIDER_CREDENTIALS_PATH", DEFAULT_PROVIDER_CREDENTIALS_PATH))
+    credential_path = _credential_path(path)
     try:
         if credential_path.stat().st_size > MAX_CREDENTIAL_FILE_BYTES:
             return {}, set(), {}
         payload = json.loads(credential_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}, set(), {}
-    values = payload.get("credentials") if isinstance(payload, dict) else None
+    values = payload.get("credentials") if isinstance(payload, Mapping) else None
     credentials = (
         {
             provider: value.strip()
             for provider, value in values.items()
             if provider in PROVIDER_ENV_KEYS and isinstance(value, str) and value.strip()
         }
-        if isinstance(values, dict)
+        if isinstance(values, Mapping)
         else {}
     )
-    raw_disabled = payload.get("disabledEnvironmentProviders")
+    raw_disabled = payload.get("disabledEnvironmentProviders") if isinstance(payload, Mapping) else None
     disabled = (
         {provider for provider in raw_disabled if isinstance(provider, str) and provider in PROVIDER_ENV_KEYS}
         if isinstance(raw_disabled, list)
@@ -127,7 +136,9 @@ def read_custom_provider(path: str | None, provider: str | None) -> dict[str, ob
     return custom.get(str(provider).strip().lower())
 
 
-def bootstrap_managed_provider_credentials(source: Mapping[str, str], path: str) -> tuple[dict[str, str], set[str]]:
+def bootstrap_managed_provider_credentials(
+    source: Mapping[str, str], path: str
+) -> tuple[dict[str, str], set[str]]:
     with _CREDENTIAL_WRITE_LOCK:
         credentials, disabled, custom = read_managed_provider_state(path)
         changed = False
@@ -179,6 +190,63 @@ def provider_environment(source: Mapping[str, str] | None = None) -> dict[str, s
     return env
 
 
+def _truthy_env_flag(value: object) -> bool | None:
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return None
+
+
+def _codex_auth_configured(env: Mapping[str, str]) -> bool:
+    for key in ("ENGINE_CODEX_HOME", "CODEX_HOME", "OPEN_KRITT_CODEX_INITIAL_HOME"):
+        raw = str(env.get(key) or "").strip()
+        if not raw:
+            continue
+        home = raw.split(",", 1)[0].split(":", 1)[0].strip()
+        if not home:
+            continue
+        auth_path = Path(home) / "auth.json"
+        try:
+            payload = json.loads(auth_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict) and payload:
+            return True
+    return False
+
+
+def codex_runtime_enabled(source: Mapping[str, str] | None = None) -> bool:
+    env = dict(os.environ if source is None else source)
+    explicit = _truthy_env_flag(env.get("OPEN_KRITT_ENABLE_CODEX"))
+    if explicit is not None:
+        return explicit
+    if _truthy_env_flag(env.get("OPEN_KRITT_CODEX_LOGIN_CONFIGURED")):
+        return True
+    if _truthy_env_flag(env.get("CODEX_LOGIN_CONFIGURED")):
+        return True
+    if str(env.get("CODEX_API_KEY") or "").strip():
+        return True
+    if str(env.get("OPENAI_API_KEY") or "").strip():
+        return True
+    if _truthy_env_flag(env.get("OPEN_KRITT_CODEX_API_KEY_CONFIGURED")):
+        return True
+    if _truthy_env_flag(env.get("OPEN_KRITT_OPENAI_API_KEY_CONFIGURED")):
+        return True
+    return _codex_auth_configured(env)
+
+
+def is_custom_provider(provider: str | None, source: Mapping[str, str] | None = None) -> bool:
+    env = dict(os.environ if source is None else source)
+    credentials_path = env.get("OPEN_KRITT_PROVIDER_CREDENTIALS_PATH") or DEFAULT_PROVIDER_CREDENTIALS_PATH
+    return read_custom_provider(credentials_path, provider) is not None
+
+
 def custom_provider_settings(provider: str | None, source: Mapping[str, str] | None = None) -> dict[str, object] | None:
     env = dict(os.environ if source is None else source)
     credentials_path = env.get("OPEN_KRITT_PROVIDER_CREDENTIALS_PATH") or DEFAULT_PROVIDER_CREDENTIALS_PATH
@@ -217,6 +285,7 @@ def job_environment(
         headers = custom_provider.get("extra_headers") or {}
         if headers:
             source_env[CUSTOM_PROVIDER_HEADERS_ENV] = json.dumps(headers, sort_keys=True)
+
     env = {key: value for key in allowed if isinstance((value := source_env.get(key)), str) and value}
     if provider == "codex" and not env.get("CODEX_API_KEY") and env.get("OPENAI_API_KEY"):
         env["CODEX_API_KEY"] = env["OPENAI_API_KEY"]

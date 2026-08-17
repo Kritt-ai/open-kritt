@@ -1,28 +1,26 @@
-export const MODEL_PROVIDER_IDS = ['codex', 'claude', 'openrouter'];
+export const BUILTIN_MODEL_PROVIDER_IDS = ['codex', 'claude', 'openrouter'];
 export const MODEL_CATALOG_STATUSES = ['ready', 'loading', 'unavailable'];
 const SAFE_MODEL_NOTE_URLS = new Set(['https://chatgpt.com/cyber']);
 
-const PROVIDER_LABELS = {
+const BUILTIN_PROVIDER_LABELS = {
   codex: 'Codex',
   claude: 'Claude',
   openrouter: 'OpenRouter',
 };
 
-const PROVIDER_HARNESSES = {
+const BUILTIN_PROVIDER_HARNESSES = {
   codex: ['codex'],
   claude: ['claude-code'],
-  // Claude Code has first-class OpenRouter support. Codex remains available
-  // for advanced installations with a matching Codex provider configuration.
   openrouter: ['claude-code', 'codex'],
 };
 
-const PROVIDER_DEFAULT_MODELS = {
+const BUILTIN_PROVIDER_DEFAULT_MODELS = {
   codex: 'gpt-5-codex',
   claude: 'claude-sonnet-5',
   openrouter: 'z-ai/glm-5.2',
 };
 
-const PROVIDER_THINKING_EFFORTS = {
+const BUILTIN_PROVIDER_THINKING_EFFORTS = {
   codex: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
   claude: ['low', 'medium', 'high', 'xhigh', 'max'],
   openrouter: ['default', 'low', 'medium', 'high', 'xhigh', 'max'],
@@ -73,9 +71,6 @@ function normalizedModel(model) {
   };
 }
 
-// The model catalog contains only configured providers. OpenRouter's catalog is
-// advisory: its text input keeps accepting exact IDs while the cached entries
-// provide searchable suggestions and per-model reasoning metadata.
 export function configuredModelCatalog(payload) {
   const providers = Array.isArray(payload?.providers) ? payload.providers : [];
   const catalog = {};
@@ -106,10 +101,10 @@ export function configuredModelCatalog(payload) {
           ? requestedDefault
           : listedDefault;
     const status = MODEL_CATALOG_STATUSES.includes(entry.status) ? entry.status : 'unavailable';
-    const label = normalizedString(entry.label) || PROVIDER_LABELS[provider] || titleCaseProvider(provider) || provider;
+    const label = normalizedString(entry.label) || BUILTIN_PROVIDER_LABELS[provider] || titleCaseProvider(provider) || provider;
     const harnesses = Array.isArray(entry.harnesses)
       ? [...new Set(entry.harnesses.map(normalizedString).filter(Boolean))]
-      : [...(PROVIDER_HARNESSES[provider] || [])];
+      : [...(BUILTIN_PROVIDER_HARNESSES[provider] || [])];
 
     catalog[provider] = { input, models, defaultModel, status, label, harnesses };
   }
@@ -127,7 +122,14 @@ export function modelsForModelProvider(catalog, provider) {
 
 export function providerLabel(provider, catalog) {
   const normalized = normalizedProviderId(provider);
-  return modelCatalogForProvider(catalog, normalized)?.label || PROVIDER_LABELS[normalized] || titleCaseProvider(normalized);
+  return modelCatalogForProvider(catalog, normalized)?.label || BUILTIN_PROVIDER_LABELS[normalized] || titleCaseProvider(normalized);
+}
+
+export function providerIds(providers = []) {
+  const configured = Array.isArray(providers)
+    ? providers.map((provider) => normalizedProviderId(provider)).filter(Boolean)
+    : [];
+  return [...BUILTIN_MODEL_PROVIDER_IDS, ...configured.filter((provider) => !BUILTIN_MODEL_PROVIDER_IDS.includes(provider))];
 }
 
 export function usesFreeTextModelInput(catalog, provider) {
@@ -158,8 +160,6 @@ function defaultCatalogModel(catalog, provider) {
   return modelCatalogForProvider(catalog, provider)?.defaultModel || '';
 }
 
-// A provider switch chooses the destination catalog default. OpenRouter keeps
-// an existing exact ID because its dynamically discovered catalog is advisory.
 export function modelForCatalogChange(model, previousProvider, nextProvider, catalog) {
   const previous = normalizedProviderId(previousProvider);
   const next = normalizedProviderId(nextProvider);
@@ -175,13 +175,17 @@ export function modelForCatalogChange(model, previousProvider, nextProvider, cat
   return defaultCatalogModel(catalog, next);
 }
 
+function fallbackThinkingEfforts(provider, catalog, harness) {
+  const normalized = normalizedProviderId(provider);
+  if (BUILTIN_PROVIDER_THINKING_EFFORTS[normalized]) return BUILTIN_PROVIDER_THINKING_EFFORTS[normalized];
+  const compatibleHarnesses = harnessesForModelProvider(normalized, catalog);
+  const selectedHarness = normalizedString(harness) || compatibleHarnesses[0] || '';
+  return selectedHarness === 'codex' ? HARNESS_THINKING_EFFORTS.codex : [];
+}
+
 export function thinkingEffortsForModel(catalog, provider, model, fallback, harness) {
-  const providerEfforts = PROVIDER_THINKING_EFFORTS[normalizedProviderId(provider)];
+  const fallbackEfforts = fallbackThinkingEfforts(provider, catalog, harness) || (Array.isArray(fallback) ? fallback : []);
   const selectedHarness = normalizedString(harness) || defaultHarnessForModelProvider(provider, catalog);
-  const fallbackEfforts =
-    providerEfforts ||
-    (selectedHarness === 'openai-compatible' ? HARNESS_THINKING_EFFORTS['openai-compatible'] : null) ||
-    (Array.isArray(fallback) ? fallback : []);
   const harnessEfforts = HARNESS_THINKING_EFFORTS[selectedHarness] || [];
   const selected = modelsForModelProvider(catalog, provider).find(
     (candidate) => candidate.id === normalizedString(model)
@@ -202,19 +206,16 @@ export function thinkingEffortForModelChange(currentEffort, availableEfforts) {
   return availableEfforts.includes('medium') ? 'medium' : availableEfforts[0];
 }
 
-// The API exposes only configured provider IDs. Keep the UI defensive so an
-// unexpected response cannot create an unsupported scan configuration.
 export function configuredModelProviders(payload) {
   const providers = Array.isArray(payload) ? payload : payload?.providers;
   if (!Array.isArray(providers)) return [];
-
   return [...new Set(providers.map((provider) => normalizedProviderId(provider)).filter(Boolean))];
 }
 
 export function harnessesForModelProvider(provider, catalog) {
   const normalized = normalizedProviderId(provider);
   const configured = modelCatalogForProvider(catalog, normalized)?.harnesses;
-  return configured?.length ? [...configured] : [...(PROVIDER_HARNESSES[normalized] || [])];
+  return configured?.length ? [...configured] : [...(BUILTIN_PROVIDER_HARNESSES[normalized] || [])];
 }
 
 export function defaultHarnessForModelProvider(provider, catalog) {
@@ -222,10 +223,9 @@ export function defaultHarnessForModelProvider(provider, catalog) {
 }
 
 export function defaultModelForModelProvider(provider, catalog) {
-  return modelCatalogForProvider(catalog, provider)?.defaultModel || PROVIDER_DEFAULT_MODELS[normalizedProviderId(provider)] || '';
+  return modelCatalogForProvider(catalog, provider)?.defaultModel || BUILTIN_PROVIDER_DEFAULT_MODELS[normalizedProviderId(provider)] || '';
 }
 
-// Retain an explicit model choice while moving provider-owned defaults together.
 export function modelForProviderChange(model, previousProvider, nextProvider, catalog) {
   const previousDefault = defaultModelForModelProvider(previousProvider, catalog);
   const nextDefault = defaultModelForModelProvider(nextProvider, catalog);

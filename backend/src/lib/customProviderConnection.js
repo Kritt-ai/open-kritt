@@ -18,7 +18,11 @@ async function testEndpoint(url, options) {
   try {
     const response = await fetch(url, { ...options, redirect: 'error', signal: AbortSignal.timeout(10_000) });
     const body = await response.text().catch(() => '');
-    return { ok: response.ok, status: response.status, body };
+    return {
+      ok: response.ok,
+      status: response.status,
+      body,
+    };
   } catch (error) {
     return {
       ok: false,
@@ -32,31 +36,32 @@ export async function testCustomProviderConnection(provider) {
   const headers = requestHeaders(provider);
   const baseUrl = withTrailingSlash(provider.baseUrl);
   const attempts = [
-  {
-    name: 'chat-completions',
-    url: new URL('chat/completions', baseUrl),
-    options: {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        model: provider.model,
-        messages: [
-          {
-            role: 'user',
-            content: 'ping',
-          },
-        ],
-        stream: false,
-        max_tokens: 1,
-      }),
+    {
+      name: 'responses',
+      url: new URL('responses', baseUrl),
+      options: {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          model: provider.model,
+          input: [{ role: 'user', content: [{ type: 'input_text', text: 'ping' }] }],
+          max_output_tokens: 1,
+        }),
+      },
     },
-  },
-];
+    {
+      name: 'models',
+      url: new URL('models', baseUrl),
+      options: { method: 'GET', headers: { Authorization: headers.Authorization, ...(provider.organization ? { 'OpenAI-Organization': provider.organization } : {}), ...(provider.extraHeaders || {}) } },
+    },
+  ];
 
   const failures = [];
   for (const attempt of attempts) {
     const result = await testEndpoint(attempt.url, attempt.options);
-    if (result.ok) return { ok: true, endpoint: attempt.name, status: result.status };
+    if (result.ok) {
+      return { ok: true, endpoint: attempt.name, status: result.status };
+    }
     failures.push(result);
   }
 

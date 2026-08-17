@@ -1,4 +1,3 @@
-import math
 import os
 from pathlib import Path
 
@@ -7,15 +6,10 @@ RUNTIME_ENV_ALIASES = {
     "ENGINE_WORKER_COUNT": ("ENGINE_WORKER_COUNT", "ENGINE_WORKERS"),
     "ENGINE_MAX_CONCURRENT_SCANS": ("ENGINE_MAX_CONCURRENT_SCANS",),
     "ENGINE_MAX_WORKERS_PER_SCAN": ("ENGINE_MAX_WORKERS_PER_SCAN",),
-    "ENGINE_WORKERS_PER_ACCOUNT": ("ENGINE_WORKERS_PER_ACCOUNT",),
     "ENGINE_AUTOSCALE_SCAN_WORKERS_ON_PROVIDER_CAPACITY": ("ENGINE_AUTOSCALE_SCAN_WORKERS_ON_PROVIDER_CAPACITY",),
-    "ENGINE_CODEX_MAX_SUBAGENTS_PER_SESSION": ("ENGINE_CODEX_MAX_SUBAGENTS_PER_SESSION",),
-    "ENGINE_MIN_FREE_STORAGE_GB": ("ENGINE_MIN_FREE_STORAGE_GB",),
-    "ENGINE_IGNORE_LOW_STORAGE": ("ENGINE_IGNORE_LOW_STORAGE",),
     "ENGINE_CODEX_HOME": ("ENGINE_CODEX_HOME", "CODEX_HOME"),
     "ENGINE_CLAUDE_HOME": ("ENGINE_CLAUDE_HOME", "CLAUDE_HOME"),
     "ENGINE_WORKSPACE_SETUP_CONCURRENCY": ("ENGINE_WORKSPACE_SETUP_CONCURRENCY",),
-    "ENGINE_POST_PROCESS_WORKSPACE_MODE": ("ENGINE_POST_PROCESS_WORKSPACE_MODE",),
     "ENGINE_RETRY_COUNT": ("ENGINE_RETRY_COUNT",),
     "ENGINE_HARNESS_TIMEOUT_SECONDS": ("ENGINE_HARNESS_TIMEOUT_SECONDS",),
 }
@@ -38,18 +32,13 @@ def ensure_runtime_config_file(data_dir: str | None = None) -> Path:
         "ENGINE_WORKER_COUNT": os.getenv("ENGINE_WORKER_COUNT") or os.getenv("ENGINE_WORKERS") or "2",
         "ENGINE_MAX_CONCURRENT_SCANS": os.getenv("ENGINE_MAX_CONCURRENT_SCANS") or "1",
         "ENGINE_MAX_WORKERS_PER_SCAN": os.getenv("ENGINE_MAX_WORKERS_PER_SCAN") or "0",
-        "ENGINE_WORKERS_PER_ACCOUNT": os.getenv("ENGINE_WORKERS_PER_ACCOUNT") or "15",
         "ENGINE_AUTOSCALE_SCAN_WORKERS_ON_PROVIDER_CAPACITY": os.getenv(
             "ENGINE_AUTOSCALE_SCAN_WORKERS_ON_PROVIDER_CAPACITY"
         )
         or "true",
-        "ENGINE_CODEX_MAX_SUBAGENTS_PER_SESSION": os.getenv("ENGINE_CODEX_MAX_SUBAGENTS_PER_SESSION") or "5",
-        "ENGINE_MIN_FREE_STORAGE_GB": os.getenv("ENGINE_MIN_FREE_STORAGE_GB") or "20",
-        "ENGINE_IGNORE_LOW_STORAGE": os.getenv("ENGINE_IGNORE_LOW_STORAGE") or "false",
         "ENGINE_CODEX_HOME": os.getenv("ENGINE_CODEX_HOME") or os.getenv("CODEX_HOME") or "/root/.codex",
         "ENGINE_CLAUDE_HOME": os.getenv("ENGINE_CLAUDE_HOME") or os.getenv("CLAUDE_HOME") or "/root/.claude",
         "ENGINE_WORKSPACE_SETUP_CONCURRENCY": os.getenv("ENGINE_WORKSPACE_SETUP_CONCURRENCY") or "2",
-        "ENGINE_POST_PROCESS_WORKSPACE_MODE": os.getenv("ENGINE_POST_PROCESS_WORKSPACE_MODE") or "copy",
         "ENGINE_RETRY_COUNT": os.getenv("ENGINE_RETRY_COUNT") or "2",
         "ENGINE_HARNESS_TIMEOUT_SECONDS": os.getenv("ENGINE_HARNESS_TIMEOUT_SECONDS") or "7200",
     }
@@ -58,20 +47,15 @@ def ensure_runtime_config_file(data_dir: str | None = None) -> Path:
         "# open-kritt live engine runtime config",
         "# Edit this file while the engine is running to change future job pickup.",
         "# Explicit environment values are synced here once at each engine startup.",
-        "# Existing provider calls keep their current account until they finish.",
+        "# Existing Codex calls keep their current account until they finish.",
         "# ENGINE_WORKER_COUNT=0 pauses new job pickup without killing running jobs.",
         "# ENGINE_MAX_CONCURRENT_SCANS caps immediate scans; queued work waits for an empty active pool.",
         "# ENGINE_MAX_WORKERS_PER_SCAN=0 shares workers evenly; a positive value adds a hard per-scan cap.",
-        "# ENGINE_WORKERS_PER_ACCOUNT caps concurrent root model calls assigned to one provider account.",
         "# ENGINE_AUTOSCALE_SCAN_WORKERS_ON_PROVIDER_CAPACITY lowers only the affected scan's cap after provider throttles.",
-        "# Codex scan sessions may run up to ENGINE_CODEX_MAX_SUBAGENTS_PER_SESSION child agents.",
-        "# ENGINE_MIN_FREE_STORAGE_GB pauses new scan containers below the configured free-space floor.",
-        "# ENGINE_IGNORE_LOW_STORAGE disables that safety floor and can allow the host disk to fill.",
         "# ENGINE_RETRY_COUNT and ENGINE_HARNESS_TIMEOUT_SECONDS apply to future model calls.",
         "# ENGINE_WORKSPACE_SETUP_CONCURRENCY requires an engine recreation to take effect.",
-        "# ENGINE_POST_PROCESS_WORKSPACE_MODE=image uses immutable Docker snapshots for workflow and post-processing jobs.",
-        "# Accounts updates ENGINE_CODEX_HOME and ENGINE_CLAUDE_HOME live; no engine restart is required.",
-        "# Each list controls the provider homes copied into future job workspaces.",
+        "# ENGINE_CODEX_HOME is the Codex home copied into future job workspaces.",
+        "# ENGINE_CLAUDE_HOME is the Claude home copied into future job workspaces.",
         "",
     ]
     lines.extend(f"{key}={_quote_env_value(value)}" for key, value in values.items())
@@ -161,28 +145,6 @@ def runtime_int(
     try:
         value = int(str(raw).strip())
     except (TypeError, ValueError):
-        return default
-    if minimum is not None and value < minimum:
-        return default
-    if maximum is not None and value > maximum:
-        return default
-    return value
-
-
-def runtime_float(
-    name: str,
-    default: float,
-    *,
-    data_dir: str | None = None,
-    minimum: float | None = None,
-    maximum: float | None = None,
-) -> float:
-    raw = runtime_value(name, str(default), data_dir=data_dir)
-    try:
-        value = float(str(raw).strip())
-    except (TypeError, ValueError):
-        return default
-    if not math.isfinite(value):
         return default
     if minimum is not None and value < minimum:
         return default

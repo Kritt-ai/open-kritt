@@ -269,6 +269,19 @@ async function runningProgress(scan, statusSummary) {
       progressLabel: total ? `post-processing ${done} / ${total}` : 'post-processing…',
     };
   }
+  if (scan.status === 'rate_limited') {
+    const retryCount =
+      Number.isInteger(scan.reasoning?.retry_count) && scan.reasoning.retry_count > 0 ? scan.reasoning.retry_count : 0;
+    const retryAt = Date.parse(scan.reasoning?.retry_after || '');
+    const etaSecondsRaw =
+      Number.isFinite(retryAt) ? Math.max(0, Math.ceil((retryAt - Date.now()) / 1000)) : scan.reasoning?.retry_eta_seconds;
+    const etaSeconds = Number.isFinite(etaSecondsRaw) ? Math.max(0, Number(etaSecondsRaw)) : null;
+    const label = etaSeconds == null ? 'waiting for automatic retry' : `retry #${retryCount || 1} in ${formatEta(etaSeconds)}`;
+    return {
+      progress: null,
+      progressLabel: label,
+    };
+  }
   if (scan.status !== 'running') return { progress: null, progressLabel: null };
   const expected = statusSummary?.expectedStepLineages || 0;
   const done = statusSummary?.completedStepLineages || 0;
@@ -278,6 +291,16 @@ async function runningProgress(scan, statusSummary) {
     progress: `${pct}%`,
     progressLabel: `${done} / ${expected} workflow lineages`,
   };
+}
+
+function formatEta(totalSeconds) {
+  const seconds = Math.max(0, Number(totalSeconds) || 0);
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainder = seconds % 60;
+  return [hours ? `${hours}h` : '', hours || minutes ? `${minutes}m` : '', `${String(remainder).padStart(2, '0')}s`]
+    .filter(Boolean)
+    .join(' ');
 }
 
 function phaseLabel(phase) {
@@ -327,15 +350,6 @@ export function knownError(value) {
       title: 'Engine storage full',
       message:
         'The scanner ran out of disk space while creating a job workspace. Free local disk space, then resume the scan.',
-    };
-  }
-  if (lower.includes('cannot set path in scalar')) {
-    return {
-      key: 'storage_warning_persistence_failed',
-      title: 'Low-storage pause failed',
-      message:
-        'The engine ran low on disk space, then could not save its automatic pause warning. Free disk space, lower Minimum free storage, or enable Ignore low-storage safeguard in Settings, then resume the scan; completed work is preserved.',
-      fixLinks: [{ label: 'Open Settings', url: '/settings', internal: true }],
     };
   }
   if (
@@ -400,15 +414,6 @@ export function knownError(value) {
       preserveMessage: true,
     };
   }
-  if (lower.includes('diagnostic: subagent_limited')) {
-    return {
-      key: 'subagent_limited',
-      title: 'Subagent limit reached',
-      message:
-        "Codex reached a separate premium limit while starting a subagent. The account's normal usage quota may still be available.",
-      preserveMessage: true,
-    };
-  }
   if (lower.includes('diagnostic: account_quota_limited')) {
     return {
       key: 'account_quota_limited',
@@ -439,6 +444,30 @@ export function knownError(value) {
       key: 'model_process_error',
       title: 'Model process stopped',
       message: 'The model process stopped before returning a structured result. Review its saved output.',
+      preserveMessage: true,
+    };
+  }
+  if (lower.includes('diagnostic: schema_validation_error')) {
+    return {
+      key: 'schema_validation_error',
+      title: 'Schema validation failed',
+      message: 'The model returned JSON, but it was missing required fields or violated the required schema.',
+      preserveMessage: true,
+    };
+  }
+  if (lower.includes('diagnostic: invalid_output') || lower.includes('diagnostic: model_output_error')) {
+    return {
+      key: 'model_output_error',
+      title: 'Model output invalid',
+      message: 'The provider returned output that could not be used as a valid structured result.',
+      preserveMessage: true,
+    };
+  }
+  if (lower.includes('diagnostic: app_bug')) {
+    return {
+      key: 'app_bug',
+      title: 'Application error',
+      message: 'Open-Kritt hit an internal application error while processing this scan.',
       preserveMessage: true,
     };
   }
@@ -553,6 +582,7 @@ function emptyStatusSummary(scan) {
     postFailedAttempts: 0,
     activeJobCount: 0,
     activeJobs: [],
+    retryState: null,
     latestError: null,
     recentErrors: [],
   };
@@ -641,6 +671,23 @@ async function statusSummariesByScan(scans, stepsMap, workflowsById) {
     const summary = summaries.get(scan.id.toString());
     const reasoningError = scanReasoningError(scan);
     if (reasoningError) summary.recentErrors.push(reasoningError);
+    if (scan.status === 'rate_limited') {
+      const retryAt = Date.parse(scan.reasoning?.retry_after || '');
+      const etaSeconds = Number.isFinite(retryAt) ? Math.max(0, Math.ceil((retryAt - Date.now()) / 1000)) : null;
+      summary.retryState = {
+        retryCount: Number.isInteger(scan.reasoning?.retry_count) ? scan.reasoning.retry_count : 0,
+        retryStrategy: scan.reasoning?.retry_strategy || null,
+        limitKind: scan.reasoning?.limit_kind || null,
+        backoffSeconds:
+          typeof scan.reasoning?.backoff_seconds === 'number' ? Number(scan.reasoning.backoff_seconds) : null,
+        providerRetryAfterSeconds:
+          typeof scan.reasoning?.provider_retry_after_seconds === 'number'
+            ? Number(scan.reasoning.provider_retry_after_seconds)
+            : null,
+        retryAfter: scan.reasoning?.retry_after || null,
+        etaSeconds,
+      };
+    }
   }
 
   for (const row of errorRows) {
@@ -744,8 +791,6 @@ export async function assembleScans(scans) {
   const out = [];
   for (const s of scans) {
     const wf = wfMap.get(s.workflowId.toString());
-    const workflowSteps = (wf?.stepIds || []).map((id) => stepsMap.get(id.toString())).filter(Boolean);
-    const workflowDepths = [...new Set(workflowSteps.map((step) => step.depth))].sort((left, right) => left - right);
     const ps = psMap.get(s.postScriptId.toString());
     const scanPostScripts = configuredPostScriptIds(s)
       .map((id) => psMap.get(id))
@@ -764,7 +809,6 @@ export async function assembleScans(scans) {
     out.push(
       serializeScan(s, {
         workflowName: wf?.name ?? null,
-        workflowDepths,
         postScriptName: ps?.name ?? null,
         postScripts: scanPostScripts,
         agentSkills: scanSkills,

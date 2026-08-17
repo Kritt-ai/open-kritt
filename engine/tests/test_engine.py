@@ -1,9 +1,7 @@
 import json
 import shutil
 import subprocess
-import threading
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -22,16 +20,9 @@ from open_kritt_engine.harnesses import (
     HarnessError,
     HarnessOutput,
     HarnessResult,
+    OpenAICompatibleHarness,
 )
-from open_kritt_engine.models import (
-    Job,
-    State,
-    Step,
-    StepResultRow,
-    Workflow,
-    model_selection_for_depth,
-    post_processing_thinking_effort,
-)
+from open_kritt_engine.models import Job, State, Step, StepResultRow, Workflow
 from open_kritt_engine.post_processing import (
     PostProcessor,
     PostProcessRateLimited,
@@ -60,7 +51,6 @@ from open_kritt_engine.runtime_config import ensure_runtime_config_file
 from open_kritt_engine.schema import EXTRACTOR_HELPER_FIELD, OutputValidationError, output_schema, validate_payload
 from open_kritt_engine.worker import Worker
 from open_kritt_engine.workspace import (
-    _configured_claude_homes,
     _configured_codex_homes,
     _dependency_alias,
     cleanup_job_workspace,
@@ -69,7 +59,6 @@ from open_kritt_engine.workspace import (
     prepare_dependency_workspace,
     prepare_job_workspace,
     prewarm_scan_checkout_cache,
-    provider_account_lease,
     provider_accounts_all_rate_limited,
     provider_home_for_job,
     restore_persistent_scan_checkout_cache,
@@ -120,38 +109,6 @@ def scan(configuration=None):
         "model": "test-model",
         "harness": "codex",
     }
-
-
-def test_model_selection_resolves_depth_override_and_keeps_default_for_post_processing():
-    configured = {
-        **scan(),
-        "model_provider": "codex",
-        "thinking_effort": "high",
-        "model_overrides": {
-            "1": {
-                "model": "claude-sonnet",
-                "model_provider": "claude",
-                "harness": "claude-code",
-                "thinking_effort": "medium",
-            }
-        },
-    }
-
-    assert model_selection_for_depth(configured, 1).model == "claude-sonnet"
-    assert model_selection_for_depth(configured, 1).model_provider == "claude"
-    assert model_selection_for_depth(configured, 0).model == "test-model"
-    assert model_selection_for_depth(configured).model == "test-model"
-
-
-def test_post_processing_thinking_effort_is_independent_from_workflow_effort():
-    configured = {
-        **scan({"post_processing_thinking_effort": "medium"}),
-        "thinking_effort": "high",
-    }
-
-    assert model_selection_for_depth(configured).thinking_effort == "high"
-    assert post_processing_thinking_effort(configured) == "medium"
-    assert post_processing_thinking_effort({**configured, "configuration": {}}) == "high"
 
 
 def fake_cache_git_head(path):
@@ -543,50 +500,6 @@ def test_prepare_dependency_workspace_writes_manifest_and_layout(monkeypatch, tm
     assert "Trace attacker input to sinks." in bundle_text
 
 
-def test_prepare_dependency_workspace_uses_cached_snapshot_image_without_copying_worktree(monkeypatch, tmp_path):
-    def fake_checkout_repo(repo_full, commit_sha, base_dir, github_token=None):
-        path = Path(base_dir) / repo_full.replace("/", "__")
-        path.mkdir(parents=True, exist_ok=True)
-        (path / ".git").mkdir(exist_ok=True)
-        (path / "repo.txt").write_text(repo_full, encoding="utf-8")
-        return str(path), f"commit-{repo_full.split('/')[-1]}"
-
-    captured = {}
-
-    def fake_snapshot_image(**kwargs):
-        captured.update(kwargs)
-        return "open-kritt-workspace-snapshot:test"
-
-    monkeypatch.setattr(workspace_module, "checkout_repo", fake_checkout_repo)
-    monkeypatch.setattr(workspace_module, "_git_head_commit", fake_cache_git_head)
-    monkeypatch.setattr(workspace_module, "ensure_workspace_snapshot_image", fake_snapshot_image)
-    monkeypatch.setattr(
-        workspace_module,
-        "copy_checkout",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("snapshot mode must not copy worktrees")),
-    )
-
-    prepared = prepare_dependency_workspace(
-        data_dir=str(tmp_path / "data"),
-        checkout_cache_dir=str(tmp_path / "cache"),
-        metadata_id=47,
-        scan={
-            **scan(),
-            "commit_sha": "abc123",
-            "dependencies_detail": [{"kind": "remote", "repo_full": "anza-xyz/agave", "commit_sha": "def456"}],
-        },
-        use_snapshot_image=True,
-    )
-
-    assert prepared.runner_image == "open-kritt-workspace-snapshot:test"
-    assert prepared.source_repo_dir == captured["sources"][0][0]
-    assert captured["sources"][0][1] == "/workspace"
-    assert captured["sources"][1][1] == "/workspace/agave"
-    assert Path(prepared.repo_dir).is_dir()
-    assert {path.name for path in Path(prepared.repo_dir).iterdir()} == {"WORKSPACE.json", "WORKSPACE.md"}
-    assert json.loads(prepared.manifest_json)["primary"]["path"] == "/workspace"
-
-
 def test_prewarm_scan_checkout_cache_only_populates_cache(monkeypatch, tmp_path):
     calls = []
 
@@ -937,7 +850,6 @@ def test_codex_harness_uses_dangerous_permissions_and_web_search(monkeypatch):
     assert result.payload == marked({"stub": True, "stub_explanation": "No matching records.", "results": []})
     assert captured["cmd"][:3] == ["codex", "--search", "exec"]
     assert "--dangerously-bypass-approvals-and-sandbox" in captured["cmd"]
-    assert "agents.max_concurrent_threads_per_session=5" in captured["cmd"]
     assert "--ephemeral" not in captured["cmd"]
     assert "--sandbox" not in captured["cmd"]
 
@@ -1172,7 +1084,6 @@ def test_codex_harness_resumes_corrupted_session_for_json(monkeypatch, tmp_path)
     assert result.usage["total_tokens"] == 7
     assert calls[1][:3] == ["codex", "exec", "resume"]
     assert calls[1][-2:] == ["session-bad", "-"]
-    assert "agents.max_concurrent_threads_per_session=5" in calls[1]
     assert 'model_provider="openrouter"' in calls[1]
     assert 'model_reasoning_effort="medium"' in calls[1]
     assert EXTRACTOR_HELPER_FIELD in prompts[1]
@@ -1543,11 +1454,6 @@ def test_harness_process_errors_do_not_echo_command_or_provider_output(monkeypat
             "provider_throttled",
             True,
         ),
-        (
-            '{"limit_id":"premium"}\nAgent errored: You\'ve hit your usage limit. Upgrade to Pro.',
-            "subagent_limited",
-            True,
-        ),
         ('{"error":"usage_limit"}', "account_quota_limited", True),
         ('{"error":"you have hit your limit"}', "account_quota_limited", True),
         ('{"api_error_status":403,"result":"Key limit exceeded (total limit)"}', "account_quota_limited", True),
@@ -1682,16 +1588,6 @@ def test_harness_rate_limit_error_carries_retry_after(monkeypatch):
     assert exc_info.value.retry_after_seconds == 12.5
 
 
-def test_harness_usage_limit_error_carries_natural_language_reset_time():
-    retry_at = datetime.now(timezone.utc) + timedelta(days=2)
-    formatted = retry_at.strftime("%b DAYth, %Y %I:%M %p").replace("DAY", str(retry_at.day))
-
-    retry_after = harnesses._retry_after_seconds(f"You've hit your usage limit; try again at {formatted}.")
-
-    assert retry_after is not None
-    assert 47 * 60 * 60 < retry_after <= 48 * 60 * 60
-
-
 def test_github_repo_url_normalizes_to_owner_repo():
     assert normalize_repo_full("https://github.com/anza-xyz/agave") == "anza-xyz/agave"
     assert normalize_repo_full("https://github.com/anza-xyz/agave.git") == "anza-xyz/agave"
@@ -1744,10 +1640,6 @@ def test_job_workspace_copies_only_claude_credentials(monkeypatch, tmp_path):
     (backup_dir / ".claude.json.backup.123").write_text('{"restored":true}', encoding="utf-8")
     credential = '{"claudeAiOauth":{"accessToken":"test","refreshToken":"refresh","expiresAt":9999999999999}}'
     (claude_home / ".credentials.json").write_text(credential, encoding="utf-8")
-    (claude_home / ".open-kritt-account.json").write_text(
-        '{"provider":"claude","accountId":"claude-account-id","email":"researcher@example.test"}',
-        encoding="utf-8",
-    )
     (claude_home / "settings.json").write_text('{"hooks":{"PreToolUse":"leak"}}', encoding="utf-8")
     monkeypatch.setenv("CLAUDE_HOME", str(claude_home))
 
@@ -1763,12 +1655,6 @@ def test_job_workspace_copies_only_claude_credentials(monkeypatch, tmp_path):
     assert (job_claude_home / ".claude.json").read_text(encoding="utf-8") == "{}\n"
     assert not (job_claude_home / "backups").exists()
     assert not (job_claude_home / "settings.json").exists()
-    assert workspace.provider_account_provider == "claude"
-    assert workspace.provider_account_home == str(claude_home)
-    assert workspace.provider_account_id == "claude-account-id"
-    assert workspace.provider_account_email == "researcher@example.test"
-    assert workspace.codex_account_id is None
-    assert workspace.codex_account_email is None
 
 
 def test_job_workspace_rotates_between_configured_codex_homes(monkeypatch, tmp_path):
@@ -1796,35 +1682,6 @@ def test_job_workspace_rotates_between_configured_codex_homes(monkeypatch, tmp_p
     assert (Path(workspace_1.env["CODEX_HOME"]) / "auth.json").read_text(encoding="utf-8") == '{"account":"a"}'
     assert (Path(workspace_2.env["CODEX_HOME"]) / "auth.json").read_text(encoding="utf-8") == '{"account":"b"}'
     assert (Path(workspace_3.env["CODEX_HOME"]) / "auth.json").read_text(encoding="utf-8") == '{"account":"a"}'
-
-
-def test_claude_rotation_reloads_live_account_list_without_engine_restart(monkeypatch, tmp_path):
-    monkeypatch.delenv("ENGINE_RUNTIME_CONFIG_PATH", raising=False)
-    data_dir = tmp_path / "data"
-    data_dir.mkdir()
-    runtime_path = data_dir / "engine-runtime.env"
-    home_a = tmp_path / "claude-accounts" / "account-a" / ".claude"
-    home_b = tmp_path / "claude-accounts" / "account-b" / ".claude"
-    home_a.mkdir(parents=True)
-    home_b.mkdir(parents=True)
-    (home_a / ".credentials.json").write_text("{}", encoding="utf-8")
-    (home_b / ".credentials.json").write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(workspace_module, "_provider_account_health", lambda _provider: {})
-
-    runtime_path.write_text(f"ENGINE_CLAUDE_HOME={home_a}\n", encoding="utf-8")
-    assert _configured_claude_homes(data_dir=str(data_dir)) == [str(home_a)]
-    assert provider_home_for_job("claude", 1, data_dir=str(data_dir)) == str(home_a)
-
-    runtime_path.write_text(f"ENGINE_CLAUDE_HOME={home_a},{home_b}\n", encoding="utf-8")
-    assert _configured_claude_homes(data_dir=str(data_dir)) == [str(home_a), str(home_b)]
-    assert {
-        provider_home_for_job("claude", 2, data_dir=str(data_dir)),
-        provider_home_for_job("claude", 3, data_dir=str(data_dir)),
-    } == {str(home_a), str(home_b)}
-
-    runtime_path.write_text(f"ENGINE_CLAUDE_HOME={home_b}\n", encoding="utf-8")
-    assert _configured_claude_homes(data_dir=str(data_dir)) == [str(home_b)]
-    assert provider_home_for_job("claude", 4, data_dir=str(data_dir)) == str(home_b)
 
 
 @pytest.mark.parametrize("provider", ["codex", "claude"])
@@ -1855,136 +1712,6 @@ def test_provider_rotation_skips_limited_accounts_until_all_are_limited(monkeypa
 
     mark_provider_account_available(provider, first)
     assert provider_home_for_job(provider, 5) == first
-
-
-def test_provider_rotation_prefers_live_available_account(monkeypatch, tmp_path):
-    monkeypatch.delenv("ENGINE_RUNTIME_CONFIG_PATH", raising=False)
-    home_a = tmp_path / "homes" / "limited-a"
-    home_b = tmp_path / "homes" / "limited-b"
-    home_c = tmp_path / "homes" / "available"
-    for home in (home_a, home_b, home_c):
-        home.mkdir(parents=True)
-        (home / "auth.json").write_text("{}", encoding="utf-8")
-    monkeypatch.setenv("ENGINE_CODEX_HOME", f"{home_a},{home_b},{home_c}")
-    monkeypatch.setattr(
-        "open_kritt_engine.workspace._provider_account_health",
-        lambda provider: {
-            str(home_a): workspace_module._ProviderAccountHealth(False, 100),
-            str(home_b): workspace_module._ProviderAccountHealth(False, 100),
-            str(home_c): workspace_module._ProviderAccountHealth(True, 100),
-        },
-    )
-
-    assert provider_home_for_job("codex", 1) == str(home_c)
-    assert provider_home_for_job("codex", 2) == str(home_c)
-    assert not provider_accounts_all_rate_limited("codex")
-
-
-def test_provider_rotation_releases_stale_local_limit_after_newer_available_observation(monkeypatch, tmp_path):
-    monkeypatch.delenv("ENGINE_RUNTIME_CONFIG_PATH", raising=False)
-    home_a = tmp_path / "homes" / "recovered"
-    home_b = tmp_path / "homes" / "available"
-    for home in (home_a, home_b):
-        home.mkdir(parents=True)
-        (home / "auth.json").write_text("{}", encoding="utf-8")
-    monkeypatch.setenv("ENGINE_CODEX_HOME", f"{home_a},{home_b}")
-    observed_at = 99.0
-    monkeypatch.setattr(workspace_module.time, "time", lambda: 100.0)
-    monkeypatch.setattr(
-        workspace_module,
-        "_provider_account_health",
-        lambda provider: {
-            str(home_a): workspace_module._ProviderAccountHealth(True, observed_at),
-            str(home_b): workspace_module._ProviderAccountHealth(True, observed_at),
-        },
-    )
-
-    mark_provider_account_rate_limited("codex", str(home_a))
-
-    assert provider_home_for_job("codex", 1) == str(home_b)
-
-    observed_at = 101.0
-
-    assert {provider_home_for_job("codex", 2), provider_home_for_job("codex", 3)} == {
-        str(home_a),
-        str(home_b),
-    }
-
-
-def test_provider_health_timestamp_parses_account_service_observation():
-    observed_at = workspace_module._provider_health_timestamp("2026-07-26T08:45:09.977704Z")
-
-    assert observed_at == datetime(2026, 7, 26, 8, 45, 9, 977704, tzinfo=timezone.utc).timestamp()
-
-
-def test_provider_account_lease_reloads_worker_limit_live(monkeypatch, tmp_path):
-    monkeypatch.delenv("ENGINE_RUNTIME_CONFIG_PATH", raising=False)
-    data_dir = tmp_path / "data"
-    data_dir.mkdir()
-    runtime_path = data_dir / "engine-runtime.env"
-    runtime_path.write_text("ENGINE_WORKERS_PER_ACCOUNT=1\n", encoding="utf-8")
-    home = str(tmp_path / "account" / ".codex")
-    first_entered = threading.Event()
-    release_first = threading.Event()
-    second_entered = threading.Event()
-
-    def first_call():
-        with provider_account_lease("codex", home, data_dir=str(data_dir)):
-            first_entered.set()
-            assert release_first.wait(2)
-
-    def second_call():
-        assert first_entered.wait(2)
-        with provider_account_lease("codex", home, data_dir=str(data_dir)):
-            second_entered.set()
-
-    first = threading.Thread(target=first_call)
-    second = threading.Thread(target=second_call)
-    first.start()
-    assert first_entered.wait(2)
-    second.start()
-    assert not second_entered.wait(0.05)
-    runtime_path.write_text("ENGINE_WORKERS_PER_ACCOUNT=2\n", encoding="utf-8")
-    assert second_entered.wait(1.5)
-    release_first.set()
-    first.join(timeout=2)
-    second.join(timeout=2)
-
-    assert not first.is_alive()
-    assert not second.is_alive()
-
-
-def test_provider_account_lease_defaults_to_fifteen_parallel_root_calls(monkeypatch, tmp_path):
-    monkeypatch.delenv("ENGINE_WORKERS_PER_ACCOUNT", raising=False)
-    assert workspace_module._provider_account_worker_limit() == 15
-
-    home = str(tmp_path / "parallel-account" / ".codex")
-    first_entered = threading.Event()
-    release_first = threading.Event()
-    second_entered = threading.Event()
-
-    def first_call():
-        with provider_account_lease("codex", home):
-            first_entered.set()
-            assert release_first.wait(2)
-
-    def second_call():
-        assert first_entered.wait(2)
-        with provider_account_lease("codex", home):
-            second_entered.set()
-
-    first = threading.Thread(target=first_call)
-    second = threading.Thread(target=second_call)
-    first.start()
-    assert first_entered.wait(2)
-    second.start()
-    assert second_entered.wait(0.5)
-    release_first.set()
-    first.join(timeout=2)
-    second.join(timeout=2)
-
-    assert not first.is_alive()
-    assert not second.is_alive()
 
 
 def test_job_workspace_reloads_codex_homes_from_runtime_file(monkeypatch, tmp_path):
@@ -2280,68 +2007,6 @@ def test_worker_does_not_claim_more_jobs_for_paused_scan():
     assert fake_db.loaded_scan_count == 1
 
 
-def test_worker_dispatches_each_job_with_its_depth_model_selection(monkeypatch):
-    configured_scan = {
-        **scan(),
-        "status": "running",
-        "model_provider": "codex",
-        "thinking_effort": "high",
-        "model_overrides": {
-            "0": {
-                "model": "claude-sonnet",
-                "model_provider": "claude",
-                "harness": "claude-code",
-                "thinking_effort": "medium",
-            }
-        },
-    }
-
-    class PendingDb:
-        @contextmanager
-        def connect(self):
-            yield FakeConn()
-
-        def load_workflow(self, _conn, workflow_id):
-            return Workflow(id=workflow_id, name="wf", steps=(step(1, 0),))
-
-        def load_scan(self, _conn, _scan_id):
-            return configured_scan
-
-        def load_completed_metadata(self, *_args):
-            return set()
-
-        def load_claimed_metadata(self, *_args):
-            return set()
-
-        def load_step_results(self, *_args):
-            return {}
-
-    worker = Worker(SimpleNamespace(data_dir="/tmp", database_url=""), db=PendingDb())
-    selected = {}
-    selected_harness = object()
-
-    monkeypatch.setattr(worker, "_worker_can_pick_job", lambda _worker_id: True)
-    monkeypatch.setattr(worker, "_ensure_scan_cache_prewarmed", lambda *_args, **_kwargs: False)
-
-    def harness_for_selection(selection):
-        selected["harness_selection"] = selection
-        return selected_harness
-
-    def execute_job(**kwargs):
-        selected["execution_selection"] = kwargs["model_selection"]
-        selected["harness"] = kwargs["harness"]
-        return True
-
-    monkeypatch.setattr(worker, "_harness_for_model_selection", harness_for_selection)
-    monkeypatch.setattr(worker, "execute_job", execute_job)
-
-    assert worker.process_scan(configured_scan) is True
-    assert selected["execution_selection"].model == "claude-sonnet"
-    assert selected["execution_selection"].model_provider == "claude"
-    assert selected["harness_selection"] == selected["execution_selection"]
-    assert selected["harness"] is selected_harness
-
-
 def test_execute_job_rechecks_scan_status_after_waiting_for_workspace_slot(monkeypatch):
     class PausedDb(FakeDb):
         def load_scan(self, _conn, _scan_id):
@@ -2477,7 +2142,6 @@ def test_worker_moves_finished_workflow_into_post_processing(monkeypatch, tmp_pa
     assert all(name == "codex" for name, _kwargs in harness_calls)
     assert all(kwargs["model_provider"] == "openrouter" for _name, kwargs in harness_calls)
     assert all(kwargs["codex_model_provider"] == "private-openrouter" for _name, kwargs in harness_calls)
-    assert all(kwargs["codex_max_subagents"] == 5 for _name, kwargs in harness_calls)
 
 
 def test_worker_retries_strict_validation_then_writes_results(monkeypatch, tmp_path):
@@ -2501,12 +2165,7 @@ def test_worker_retries_strict_validation_then_writes_results(monkeypatch, tmp_p
         SimpleNamespace(retry_count=2, data_dir="/tmp", github_token=None),
         db=fake_db,
     )
-    workspace_requests = []
-    monkeypatch.setattr(
-        worker_module,
-        "prepare_dependency_workspace",
-        lambda **kwargs: workspace_requests.append(kwargs) or prepared,
-    )
+    monkeypatch.setattr(worker_module, "prepare_dependency_workspace", lambda **_kwargs: prepared)
     job = Job(
         step=step(1, 0, multi=False, output_format='{"thing":"string"}'),
         state=State(prev_id=0, prev_table=None, repeat_run=2, context={"repo_full": "owner/repo"}),
@@ -2519,21 +2178,8 @@ def test_worker_retries_strict_validation_then_writes_results(monkeypatch, tmp_p
         ]
     )
 
-    configured_scan = {
-        **scan(),
-        "model_provider": "codex",
-        "thinking_effort": "high",
-        "model_overrides": {
-            "0": {
-                "model": "claude-sonnet",
-                "model_provider": "claude",
-                "harness": "claude-code",
-                "thinking_effort": "medium",
-            }
-        },
-    }
     worker.execute_job(
-        scan=configured_scan,
+        scan=scan(),
         workflow_id=3,
         job=job,
         harness=fake_harness,
@@ -2552,59 +2198,7 @@ def test_worker_retries_strict_validation_then_writes_results(monkeypatch, tmp_p
         {"scan_id": 7, "step_id": 1, "prev_id": 0, "prev_table": None, "repeat_run": 2}
     ]
     assert fake_harness.calls[0]["repo_dir"] == "/tmp/repo"
-    assert fake_harness.calls[0]["model"] == "claude-sonnet"
-    assert fake_harness.calls[0]["thinking_effort"] == "medium"
-    assert workspace_requests[0]["harness_name"] == "claude-code"
-    assert workspace_requests[0]["model_provider"] == "claude"
-    assert fake_db.metadata[0]["model"] == "claude-sonnet"
-    assert fake_db.metadata[0]["harness"] == "claude-code"
-    assert fake_db.metadata[0]["model_provider"] == "claude"
     assert fake_db.step_results[0]["json_answer"] == {"thing": "ok"}
-    assert not root.exists()
-
-
-def test_worker_uses_snapshot_image_for_normal_workflow_jobs(monkeypatch, tmp_path):
-    runtime_path = tmp_path / "engine-runtime.env"
-    runtime_path.write_text("ENGINE_POST_PROCESS_WORKSPACE_MODE=image\n", encoding="utf-8")
-    monkeypatch.setenv("ENGINE_RUNTIME_CONFIG_PATH", str(runtime_path))
-    root = tmp_path / "job"
-    root.mkdir()
-
-    class Workspace:
-        root_dir = str(root)
-        env = {"HOME": str(tmp_path / "home")}
-
-    prepared = SimpleNamespace(
-        workspace=Workspace(),
-        repo_dir=str(root / "workspace"),
-        checked_out_commit="abc",
-        layout="Dependency repositories are checked out as top-level directories inside the same workspace root.",
-        manifest_json='{"dependencies":[]}',
-        runner_image="open-kritt-workspace-snapshot:test",
-    )
-    fake_db = FakeDb()
-    worker = Worker(
-        SimpleNamespace(retry_count=0, data_dir=str(tmp_path), github_token=None),
-        db=fake_db,
-    )
-    workspace_requests = []
-    monkeypatch.setattr(
-        worker_module,
-        "prepare_dependency_workspace",
-        lambda **kwargs: workspace_requests.append(kwargs) or prepared,
-    )
-    job = Job(
-        step=step(1, 0, multi=False, output_format='{"thing":"string"}'),
-        state=State(prev_id=0, prev_table=None, repeat_run=1, context={"repo_full": "owner/repo"}),
-    )
-    fake_harness = FakeHarness([marked({"stub": False, "stub_explanation": "", "results": [{"thing": "ok"}]})])
-
-    worker.execute_job(scan=scan(), workflow_id=3, job=job, harness=fake_harness)
-
-    assert workspace_requests[0]["use_snapshot_image"] is True
-    assert fake_harness.calls[0]["runner_image"] == "open-kritt-workspace-snapshot:test"
-    assert fake_harness.calls[0]["repo_dir"] == str(root / "workspace")
-    assert fake_db.metadata[0]["status"] == "completed"
     assert not root.exists()
 
 
@@ -2960,6 +2554,152 @@ def test_post_processing_preserves_rate_limit_for_scan_retry(monkeypatch, tmp_pa
     assert harness.calls == 1
     assert "Diagnostic: rate_limited" in str(exc_info.value)
     assert not root.exists()
+
+
+def test_openai_compatible_harness_uses_custom_provider_http_without_codex(monkeypatch, tmp_path):
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    (repo_dir / "app.py").write_text("print('hello')\n", encoding="utf-8")
+    (tmp_path / "providers.json").write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "credentials": {},
+                "customProviders": [
+                    {
+                        "id": "custom-gateway",
+                        "label": "Custom Gateway",
+                        "baseUrl": "https://provider.example/v1/",
+                        "apiKey": "gateway-secret",
+                        "model": "gateway-model",
+                        "organization": "org_123",
+                        "extraHeaders": {"X-Test": "yes"},
+                    }
+                ],
+                "disabledEnvironmentProviders": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    captured = {}
+
+    def fake_request(url, payload, headers, timeout_seconds, **_kwargs):
+        captured["url"] = url
+        captured["payload"] = payload
+        captured["headers"] = headers
+        captured["timeout_seconds"] = timeout_seconds
+        return (
+            {
+                "output_parsed": marked({"stub": False, "stub_explanation": "", "results": [{"thing": "ok"}]}),
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+            },
+            HarnessOutput(stdout='{"ok":true}', returncode=0),
+        )
+
+    monkeypatch.setattr(harnesses, "_openai_compatible_request", fake_request)
+    harness = OpenAICompatibleHarness(timeout_seconds=5, model_provider="custom-gateway")
+    result = harness.run(
+        prompt="Find vulnerabilities",
+        schema=output_schema('{"thing":"string"}', multi_output=False),
+        repo_dir=str(repo_dir),
+        model="gateway-model",
+        env={
+            "OPENAI_API_KEY": "gateway-secret",
+            "OPEN_KRITT_PROVIDER_CREDENTIALS_PATH": str(tmp_path / "providers.json"),
+        },
+        allow_tools=True,
+    )
+
+    assert result.payload["results"][0]["thing"] == "ok"
+    assert result.usage["endpoint"] == "responses"
+    assert captured["url"] == "https://provider.example/v1/responses"
+    assert captured["headers"]["Authorization"] == "Bearer gateway-secret"
+    assert captured["headers"]["OpenAI-Organization"] == "org_123"
+    assert "FILE: app.py" in captured["payload"]["input"]
+
+
+def test_openai_compatible_harness_falls_back_to_chat_completions(monkeypatch, tmp_path):
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    (repo_dir / "main.js").write_text("console.log('hi');\n", encoding="utf-8")
+    (tmp_path / "providers.json").write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "credentials": {},
+                "customProviders": [
+                    {
+                        "id": "custom-gateway",
+                        "label": "Custom Gateway",
+                        "baseUrl": "https://provider.example/v1/",
+                        "apiKey": "gateway-secret",
+                        "model": "gateway-model",
+                    }
+                ],
+                "disabledEnvironmentProviders": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls = []
+
+    def fake_request(url, payload, headers, timeout_seconds, **_kwargs):
+        calls.append(url)
+        if url.endswith("/responses"):
+            raise HarnessError("not found", code="model_unavailable", harness="openai-compatible")
+        return (
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(marked({"stub": False, "stub_explanation": "", "results": []}))
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 12},
+            },
+            HarnessOutput(stdout='{"choices":[]}', returncode=0),
+        )
+
+    monkeypatch.setattr(harnesses, "_openai_compatible_request", fake_request)
+    harness = OpenAICompatibleHarness(timeout_seconds=5, model_provider="custom-gateway")
+    result = harness.run(
+        prompt="Test fallback",
+        schema=output_schema('{"thing":"string"}', multi_output=True),
+        repo_dir=str(repo_dir),
+        model="gateway-model",
+        env={
+            "OPENAI_API_KEY": "gateway-secret",
+            "OPEN_KRITT_PROVIDER_CREDENTIALS_PATH": str(tmp_path / "providers.json"),
+        },
+        allow_tools=False,
+    )
+
+    assert result.usage["endpoint"] == "chat.completions"
+    assert calls == ["https://provider.example/v1/responses", "https://provider.example/v1/chat/completions"]
+
+
+def test_openai_compatible_parser_handles_nvidia_chat_content_parts():
+    parsed, usage = harnesses._extract_chat_payload(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": [
+                            {"type": "text", "text": "```json\n"},
+                            {"type": "text", "text": json.dumps(marked({"stub": False, "stub_explanation": "", "results": []}))},
+                            {"type": "text", "text": "\n```"},
+                        ]
+                    }
+                }
+            ],
+            "usage": {"prompt_tokens": 7},
+        }
+    )
+
+    assert parsed == marked({"stub": False, "stub_explanation": "", "results": []})
+    assert usage == {"prompt_tokens": 7}
 
 
 def test_post_processing_marks_rate_limited_batch_interrupted(monkeypatch):

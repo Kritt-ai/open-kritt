@@ -31,40 +31,9 @@ export const RUNTIME_SETTING_DEFINITIONS = Object.freeze({
     recommendedMax: 10,
     apply: 'live',
   }),
-  workersPerAccount: Object.freeze({
-    envKey: 'ENGINE_WORKERS_PER_ACCOUNT',
-    defaultValue: 15,
-    min: 1,
-    max: 128,
-    recommendedMax: 15,
-    apply: 'live',
-  }),
   autoscaleScanWorkersOnProviderCapacity: Object.freeze({
     envKey: 'ENGINE_AUTOSCALE_SCAN_WORKERS_ON_PROVIDER_CAPACITY',
     defaultValue: true,
-    type: 'boolean',
-    apply: 'live',
-  }),
-  codexMaxSubagentsPerSession: Object.freeze({
-    envKey: 'ENGINE_CODEX_MAX_SUBAGENTS_PER_SESSION',
-    defaultValue: 5,
-    min: 1,
-    max: 5,
-    recommendedMax: 5,
-    apply: 'live',
-  }),
-  minFreeStorageGb: Object.freeze({
-    envKey: 'ENGINE_MIN_FREE_STORAGE_GB',
-    defaultValue: 20,
-    min: 0,
-    max: 1024,
-    step: 0.1,
-    type: 'number',
-    apply: 'live',
-  }),
-  ignoreLowStorage: Object.freeze({
-    envKey: 'ENGINE_IGNORE_LOW_STORAGE',
-    defaultValue: false,
     type: 'boolean',
     apply: 'live',
   }),
@@ -94,12 +63,88 @@ export const RUNTIME_SETTING_DEFINITIONS = Object.freeze({
   }),
 });
 
-async function environmentValues(filePath) {
-  if (!filePath) return {};
+function missingWarning(source, path) {
+  return {
+    source,
+    code: 'missing',
+    severity: 'warning',
+    message: `${path} is unavailable. Built-in defaults remain active until the file is restored.`,
+  };
+}
+
+function unreadableWarning(source, path, error) {
+  const code = error?.code === 'EPERM' ? 'EPERM' : 'EACCES';
+  return {
+    source,
+    code: 'unreadable',
+    severity: 'warning',
+    message: `${path} could not be read (${code}). Built-in defaults remain active until access is restored.`,
+  };
+}
+
+function directoryWarning(source, path) {
+  return {
+    source,
+    code: 'directory',
+    severity: 'warning',
+    message: `${path} is a directory, not a file. Built-in defaults remain active until the mount is corrected.`,
+  };
+}
+
+function malformedWarning(source, path, invalidLines) {
+  const count = invalidLines.length;
+  return {
+    source,
+    code: 'malformed',
+    severity: 'warning',
+    message: `${path} contains ${count} malformed env line${count === 1 ? '' : 's'}. Valid entries were loaded; malformed lines were ignored.`,
+  };
+}
+
+function environmentDiagnostics(text) {
+  const invalidLines = [];
+  for (const [index, rawLine] of text.split(/\r?\n/).entries()) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    if (!/^(?:export\s+)?[A-Za-z_][A-Za-z0-9_]*\s*=/.test(line)) {
+      invalidLines.push(index + 1);
+    }
+  }
+  return { invalidLines };
+}
+
+async function environmentSource(
+  filePath,
+  source,
+  {
+    readText = (path) => readFile(path, 'utf8'),
+  } = {}
+) {
+  if (!filePath) {
+    return {
+      values: {},
+      available: false,
+      warning: null,
+    };
+  }
   try {
-    return parseEnvironmentText(await readFile(filePath, 'utf8'));
+    const text = await readText(filePath);
+    const diagnostics = environmentDiagnostics(text);
+    return {
+      values: parseEnvironmentText(text),
+      available: true,
+      warning: diagnostics.invalidLines.length ? malformedWarning(source, filePath, diagnostics.invalidLines) : null,
+    };
   } catch (error) {
-    if (error?.code === 'ENOENT') return {};
+    if (error?.code === 'ENOENT') {
+      return { values: {}, available: false, warning: missingWarning(source, filePath) };
+    }
+    if (error?.code === 'EISDIR') {
+      return { values: {}, available: false, warning: directoryWarning(source, filePath) };
+    }
+    if (error?.code === 'EACCES' || error?.code === 'EPERM') {
+      return { values: {}, available: false, warning: unreadableWarning(source, filePath, error) };
+    }
     throw error;
   }
 }
@@ -111,13 +156,6 @@ function parsedSettingValue(raw, definition) {
     if (/^(?:1|true|yes|on)$/i.test(text)) return { value: true, valid: true };
     if (/^(?:0|false|no|off)$/i.test(text)) return { value: false, valid: true };
     return { value: definition.defaultValue, valid: false };
-  }
-  if (definition.type === 'number') {
-    const value = Number(text);
-    if (!text || !Number.isFinite(value) || value < definition.min || value > definition.max) {
-      return { value: definition.defaultValue, valid: false };
-    }
-    return { value, valid: true };
   }
   if (!/^-?\d+$/.test(text)) return { value: definition.defaultValue, valid: false };
   const value = Number(text);
@@ -144,7 +182,6 @@ function resolvedSetting(definition, runtimeValues, projectValues, env) {
     defaultValue: definition.defaultValue,
     min: definition.min,
     max: definition.max,
-    step: definition.step,
     recommendedMax: definition.recommendedMax,
     apply: definition.apply,
   };
@@ -154,24 +191,27 @@ export async function readRuntimeSettings({
   runtimeConfigPath = ENGINE_RUNTIME_CONFIG_PATH,
   environmentFilePath = PROJECT_ENV_FILE_PATH,
   env = process.env,
+  readText,
 } = {}) {
-  const [runtimeValues, projectValues] = await Promise.all([
-    environmentValues(runtimeConfigPath),
-    environmentValues(environmentFilePath),
+  const [runtimeSource, projectSource] = await Promise.all([
+    environmentSource(runtimeConfigPath, 'runtime_config', { readText }),
+    environmentSource(environmentFilePath, 'project_environment', { readText }),
   ]);
+  const warnings = [runtimeSource.warning, projectSource.warning].filter(Boolean);
   const settings = Object.fromEntries(
     Object.entries(RUNTIME_SETTING_DEFINITIONS).map(([key, definition]) => [
       key,
-      resolvedSetting(definition, runtimeValues, projectValues, env),
+      resolvedSetting(definition, runtimeSource.values, projectSource.values, env),
     ])
   );
   return {
     generatedAt: new Date().toISOString(),
     settings,
     persistence: {
-      runtimeConfig: Boolean(runtimeConfigPath),
-      projectEnvironment: Boolean(environmentFilePath),
+      runtimeConfig: runtimeSource.available,
+      projectEnvironment: projectSource.available,
     },
+    warnings,
     capabilities: {
       dedicatedScanConcurrency: { available: true },
       perScanConcurrency: { available: true },
@@ -199,21 +239,6 @@ export function validateRuntimeSettingsPatch(body) {
         errors.push({ field: key, message: 'Choose enabled or disabled.' });
       } else {
         values[key] = raw;
-      }
-      continue;
-    }
-    if (definition.type === 'number') {
-      const text = typeof raw === 'number' || typeof raw === 'string' ? `${raw}`.trim() : '';
-      const value = Number(text);
-      if (!text || !Number.isFinite(value)) {
-        errors.push({ field: key, message: 'Enter a number.' });
-      } else if (value < definition.min || value > definition.max) {
-        errors.push({
-          field: key,
-          message: `Enter a value from ${definition.min} to ${definition.max}.`,
-        });
-      } else {
-        values[key] = value;
       }
       continue;
     }

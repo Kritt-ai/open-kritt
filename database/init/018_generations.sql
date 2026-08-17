@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS public.generations (
     model text NOT NULL CHECK (length(btrim(model)) BETWEEN 1 AND 200),
     model_provider text NOT NULL CHECK (length(btrim(model_provider)) BETWEEN 1 AND 63),
     harness text NOT NULL CHECK (length(btrim(harness)) BETWEEN 1 AND 80),
-    thinking_effort text DEFAULT 'medium' NOT NULL CHECK (thinking_effort IN ('default', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra')),
+    thinking_effort text DEFAULT 'medium' NOT NULL CHECK (thinking_effort IN ('low', 'medium', 'high', 'xhigh')),
     status text DEFAULT 'pending' NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'failed')),
     result jsonb CHECK (result IS NULL OR jsonb_typeof(result) = 'object'),
     error text,

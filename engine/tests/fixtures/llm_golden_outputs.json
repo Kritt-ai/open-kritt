@@ -1,0 +1,116 @@
+[
+  {
+    "id": "gpt55_fenced_json",
+    "provider": "GPT-5.5",
+    "should_recover": true,
+    "output": "```json\n{\"_kritt_extractor_helper\":true,\"results\":[{\"name\":\"gpt55\",\"path\":[\"src\",\"main.go\"]}]}\n```"
+  },
+  {
+    "id": "gpt41_reasoning_after",
+    "provider": "GPT-4.1",
+    "should_recover": true,
+    "output": "{\"_kritt_extractor_helper\":true,\"results\":[{\"name\":\"gpt41\",\"path\":[\"src\"]}]}\nExplanation: returned exact JSON."
+  },
+  {
+    "id": "claude_opus_xml_then_json",
+    "provider": "Claude Opus",
+    "should_recover": true,
+    "output": "<analysis>I checked the task.</analysis>\n{\"_kritt_extractor_helper\":true,\"results\":[{\"name\":\"opus\",\"path\":[\"lib\"]}]}"
+  },
+  {
+    "id": "claude_sonnet_duplicate_blocks",
+    "provider": "Claude Sonnet",
+    "should_recover": true,
+    "output": "First draft:\n{\"note\":\"ignore\"}\nFinal JSON:\n{\"_kritt_extractor_helper\":true,\"results\":[{\"name\":\"sonnet\",\"path\":[\"a\",\"b\"]}]}"
+  },
+  {
+    "id": "claude_code_cli_stream_json_wrapper",
+    "provider": "Claude Code CLI",
+    "should_recover": true,
+    "output": "{\"type\":\"result\",\"result\":\"```json\\n{\\\"_kritt_extractor_helper\\\":true,\\\"results\\\":[{\\\"name\\\":\\\"claude_cli\\\",\\\"path\\\":[\\\"cli\\\"]}]}\\n```\"}\n{\"_kritt_extractor_helper\":true,\"results\":[{\"name\":\"claude_cli\",\"path\":[\"cli\"]}]}"
+  },
+  {
+    "id": "codex_cli_jsonl",
+    "provider": "Codex CLI",
+    "should_recover": true,
+    "output": "{\"event\":\"message\",\"text\":\"working\"}\n{\"_kritt_extractor_helper\":true,\"results\":[{\"name\":\"codex_cli\",\"path\":[\"agent\"]}]}"
+  },
+  {
+    "id": "gemini_markdown_preface",
+    "provider": "Gemini",
+    "should_recover": true,
+    "output": "Here is the JSON response:\n```json\n{\"_kritt_extractor_helper\":true,\"results\":[{\"name\":\"gemini\",\"path\":[\"g\"]}],}\n```"
+  },
+  {
+    "id": "deepseek_think_tag",
+    "provider": "DeepSeek",
+    "should_recover": true,
+    "output": "<think>reasoning omitted</think>\n{\"_kritt_extractor_helper\":true,\"results\":[{\"name\":\"deepseek\",\"path\":[\"d\"]}]}"
+  },
+  {
+    "id": "qwen_comments_trailing_commas",
+    "provider": "Qwen",
+    "should_recover": true,
+    "output": "{\n// comment\n\"_kritt_extractor_helper\":true,\n\"results\":[{\"name\":\"qwen\",\"path\":[\"q\",],},],\n}"
+  },
+  {
+    "id": "minimax_invalid_escape",
+    "provider": "Minimax",
+    "should_recover": true,
+    "output": "{\"_kritt_extractor_helper\":true,\"results\":[{\"name\":\"mini\\\\qmax\",\"path\":[\"m\"]}]}"
+  },
+  {
+    "id": "kimi_yaml_then_json",
+    "provider": "Kimi",
+    "should_recover": true,
+    "output": "result:\n  name: kimi\n---\n{\"_kritt_extractor_helper\":true,\"results\":[{\"name\":\"kimi\",\"path\":[\"k\"]}]}"
+  },
+  {
+    "id": "openrouter_provider_wrapper",
+    "provider": "OpenRouter",
+    "should_recover": true,
+    "output": "{\"choices\":[{\"message\":{\"content\":\"{\\\"_kritt_extractor_helper\\\":true,\\\"results\\\":[{\\\"name\\\":\\\"openrouter\\\",\\\"path\\\":[\\\"or\\\"]}]}\"}}]}\n{\"_kritt_extractor_helper\":true,\"results\":[{\"name\":\"openrouter\",\"path\":[\"or\"]}]}"
+  },
+  {
+    "id": "openrouter_wrapper_only_embedded_json",
+    "provider": "OpenRouter",
+    "should_recover": true,
+    "output": "{\"choices\":[{\"message\":{\"content\":\"```json\\n{\\\"_kritt_extractor_helper\\\":true,\\\"results\\\":[{\\\"name\\\":\\\"openrouter_embedded\\\",\\\"path\\\":[\\\"or\\\",\\\"embedded\\\"]}]}\\n```\"}}]}"
+  },
+  {
+    "id": "litellm_plain_text_json",
+    "provider": "LiteLLM",
+    "should_recover": true,
+    "output": "JSON:\n{\"_kritt_extractor_helper\":true,\"results\":[{\"name\":\"litellm\",\"path\":[\"llm\"]}]}"
+  },
+  {
+    "id": "agentrouter_multiple_json_blocks",
+    "provider": "AgentRouter",
+    "should_recover": true,
+    "output": "{\"debug\":\"route selected\"}\n```json\n{\"_kritt_extractor_helper\":true,\"results\":[{\"name\":\"agentrouter\",\"path\":[\"ar\"]}]}\n```"
+  },
+  {
+    "id": "agentrouter_tool_arguments_only",
+    "provider": "AgentRouter",
+    "should_recover": true,
+    "output": "{\"tool_calls\":[{\"function\":{\"name\":\"return_scan\",\"arguments\":\"{\\\"_kritt_extractor_helper\\\":true,\\\"results\\\":[{\\\"name\\\":\\\"agentrouter_tool\\\",\\\"path\\\":[\\\"ar\\\",\\\"tool\\\"]}]}\"}}]}"
+  },
+  {
+    "id": "ollama_unbalanced_recoverable",
+    "provider": "Ollama",
+    "should_recover": true,
+    "output": "{\"_kritt_extractor_helper\":true,\"results\":[{\"name\":\"ollama\",\"path\":[\"local\",\"model\"]}]"
+  },
+  {
+    "id": "duplicate_keys_ambiguous",
+    "provider": "Broken duplicate",
+    "should_recover": false,
+    "output": "{\"_kritt_extractor_helper\":true,\"results\":[],\"results\":[{\"name\":\"dup\",\"path\":[\"x\"]}]}"
+  },
+  {
+    "id": "truncated_inside_string",
+    "provider": "Broken truncated",
+    "should_recover": false,
+    "output": "{\"_kritt_extractor_helper\":true,\"results\":[{\"name\":\"unterminated"
+  }
+]

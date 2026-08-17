@@ -5,13 +5,7 @@ from types import SimpleNamespace
 from open_kritt_engine import repository
 from open_kritt_engine.config import EngineConfig
 from open_kritt_engine.post_processing import PostProcessor
-from open_kritt_engine.runtime_config import (
-    RUNTIME_ENV_ALIASES,
-    parse_env_text,
-    runtime_bool,
-    runtime_int,
-    sync_runtime_config_file,
-)
+from open_kritt_engine.runtime_config import parse_env_text, runtime_bool, runtime_int, sync_runtime_config_file
 from open_kritt_engine.worker import Worker
 
 
@@ -201,9 +195,7 @@ def test_engine_uses_conservative_worker_default(monkeypatch, tmp_path):
     config = EngineConfig.from_env()
 
     assert config.worker_count == 2
-    runtime_values = parse_env_text((tmp_path / "engine-runtime.env").read_text(encoding="utf-8"))
-    assert runtime_values["ENGINE_WORKER_COUNT"] == "2"
-    assert runtime_values["ENGINE_WORKERS_PER_ACCOUNT"] == "15"
+    assert parse_env_text((tmp_path / "engine-runtime.env").read_text(encoding="utf-8"))["ENGINE_WORKER_COUNT"] == "2"
     assert runtime_bool("ENGINE_AUTOSCALE_SCAN_WORKERS_ON_PROVIDER_CAPACITY", True, data_dir=str(tmp_path))
 
 
@@ -225,9 +217,14 @@ def test_startup_preserves_runtime_values_when_env_is_not_explicit(monkeypatch, 
     runtime_path = data_dir / "engine-runtime.env"
     runtime_path.write_text("ENGINE_WORKER_COUNT=7\nENGINE_CODEX_HOME=/operator/codex\n", encoding="utf-8")
     monkeypatch.delenv("ENGINE_RUNTIME_CONFIG_PATH", raising=False)
-    for aliases in RUNTIME_ENV_ALIASES.values():
-        for name in aliases:
-            monkeypatch.delenv(name, raising=False)
+    for name in (
+        "ENGINE_WORKER_COUNT",
+        "ENGINE_WORKERS",
+        "ENGINE_CODEX_HOME",
+        "CODEX_HOME",
+        "ENGINE_WORKSPACE_SETUP_CONCURRENCY",
+    ):
+        monkeypatch.delenv(name, raising=False)
 
     sync_runtime_config_file(str(data_dir))
 

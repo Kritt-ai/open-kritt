@@ -1,0 +1,48 @@
+services:
+  backend:
+    build:
+      args:
+        OPEN_KRITT_ENABLE_CODEX: ${ENABLE_CODEX:-true}
+        CODEX_API_KEY_CONFIGURED: '${CODEX_API_KEY:+1}'
+        CODEX_LOGIN_CONFIGURED: '${CODEX_LOGIN_CONFIGURED:+1}'
+    environment:
+      OPEN_KRITT_ENABLE_CODEX: ${ENABLE_CODEX:-true}
+      OPEN_KRITT_CODEX_API_KEY_CONFIGURED: '${CODEX_API_KEY:+1}'
+      OPEN_KRITT_OPENAI_API_KEY_CONFIGURED: '${OPENAI_API_KEY:+1}'
+      OPEN_KRITT_CODEX_LOGIN_CONFIGURED: '${CODEX_LOGIN_CONFIGURED:+1}'
+      OPEN_KRITT_CODEX_HOME_DIR: /provider-homes/codex
+      OPEN_KRITT_CODEX_ACCOUNTS_DIR: /provider-homes/codex-accounts
+      OPEN_KRITT_CODEX_RUNTIME_ACCOUNTS_DIR: /codex-accounts
+      OPEN_KRITT_CODEX_INITIAL_HOME: ${ENGINE_CODEX_HOME:-/root/.codex}
+    volumes:
+      - ${ENGINE_CODEX_HOME_HOST:-./.data/codex}:/provider-homes/codex:z
+      - ${ENGINE_CODEX_ACCOUNTS_HOST:-./.data/codex-accounts}:/provider-homes/codex-accounts:z
+
+  engine:
+    build:
+      args:
+        OPEN_KRITT_ENABLE_CODEX: ${ENABLE_CODEX:-true}
+        CODEX_API_KEY_CONFIGURED: '${CODEX_API_KEY:+1}'
+        CODEX_LOGIN_CONFIGURED: '${CODEX_LOGIN_CONFIGURED:+1}'
+    environment:
+      OPEN_KRITT_ENABLE_CODEX: ${ENABLE_CODEX:-true}
+      ENGINE_CODEX_UPDATE_INTERVAL_SECONDS: ${ENGINE_CODEX_UPDATE_INTERVAL_SECONDS:-86400}
+      ENGINE_CODEX_UPDATE_TIMEOUT_SECONDS: ${ENGINE_CODEX_UPDATE_TIMEOUT_SECONDS:-120}
+      ENGINE_CODEX_HOME: ${ENGINE_CODEX_HOME:-/root/.codex}
+      CODEX_API_KEY: ${CODEX_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      CODEX_MODEL_PROVIDER: ${CODEX_MODEL_PROVIDER:-}
+    volumes:
+      - ${ENGINE_CODEX_HOME_HOST:-./.data/codex}:/root/.codex:z
+      - ${ENGINE_CODEX_ACCOUNTS_HOST:-./.data/codex-accounts}:/run/open-kritt-secrets/codex-accounts:z
+      - ${ENGINE_CODEX_HOME_SOURCE_HOST:-./.data/codex-home-source}:/run/open-kritt-secrets/codex-home-source:ro,z
+
+  executor-view:
+    environment:
+      OPEN_KRITT_ENABLE_CODEX: ${ENABLE_CODEX:-true}
+      EXECUTOR_VIEW_CODEX_HOME: ${ENGINE_CODEX_HOME:-/root/.codex}
+      CODEX_MODEL_PROVIDER: ${CODEX_MODEL_PROVIDER:-}
+    volumes:
+      - ${ENGINE_CODEX_HOME_HOST:-./.data/codex}:/root/.codex:ro,z
+      - ${ENGINE_CODEX_ACCOUNTS_HOST:-./.data/codex-accounts}:/codex-accounts:ro,z
+      - ${ENGINE_CODEX_HOME_SOURCE_HOST:-./.data/codex-home-source}:/codex-home-source:ro,z

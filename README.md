@@ -1,117 +1,148 @@
-<div align="center">
+#  Open Kritt Custom
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/logo-dark.png" />
-  <img alt="open·kritt" src="docs/images/logo-light.png" width="96" height="96" />
-</picture>
+> A customized version of Open Kritt with support for custom AI providers and OpenAI-compatible APIs.
 
-# open·kritt
+---
 
-**Orchestrate AI agents to find real vulnerabilities in code.**
+# 📖 Introduction
 
-An open-source, self-hosted security research platform that turns focused AI analysis
-into de-duplicated, ranked findings with configurable validation and enrichment.
+Open Kritt Custom is a customized fork of the original **Open Kritt** project that extends its provider architecture to support custom AI providers and OpenAI-compatible APIs.
 
-[![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/Kritt-ai/open-kritt?sort=semver)](https://github.com/Kritt-ai/open-kritt/releases)
+The primary goal of this fork is to make model integration more flexible by allowing developers to connect custom providers, configure OpenAI-compatible endpoints, and register their own models without being limited to the project's built-in integrations.
 
-[Website](https://kritt.ai) ·
-[Documentation](https://docs.kritt.ai) ·
-[Getting started](https://docs.kritt.ai/getting-started/installation-and-setup) ·
-[Contributing](CONTRIBUTING.md) ·
-[Research paper](https://kritt.ai/open-kritt-launch) ·
-[Discord community](https://t.co/WzXMUKWxcR) ·
-[Twitter](https://x.com/Kritt_AI)
+---
 
-</div>
+# ✨ Features Added
 
-![open·kritt workflow builder](assets/workflow_screen.png)
+## 🔌 Custom AI Provider Integration
 
-## What is open·kritt?
+- Register and configure custom AI providers
+- Connect any OpenAI-compatible API
+- Configure custom API endpoints and authentication
 
-Pointing a model at an entire repository and asking it to find vulnerabilities rarely
-works well. open·kritt takes a focused approach: break the research into small,
-well-defined tasks, run them across AI agents in parallel, and combine their output into
-findings you can validate and prioritize.
+## 🤖 Flexible Model Management
 
-It is built for security researchers and security-minded developers who want control
-over their prompts, workflows, model providers, and infrastructure.
+- Register provider-specific models
+- Organize and switch between available models
+- Support custom model catalogs
 
-### What it does
+## 💻 Automatic CLI Detection
 
-- **Build workflows** — chain focused prompts into reusable security research playbooks.
-- **Run scans** — analyze remote or local repositories and their dependencies with Codex
-  or Claude Code.
-- **Verify findings** — use post-scripts to validate issues, build proofs of concept, and
-  produce reports.
-- **Prioritize results** — apply custom severity rankers, a consistent finding schema,
-  and automatic de-duplication.
-- **Bring your own model access** — use a Codex login or connect through OpenAI,
-  Anthropic, or OpenRouter.
+- Automatically detects existing **Claude Code** installations
+- Automatically detects existing **Codex CLI** installations
+- Reuses existing local authentication
+- Eliminates manual CLI configuration for supported providers
 
-> **Built from real security research.** The Kritt team has earned over **$1,500,000 in
-> bug-bounty payouts** under the researcher name **Blockian**
-> ([Immunefi](https://immunefi.com/profile/Blockian/) ·
-> [HackenProof](https://hackenproof.com/hackers/Blockian) ·
-> [blockian.xyz](https://blockian.xyz) · [@Kritt_AI](https://x.com/Kritt_AI)).
-> open·kritt is the open-source distillation of the internal project behind that work.
+---
 
-## Getting started
+# 🚀 Getting Started
 
-You need Git, Docker with Docker Compose, and Node.js 20 or newer. The repository-local
-CLI has no install step.
+## 📦 Prerequisites
+
+Before getting started, ensure the following are installed on your system:
+
+- Docker
+- Docker Compose
+- Git
+
+---
+
+## ⚡ Installation
+
+### 1️⃣ Clone the Repository
 
 ```bash
-git clone https://github.com/Kritt-ai/open-kritt
-cd open-kritt
-./kritt setup
-./kritt start
+git clone https://github.com/nishanm15/open-kritt-custom.git
+cd open-kritt-custom
 ```
 
-Open [http://localhost:5173](http://localhost:5173) once the stack is running. You only
-need one model-access option; `./kritt setup` guides you through the available logins and
-API keys. A `GITHUB_TOKEN` is optional and only needed for private GitHub repositories.
-
-The default ports bind to `127.0.0.1`, and the backend does not include application
-authentication. Keep the stack private.
-
-Tool-enabled agents run as root inside disposable job containers, with writable repository
-copies and direct internet access so they can install tools, compile targets, run tests,
-and build proofs of concept. Run open·kritt on a dedicated Docker host or VM; see the
-[threat model](docs/threat-model.md) before scanning untrusted code.
-
-For prerequisites, manual Docker setup, and provider-specific instructions, read the
-[installation guide](docs-site/getting-started/installation-and-setup.mdx) and
-[AI provider setup](docs-site/ai-provider-setup/overview.mdx).
-
-## Documentation
-
-Preview the documentation locally with Mint:
+### 2️⃣ Build the Application
 
 ```bash
-npm install -g mint
-cd docs-site
-npm run dev
+docker compose build --no-cache
 ```
 
-Open [http://localhost:3001](http://localhost:3001) to view the site.
+### 3️⃣ Start the Application
 
-- [Product overview](docs-site/getting-started/welcome.mdx)
-- [Run your first scan](docs-site/first-scan/workflow.mdx)
-- [Workflows and prompt steps](docs-site/workflows/steps.mdx)
-- [Security and threat model](docs/threat-model.md)
+```bash
+docker compose up
+```
 
-## Community and contributing
+Run in the background:
 
-Questions and ideas belong in [GitHub Discussions](https://github.com/Kritt-ai/open-kritt/discussions).
-Use [GitHub Issues](https://github.com/Kritt-ai/open-kritt/issues) for bugs and feature
-requests.
+```bash
+docker compose up -d
+```
 
-Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) for the development
-setup, test commands, Conventional Commits, and DCO sign-off requirements.
+### 4️⃣ Access the Application
 
-Please report security vulnerabilities privately by following [SECURITY.md](SECURITY.md), not through a public issue.
+Once all services are running, open:
 
-## License
+```
+http://localhost:5173
+```
 
-open·kritt is licensed under the [GNU Affero General Public License v3.0](LICENSE).
+The frontend, backend, engine, and database will start automatically via Docker Compose.
+
+---
+
+# ⚙️ Adding Custom Providers
+
+![Dashboard](assets/screenshots/1.png)
+Manage all configured providers from a single dashboard.
+
+---
+
+![Custom Providers](assets/screenshots/2.png)
+Configure:
+
+- **Name**
+- **Base URL**
+- **API Key**
+- **Model**
+- **Organization** (optional)
+- **Extra Headers** (optional)
+
+---
+
+![Provider Added](assets/screenshots/3.png)
+You can test, edit or delete the configured provider. Along with add new.
+
+---
+
+![Scan Configuration](assets/screenshots/4.png)
+Once added, your provider automatically appears when creating a new scan.
+
+---
+
+# 🙌 Credits
+
+This project is based on the original **Open Kritt** project.
+
+## 👨‍💻 Maintainer
+
+**@itsdarktoday**
+
+🐙 GitHub: https://github.com/itsdarktoday
+
+𝕏 X: https://x.com/0xitsdarktoday
+
+📝 Medium: [@itsdarktoday](https://medium.com/@itsdarktoday)
+
+---
+
+## 🤝 Contributor
+
+**@0xscarfac3**
+
+🐙 GitHub: https://github.com/0xscarfac3
+
+𝕏 X: https://x.com/0Xscarfac3
+
+📝 Medium: [@0xscarfac3](https://medium.com/@0xscarfac3)
+
+---
+
+### 📜 Note
+
+This is a custom version of **Open Kritt v1.1.0**.

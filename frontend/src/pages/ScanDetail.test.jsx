@@ -42,9 +42,7 @@ describe('scan run settings', () => {
     model: 'gpt-5-codex',
     model_provider: 'codex',
     thinking_effort: 'medium',
-    post_processing_thinking_effort: 'low',
     harness: 'codex',
-    model_overrides: {},
     job_limit: '250',
   };
 
@@ -53,7 +51,6 @@ describe('scan run settings', () => {
       model: 'gpt-5-codex',
       model_provider: 'codex',
       thinking_effort: 'medium',
-      post_processing_thinking_effort: 'low',
       harness: 'codex',
     };
 
@@ -66,9 +63,7 @@ describe('scan run settings', () => {
       model: 'legacy-model',
       model_provider: 'openrouter',
       thinking_effort: 'medium',
-      post_processing_thinking_effort: 'medium',
       harness: 'codex',
-      model_overrides: {},
       job_limit: '',
     });
   });
@@ -80,42 +75,6 @@ describe('scan run settings', () => {
   it('still supports setting and clearing a job limit', () => {
     expect(runSettingsPayload({ job_limit: ' 25 ' }, { ...current, job_limit: '' })).toEqual({ jobLimit: 25 });
     expect(runSettingsPayload({ job_limit: '' }, current)).toEqual({ jobLimit: null });
-  });
-
-  it('updates post-processing effort independently', () => {
-    expect(runSettingsPayload({ post_processing_thinking_effort: 'medium' }, current)).toEqual({
-      post_processing_thinking_effort: 'medium',
-    });
-  });
-
-  it('replaces or clears normalized workflow-depth model overrides', () => {
-    const override = {
-      1: {
-        model: 'claude-sonnet',
-        modelProvider: 'claude',
-        harness: 'claude-code',
-        thinkingEffort: 'high',
-      },
-    };
-    expect(runSettingsPayload({ model_overrides: override }, current)).toEqual({
-      model_overrides: {
-        1: {
-          model: 'claude-sonnet',
-          model_provider: 'claude',
-          harness: 'claude-code',
-          thinking_effort: 'high',
-        },
-      },
-    });
-    expect(
-      runSettingsPayload(
-        { model_overrides: {} },
-        {
-          ...current,
-          model_overrides: override,
-        }
-      )
-    ).toEqual({ model_overrides: {} });
   });
 });
 
@@ -247,43 +206,6 @@ describe('resumed scan error history', () => {
 
     expect(html).toContain('href="/accounts"');
     expect(html).toContain('View usage and limits in Accounts');
-  });
-
-  it('renders low-storage pause failures with the managed actionable message', () => {
-    const html = renderToStaticMarkup(
-      createElement(
-        MemoryRouter,
-        null,
-        createElement(ScanStatusPanel, {
-          scan: {
-            status: 'failed',
-            statusSummary: {
-              recentErrors: [
-                {
-                  id: 'storage-warning-1',
-                  source: 'Scan',
-                  title: 'Scan failure',
-                  phaseLabel: 'Failed',
-                  message:
-                    'Low-storage pause failed. The engine ran low on disk space, then could not save its automatic pause warning. Free disk space, lower Minimum free storage, or enable Ignore low-storage safeguard in Settings, then resume the scan; completed work is preserved.',
-                  knownError: {
-                    key: 'storage_warning_persistence_failed',
-                    title: 'Low-storage pause failed',
-                    fixLinks: [{ label: 'Open Settings', url: '/settings', internal: true }],
-                  },
-                },
-              ],
-            },
-          },
-        })
-      )
-    );
-
-    expect(html).toContain('Low-storage pause failed');
-    expect(html).toContain('enable Ignore low-storage safeguard in Settings');
-    expect(html).toContain('href="/settings"');
-    expect(html).toContain('Open Settings');
-    expect(html).not.toContain('cannot set path in scalar');
   });
 
   it('shows when each status error occurred', () => {

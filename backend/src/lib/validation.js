@@ -13,13 +13,10 @@ import {
   EXTRA_KEY,
   THINKING_EFFORTS,
   DEFAULT_THINKING_EFFORT,
-  MODEL_PROVIDERS,
   DEFAULT_MODEL_PROVIDER,
   HARNESSES,
   HARNESS_ALIASES,
-  MODEL_PROVIDER_HARNESSES,
   HARNESS_THINKING_EFFORTS,
-  isModelProviderHarnessCompatible,
   GENERATION_KINDS,
   GENERATION_REQUEST_MAX_LENGTH,
   MODEL_ID_MAX_LENGTH,
@@ -37,7 +34,8 @@ import {
   multiOutputDepthKey,
   isMultiOutputDepthKey,
 } from './constants.js';
-import { customProviderDefinition } from './providerCredentials.js';
+import { modelProviderHarnesses } from './modelProviders.js';
+import { knownModelProviderIdsSync } from './providerCredentials.js';
 
 class ValidationError extends Error {
   constructor(errors) {
@@ -49,10 +47,19 @@ class ValidationError extends Error {
 }
 export { ValidationError };
 
-function modelSelectionValidation(body, fieldPrefix = '') {
+function normalizeKnownProviders(knownProviders) {
+  if (Array.isArray(knownProviders)) {
+    return [...new Set(knownProviders.map((provider) => `${provider || ''}`.trim().toLowerCase()).filter(Boolean))];
+  }
+  if (knownProviders && typeof knownProviders === 'object') {
+    return [...new Set(Object.keys(knownProviders).map((provider) => `${provider || ''}`.trim().toLowerCase()).filter(Boolean))];
+  }
+  return knownModelProviderIdsSync();
+}
+
+function modelSelectionValidation(body, { knownProviders } = {}) {
   const errors = [];
-  const fieldName = (field) => (fieldPrefix ? `${fieldPrefix}.${field}` : field);
-  const push = (field, message) => errors.push({ field: fieldName(field), message });
+  const push = (field, message) => errors.push({ field, message });
 
   const modelValue = body?.model;
   const model = typeof modelValue === 'string' ? modelValue.trim() : '';
@@ -71,9 +78,9 @@ function modelSelectionValidation(body, fieldPrefix = '') {
   }
   const rawProvider = typeof providerValue === 'string' ? providerValue.trim().toLowerCase() : DEFAULT_MODEL_PROVIDER;
   const modelProvider = rawProvider || DEFAULT_MODEL_PROVIDER;
-  const customProvider = customProviderDefinition(modelProvider);
-  if (!MODEL_PROVIDERS.includes(modelProvider) && !customProvider) {
-    push('model_provider', `Model provider must be one of: ${MODEL_PROVIDERS.join(', ')}.`);
+  const configuredProviders = normalizeKnownProviders(knownProviders);
+  if (!configuredProviders.includes(modelProvider)) {
+    push('model_provider', `Model provider must be one of: ${configuredProviders.join(', ')}.`);
   }
 
   const harnessValue = body?.harness;
@@ -85,15 +92,16 @@ function modelSelectionValidation(body, fieldPrefix = '') {
       harnessValue == null || typeof harnessValue === 'string' ? 'A harness is required.' : 'Harness must be a string.'
     );
   } else if (!HARNESSES.includes(harness)) push('harness', `Harness must be one of: ${HARNESSES.join(', ')}.`);
-  else if (customProvider && !customProvider.harnesses.includes(harness)) {
-    push('harness', `Harness "${harness}" is not compatible with model provider "${modelProvider}". Use openai-compatible.`);
-  } else if (MODEL_PROVIDERS.includes(modelProvider) && !isModelProviderHarnessCompatible(modelProvider, harness)) {
-    push(
-      'harness',
-      `Harness "${harness}" is not compatible with model provider "${modelProvider}". Use ${MODEL_PROVIDER_HARNESSES[
-        modelProvider
-      ].join(' or ')}.`
-    );
+  else {
+    const compatibleHarnesses = modelProviderHarnesses(modelProvider);
+    if (compatibleHarnesses.length > 0 && !compatibleHarnesses.includes(harness)) {
+      push(
+        'harness',
+        `Harness "${harness}" is not compatible with model provider "${modelProvider}". Use ${compatibleHarnesses.join(
+          ' or '
+        )}.`
+      );
+    }
   }
 
   const effortValue = body?.thinking_effort ?? body?.thinkingEffort;
@@ -111,81 +119,10 @@ function modelSelectionValidation(body, fieldPrefix = '') {
   return { errors, normalized: { model, modelProvider, harness, thinkingEffort } };
 }
 
-export function validateModelSelection(body) {
-  const { errors, normalized } = modelSelectionValidation(body);
+export function validateModelSelection(body, options = {}) {
+  const { errors, normalized } = modelSelectionValidation(body, options);
   if (errors.length) throw new ValidationError(errors);
   return normalized;
-}
-
-export function validatePostProcessingThinkingEffort(value, { harness, fallback = DEFAULT_THINKING_EFFORT } = {}) {
-  const field = 'post_processing_thinking_effort';
-  if (value != null && typeof value !== 'string') {
-    throw new ValidationError([{ field, message: 'Post-processing thinking effort must be a string.' }]);
-  }
-  const normalizedFallback =
-    typeof fallback === 'string' && fallback.trim() ? fallback.trim() : DEFAULT_THINKING_EFFORT;
-  const effort = typeof value === 'string' && value.trim() ? value.trim() : normalizedFallback;
-  if (!THINKING_EFFORTS.includes(effort)) {
-    throw new ValidationError([
-      { field, message: `Post-processing thinking effort must be one of: ${THINKING_EFFORTS.join(', ')}.` },
-    ]);
-  }
-  if (HARNESSES.includes(harness) && !HARNESS_THINKING_EFFORTS[harness]?.includes(effort)) {
-    throw new ValidationError([
-      {
-        field,
-        message: `Post-processing thinking effort "${effort}" is not supported by harness "${harness}".`,
-      },
-    ]);
-  }
-  return effort;
-}
-
-export function validateModelOverrides(value, { allowedDepths = null, field = 'model_overrides' } = {}) {
-  if (value === undefined || value === null) return {};
-  if (!isObjectMap(value)) {
-    throw new ValidationError([{ field, message: 'Model overrides must be an object keyed by workflow depth.' }]);
-  }
-
-  const errors = [];
-  const normalized = {};
-  const entries = Object.entries(value);
-  if (entries.length > 1_000) {
-    errors.push({ field, message: 'Model overrides may contain at most 1,000 workflow depths.' });
-  }
-  const allowed = allowedDepths === null ? null : new Set([...allowedDepths].map(Number));
-
-  for (const [rawDepth, configuration] of entries.slice(0, 1_000)) {
-    const entryField = `${field}.${rawDepth}`;
-    if (!/^(?:0|[1-9]\d*)$/.test(rawDepth)) {
-      errors.push({ field: entryField, message: 'Workflow depth must be a non-negative integer.' });
-      continue;
-    }
-    const depth = Number(rawDepth);
-    if (!Number.isSafeInteger(depth)) {
-      errors.push({ field: entryField, message: 'Workflow depth is too large.' });
-      continue;
-    }
-    if (allowed && !allowed.has(depth)) {
-      errors.push({ field: entryField, message: `Depth ${depth} does not exist in the selected workflow.` });
-    }
-    if (!isObjectMap(configuration)) {
-      errors.push({ field: entryField, message: 'A complete model configuration is required for this depth.' });
-      continue;
-    }
-
-    const selection = modelSelectionValidation(configuration, entryField);
-    errors.push(...selection.errors);
-    normalized[rawDepth] = {
-      model: selection.normalized.model,
-      model_provider: selection.normalized.modelProvider,
-      harness: selection.normalized.harness,
-      thinking_effort: selection.normalized.thinkingEffort,
-    };
-  }
-
-  if (errors.length) throw new ValidationError(errors);
-  return Object.fromEntries(Object.entries(normalized).sort(([left], [right]) => Number(left) - Number(right)));
 }
 
 // ----------------------------------------------------------------------------
@@ -534,7 +471,7 @@ export function validateGeneratedPostScript(body) {
 // ----------------------------------------------------------------------------
 // Natural-language workflow / post-script generation request validation
 // ----------------------------------------------------------------------------
-export function validateGeneration(body) {
+export function validateGeneration(body, { knownProviders = null } = {}) {
   const errors = [];
 
   const kind = typeof body?.kind === 'string' ? body.kind.trim().toLowerCase() : '';
@@ -551,7 +488,7 @@ export function validateGeneration(body) {
     });
   }
 
-  const selection = modelSelectionValidation(body);
+  const selection = modelSelectionValidation(body, { knownProviders });
   errors.push(...selection.errors);
   if (errors.length) throw new ValidationError(errors);
 
@@ -680,7 +617,7 @@ function normalizeRepoRef(raw, localNames, push, prefix) {
   return { kind, repoFull, commitSha: LOCAL_SNAPSHOT_REVISION };
 }
 
-export function validateScan(body, { localNames = null } = {}) {
+export function validateScan(body, { localNames = null, knownProviders = null } = {}) {
   const errors = [];
   const push = (field, message) => errors.push({ field, message });
 
@@ -706,15 +643,8 @@ export function validateScan(body, { localNames = null } = {}) {
     'target'
   );
 
-  const selection = modelSelectionValidation(body);
+  const selection = modelSelectionValidation(body, { knownProviders });
   errors.push(...selection.errors);
-  let modelOverrides = {};
-  try {
-    modelOverrides = validateModelOverrides(body?.model_overrides ?? body?.modelOverrides);
-  } catch (error) {
-    if (error instanceof ValidationError) errors.push(...error.errors);
-    else throw error;
-  }
 
   // dependencies: an array of structured repo refs (remote URL+commit, or local).
   // Back-compat: a comma/space separated string is treated as remote URLs.
@@ -746,22 +676,6 @@ export function validateScan(body, { localNames = null } = {}) {
       push('configuration', 'Configuration is not valid JSON.');
     }
   }
-  let postProcessingThinkingEffort = selection.normalized.thinkingEffort;
-  try {
-    const configuredPostProcessingThinkingEffort =
-      body?.post_processing_thinking_effort ??
-      body?.postProcessingThinkingEffort ??
-      (configuration && typeof configuration === 'object' && !Array.isArray(configuration)
-        ? (configuration.post_processing_thinking_effort ?? configuration.postProcessingThinkingEffort)
-        : undefined);
-    postProcessingThinkingEffort = validatePostProcessingThinkingEffort(configuredPostProcessingThinkingEffort, {
-      harness: selection.normalized.harness,
-      fallback: selection.normalized.thinkingEffort,
-    });
-  } catch (error) {
-    if (error instanceof ValidationError) errors.push(...error.errors);
-    else throw error;
-  }
 
   // severity_ranker: required concatenated markdown ruleset for ranking findings.
   const severityRanker = (body?.severity_ranker ?? body?.severityRanker ?? '').toString();
@@ -791,8 +705,6 @@ export function validateScan(body, { localNames = null } = {}) {
     dependencies, // [{ kind, repoFull, commitSha }]
     configuration,
     ...selection.normalized,
-    postProcessingThinkingEffort,
-    modelOverrides,
     severityRanker,
     extra,
     jobLimit,
@@ -803,78 +715,32 @@ export function validateScanRuntimeSettings(body, current = {}, options = {}) {
   return validateProspectiveScanRuntimeSettings(body, current, options).data;
 }
 
-export function validateProspectiveScanRuntimeSettings(body, current = {}, { allowedDepths = null } = {}) {
+export function validateProspectiveScanRuntimeSettings(body, current = {}, options = {}) {
   const data = {};
   const hasOwn = (key) => Object.prototype.hasOwnProperty.call(body || {}, key);
   const hasModel = hasOwn('model');
   const hasProvider = hasOwn('model_provider') || hasOwn('modelProvider');
   const hasHarness = hasOwn('harness');
   const hasThinkingEffort = hasOwn('thinking_effort') || hasOwn('thinkingEffort');
-  const hasPostProcessingThinkingEffort =
-    hasOwn('post_processing_thinking_effort') || hasOwn('postProcessingThinkingEffort');
-  const hasModelOverrides = hasOwn('model_overrides') || hasOwn('modelOverrides');
 
-  if (
-    !hasModel &&
-    !hasProvider &&
-    !hasHarness &&
-    !hasThinkingEffort &&
-    !hasPostProcessingThinkingEffort &&
-    !hasModelOverrides
-  ) {
-    return { data, selection: null, postProcessingSelection: null, modelOverrides: null };
+  if (!hasModel && !hasProvider && !hasHarness && !hasThinkingEffort) {
+    return { data, selection: null };
   }
 
-  const selection =
-    hasModel || hasProvider || hasHarness || hasThinkingEffort
-      ? validateModelSelection({
-          model: hasModel ? body?.model : current.model,
-          model_provider: hasProvider ? (body?.model_provider ?? body?.modelProvider) : current.modelProvider,
-          harness: hasHarness ? body?.harness : current.harness,
-          thinking_effort: hasThinkingEffort ? (body?.thinking_effort ?? body?.thinkingEffort) : current.thinkingEffort,
-        })
-      : null;
-  const prospectiveSelection =
-    selection ||
-    validateModelSelection({
-      model: current.model,
-      model_provider: current.modelProvider,
-      harness: current.harness,
-      thinking_effort: current.thinkingEffort,
-    });
-  const currentConfiguration =
-    current.configuration && typeof current.configuration === 'object' && !Array.isArray(current.configuration)
-      ? current.configuration
-      : {};
-  const explicitCurrentPostProcessingThinkingEffort =
-    current.postProcessingThinkingEffort ??
-    currentConfiguration.post_processing_thinking_effort ??
-    currentConfiguration.postProcessingThinkingEffort;
-  const currentPostProcessingThinkingEffort =
-    explicitCurrentPostProcessingThinkingEffort ?? prospectiveSelection.thinkingEffort;
-  const postProcessingThinkingEffort = validatePostProcessingThinkingEffort(
-    hasPostProcessingThinkingEffort
-      ? (body?.post_processing_thinking_effort ?? body?.postProcessingThinkingEffort)
-      : currentPostProcessingThinkingEffort,
+  const selection = validateModelSelection(
     {
-      harness: prospectiveSelection.harness,
-      fallback: prospectiveSelection.thinkingEffort,
-    }
+      model: hasModel ? body?.model : current.model,
+      model_provider: hasProvider ? (body?.model_provider ?? body?.modelProvider) : current.modelProvider,
+      harness: hasHarness ? body?.harness : current.harness,
+      thinking_effort: hasThinkingEffort ? (body?.thinking_effort ?? body?.thinkingEffort) : current.thinkingEffort,
+    },
+    options
   );
-  const postProcessingSelection =
-    selection || hasPostProcessingThinkingEffort
-      ? { ...prospectiveSelection, thinkingEffort: postProcessingThinkingEffort }
-      : null;
-  const modelOverrides = hasModelOverrides
-    ? validateModelOverrides(body?.model_overrides ?? body?.modelOverrides, { allowedDepths })
-    : null;
 
   if (hasModel) data.model = selection.model;
   if (hasProvider) data.modelProvider = selection.modelProvider;
   if (hasHarness) data.harness = selection.harness;
   if (hasThinkingEffort) data.thinkingEffort = selection.thinkingEffort;
-  if (hasPostProcessingThinkingEffort) data.postProcessingThinkingEffort = postProcessingThinkingEffort;
-  if (hasModelOverrides) data.modelOverrides = modelOverrides;
 
-  return { data, selection, postProcessingSelection, modelOverrides };
+  return { data, selection };
 }

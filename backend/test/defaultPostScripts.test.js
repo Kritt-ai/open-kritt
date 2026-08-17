@@ -19,7 +19,7 @@ const seedSql = `${originalSeedSql}\n${securitySeedSql}`;
 function parseSeedScripts(sql) {
   return [
     ...sql.matchAll(
-      /SELECT\s*\n\s*'([^']+)',\s*\n\s*'([^']+)',\s*\n\s*\$script\$\n([\s\S]*?)\n\$script\$,\s*\n\s*'([^']+)'/g
+      /INSERT INTO public\.post_scripts \(name, description, content, output_?format\)\s*SELECT\s*\r?\n\s*'([^']+)',\s*\r?\n\s*'([^']+)',\s*\r?\n\s*\$script\$\r?\n([\s\S]*?)\r?\n\$script\$,\s*\r?\n\s*'([^']+)'/g
     ),
   ].map(([, name, description, content, outputFormat]) => ({
     name,

@@ -20,6 +20,23 @@ import accountsRouter from './routes/accounts.js';
 import settingsRouter from './routes/settings.js';
 import { ValidationError } from './lib/validation.js';
 
+function serializeError(error, depth = 0) {
+  if (!error || depth > 4) return null;
+  return {
+    name: error.name,
+    message: error.message,
+    stack: error.stack,
+    code: error.code,
+    statusCode: error.statusCode,
+    meta: error.meta,
+    cause: serializeError(error.cause, depth + 1),
+  };
+}
+
+function developmentErrorsEnabled(env) {
+  return !['production', 'prod'].includes(String(env.NODE_ENV || '').toLowerCase());
+}
+
 export function prismaUniqueConflict(error) {
   if (error?.code !== 'P2002') return null;
   const rawTarget = error?.meta?.target;
@@ -63,8 +80,9 @@ export function corsOptions(env = process.env) {
   };
 }
 
-export function createApp({ env = process.env } = {}) {
+export function createApp({ env = process.env, runtimeSettingsOptions } = {}) {
   const app = express();
+  app.locals.runtimeSettingsOptions = runtimeSettingsOptions;
 
   app.use(cors(corsOptions(env)));
   app.use(express.json({ limit: '2mb' }));
@@ -103,6 +121,19 @@ export function createApp({ env = process.env } = {}) {
   // Central error handler. Validation errors become 422 with a field list.
   // eslint-disable-next-line no-unused-vars
   app.use((err, req, res, next) => {
+    const errorDetails = serializeError(err);
+    (req.log || logger).error(
+      {
+        err,
+        error: errorDetails,
+        method: req.method,
+        url: req.originalUrl,
+        body: req.body,
+        params: req.params,
+        query: req.query,
+      },
+      'request failed with unhandled exception'
+    );
     if (err instanceof ValidationError) {
       return res.status(422).json({ error: 'Validation failed.', errors: err.errors });
     }
@@ -113,8 +144,11 @@ export function createApp({ env = process.env } = {}) {
     const uniqueConflict = prismaUniqueConflict(err);
     if (uniqueConflict) return res.status(uniqueConflict.status).json(uniqueConflict.body);
     if (err?.code === 'P2025') return res.status(404).json({ error: 'Not found.' });
-    (req.log || logger).error({ err }, 'unhandled error');
-    res.status(500).json({ error: 'Internal server error.' });
+    const message = developmentErrorsEnabled(env) ? err?.message || 'Internal server error.' : 'Internal server error.';
+    res.status(err?.statusCode && err.statusCode >= 400 && err.statusCode < 600 ? err.statusCode : 500).json({
+      error: message,
+      ...(developmentErrorsEnabled(env) ? { details: errorDetails } : {}),
+    });
   });
 
   return app;

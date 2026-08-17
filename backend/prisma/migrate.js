@@ -3,13 +3,8 @@
 //
 // The Postgres container runs database/init/*.sql automatically ONLY on a fresh
 // data volume. If you already have a persisted ./.data/postgres that predates the
-// init scripts, the tables won't exist — this recreates them. Every statement in
-// the init SQL is guarded (CREATE ... IF NOT EXISTS / ADD COLUMN IF NOT EXISTS),
-// so running this repeatedly is safe.
-//
-//   npm run migrate
-//
-// The backend container also runs this on startup so `docker compose up` just works.
+// init scripts, the tables will not exist. Running the same SQL files here keeps
+// backend startup aligned with the database container's initialization path.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -23,123 +18,118 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CANDIDATE_DIRS = ['/app/database-init', path.resolve(__dirname, '../../database/init')];
 
 function findSqlDir() {
-  for (const d of CANDIDATE_DIRS) {
-    if (fs.existsSync(d) && fs.statSync(d).isDirectory()) {
-      const hasSql = fs.readdirSync(d).some((f) => f.endsWith('.sql'));
-      if (hasSql) return d;
+  for (const dir of CANDIDATE_DIRS) {
+    if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
+      continue;
+    }
+    if (fs.readdirSync(dir).some((file) => file.endsWith('.sql'))) {
+      return dir;
     }
   }
   return null;
 }
 
-// Split a SQL file into individual statements without treating semicolons or
-// comment markers inside quoted values as SQL syntax.
 function splitStatements(sql) {
   const statements = [];
-  let statement = '';
-  let state = 'normal';
-  let dollarTag = '';
+  let current = '';
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+  let inLineComment = false;
+  let inBlockComment = false;
+  let dollarQuoteTag = null;
 
   for (let i = 0; i < sql.length; i += 1) {
     const char = sql[i];
-    const next = sql[i + 1];
+    const next = sql[i + 1] ?? '';
 
-    if (state === 'line-comment') {
+    if (inLineComment) {
       if (char === '\n') {
-        statement += char;
-        state = 'normal';
+        inLineComment = false;
+        current += char;
       }
       continue;
     }
 
-    if (state === 'block-comment') {
+    if (inBlockComment) {
       if (char === '*' && next === '/') {
+        inBlockComment = false;
         i += 1;
-        state = 'normal';
       }
       continue;
     }
 
-    if (state === 'single-quote') {
-      statement += char;
-      if (char === "'" && next === "'") {
-        statement += next;
-        i += 1;
-      } else if (char === "'") {
-        state = 'normal';
-      }
-      continue;
-    }
-
-    if (state === 'double-quote') {
-      statement += char;
-      if (char === '"' && next === '"') {
-        statement += next;
-        i += 1;
-      } else if (char === '"') {
-        state = 'normal';
-      }
-      continue;
-    }
-
-    if (state === 'dollar-quote') {
-      if (sql.startsWith(dollarTag, i)) {
-        statement += dollarTag;
-        i += dollarTag.length - 1;
-        state = 'normal';
-      } else {
-        statement += char;
-      }
-      continue;
-    }
-
-    if (char === '-' && next === '-') {
-      i += 1;
-      state = 'line-comment';
-      continue;
-    }
-
-    if (char === '/' && next === '*') {
-      i += 1;
-      state = 'block-comment';
-      continue;
-    }
-
-    if (char === "'") {
-      statement += char;
-      state = 'single-quote';
-      continue;
-    }
-
-    if (char === '"') {
-      statement += char;
-      state = 'double-quote';
-      continue;
-    }
-
-    if (char === '$') {
-      const match = sql.slice(i).match(/^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/);
-      if (match) {
-        dollarTag = match[0];
-        statement += dollarTag;
-        i += dollarTag.length - 1;
-        state = 'dollar-quote';
+    if (dollarQuoteTag) {
+      if (sql.startsWith(dollarQuoteTag, i)) {
+        current += dollarQuoteTag;
+        i += dollarQuoteTag.length - 1;
+        dollarQuoteTag = null;
         continue;
       }
-    }
-
-    if (char === ';') {
-      const trimmed = statement.trim();
-      if (trimmed) statements.push(trimmed);
-      statement = '';
+      current += char;
       continue;
     }
 
-    statement += char;
+    if (!inSingleQuote && !inDoubleQuote) {
+      if (char === '-' && next === '-') {
+        inLineComment = true;
+        i += 1;
+        continue;
+      }
+      if (char === '/' && next === '*') {
+        inBlockComment = true;
+        i += 1;
+        continue;
+      }
+      if (char === '$') {
+        const remainder = sql.slice(i);
+        const match = remainder.match(/^\$[A-Za-z0-9_]*\$/);
+        if (match) {
+          dollarQuoteTag = match[0];
+          current += dollarQuoteTag;
+          i += dollarQuoteTag.length - 1;
+          continue;
+        }
+      }
+    }
+
+    if (char === "'" && !inDoubleQuote) {
+      current += char;
+      if (inSingleQuote && next === "'") {
+        current += next;
+        i += 1;
+        continue;
+      }
+      inSingleQuote = !inSingleQuote;
+      continue;
+    }
+
+    if (char === '"' && !inSingleQuote) {
+      current += char;
+      if (inDoubleQuote && next === '"') {
+        current += next;
+        i += 1;
+        continue;
+      }
+      inDoubleQuote = !inDoubleQuote;
+      continue;
+    }
+
+    if (char === ';' && !inSingleQuote && !inDoubleQuote) {
+      const statement = current.trim();
+      if (statement) {
+        statements.push(statement);
+      }
+      current = '';
+      continue;
+    }
+
+    current += char;
   }
 
-  const trimmed = statement.trim();
-  if (trimmed) statements.push(trimmed);
+  const trailing = current.trim();
+  if (trailing) {
+    statements.push(trailing);
+  }
   return statements;
 }
 
@@ -149,9 +139,10 @@ async function main() {
     console.error('Could not locate database/init SQL files. Looked in:', CANDIDATE_DIRS);
     process.exit(1);
   }
+
   const files = fs
     .readdirSync(dir)
-    .filter((f) => f.endsWith('.sql'))
+    .filter((file) => file.endsWith('.sql'))
     .sort();
   console.log(`Applying schema from ${dir}: ${files.join(', ')}`);
 
@@ -162,18 +153,23 @@ async function main() {
 
   for (const file of files) {
     const sql = fs.readFileSync(path.join(dir, file), 'utf8');
-    const statements = splitStatements(sql);
-    for (const stmt of statements) {
-      await prisma.$executeRawUnsafe(stmt);
+    if (!sql.trim()) {
+      console.log(`  ok ${file} (empty)`);
+      continue;
     }
-    console.log(`  ✓ ${file} (${statements.length} statements)`);
+    const statements = splitStatements(sql);
+    for (const statement of statements) {
+      await prisma.$executeRawUnsafe(statement);
+    }
+    console.log(`  ok ${file}`);
   }
+
   console.log('Schema is up to date.');
 }
 
 main()
-  .catch((e) => {
-    console.error(e);
+  .catch((error) => {
+    console.error(error);
     process.exit(1);
   })
   .finally(() => prisma.$disconnect());

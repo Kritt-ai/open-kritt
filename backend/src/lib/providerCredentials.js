@@ -9,19 +9,19 @@ import { providerLoginIsConfigured } from './providerLogins.js';
 export const PROVIDER_CREDENTIALS_PATH =
   process.env.OPEN_KRITT_PROVIDER_CREDENTIALS_PATH || '/credentials/providers.json';
 
-export const PROVIDER_DEFINITIONS = {
+export const BUILTIN_PROVIDER_DEFINITIONS = {
   codex: {
-    label: 'Codex',
+    label: 'ChatGPT (Codex CLI)',
     envKeys: ['CODEX_API_KEY', 'OPENAI_API_KEY'],
-    credentialLabel: 'Codex login',
-    description: 'ChatGPT subscription account authenticated through Codex device login.',
+    credentialLabel: 'Codex CLI login',
+    description: 'Local ChatGPT session authenticated through the Codex CLI executable.',
     management: 'login',
   },
   claude: {
-    label: 'Claude',
+    label: 'Claude Code CLI',
     envKeys: ['ANTHROPIC_API_KEY'],
-    credentialLabel: 'Claude login',
-    description: 'Claude subscription accounts authenticated through Claude Code.',
+    credentialLabel: 'Claude Code login',
+    description: 'Local Claude session authenticated through the Claude Code CLI executable.',
     management: 'login',
   },
   openrouter: {
@@ -33,7 +33,7 @@ export const PROVIDER_DEFINITIONS = {
   },
 };
 
-const BUILTIN_PROVIDER_IDS = Object.keys(PROVIDER_DEFINITIONS);
+const BUILTIN_PROVIDER_IDS = Object.keys(BUILTIN_PROVIDER_DEFINITIONS);
 const MANAGED_CREDENTIAL_PROVIDERS = new Set(['openrouter']);
 const CUSTOM_PROVIDER_HARNESSES = ['openai-compatible'];
 const CUSTOM_PROVIDER_ID_RE = /^[a-z0-9][a-z0-9_-]{0,62}$/;
@@ -181,6 +181,15 @@ export function readManagedCustomProvidersSync(credentialsPath = PROVIDER_CREDEN
   return readManagedCredentialStateSync(credentialsPath).customProviders;
 }
 
+function knownProviderIds(credentialsPath = PROVIDER_CREDENTIALS_PATH) {
+  const customProviders = readManagedCustomProvidersSync(credentialsPath);
+  return [...BUILTIN_PROVIDER_IDS, ...customProviders.map((provider) => provider.id)];
+}
+
+export function builtinProviderIds() {
+  return [...BUILTIN_PROVIDER_IDS];
+}
+
 export function customProviderDefinition(providerId, credentialsPath = PROVIDER_CREDENTIALS_PATH) {
   const provider = readManagedCustomProvidersSync(credentialsPath).find((entry) => entry.id === providerId);
   return provider ? customProviderSummary(provider) : null;
@@ -191,7 +200,7 @@ export function managedCustomProviderRecord(providerId, credentialsPath = PROVID
 }
 
 export function knownModelProviderIdsSync(credentialsPath = PROVIDER_CREDENTIALS_PATH) {
-  return [...BUILTIN_PROVIDER_IDS, ...readManagedCustomProvidersSync(credentialsPath).map((provider) => provider.id)];
+  return knownProviderIds(credentialsPath);
 }
 
 async function readStore(credentialsPath) {
@@ -259,7 +268,7 @@ function validateExtraHeaders(value) {
 
 export function validateProviderCredential(provider, credential) {
   if (!MANAGED_CREDENTIAL_PROVIDERS.has(provider)) {
-    return { field: 'provider', message: 'Only OpenRouter uses an API key in Accounts.' };
+    return { field: 'provider', message: 'Only OpenRouter uses a single managed API key in Accounts.' };
   }
   if (typeof credential !== 'string' || !credential.trim()) {
     return { field: 'credential', message: 'Enter an API key.' };
@@ -337,7 +346,7 @@ export async function saveManagedProviderCredential(
     await writeStore(credentialsPath, store);
     try {
       await updateEnvironmentFile(
-        { [PROVIDER_DEFINITIONS[provider].envKeys[0]]: credential.trim() },
+        { [BUILTIN_PROVIDER_DEFINITIONS[provider].envKeys[0]]: credential.trim() },
         { environmentFilePath }
       );
     } catch (error) {
@@ -401,7 +410,7 @@ export async function removeManagedProviderCredential(
     if (disableEnvironment && !wasDisabled) store.disabledEnvironmentProviders.push(provider);
     await writeStore(credentialsPath, store);
     try {
-      await updateEnvironmentFile({ [PROVIDER_DEFINITIONS[provider].envKeys[0]]: '' }, { environmentFilePath });
+      await updateEnvironmentFile({ [BUILTIN_PROVIDER_DEFINITIONS[provider].envKeys[0]]: '' }, { environmentFilePath });
     } catch (error) {
       await writeStore(credentialsPath, previousStore);
       throw error;
@@ -429,7 +438,8 @@ export function providerCredentialStatuses({
   const store = readManagedCredentialStateSync(credentialsPath);
   const managed = store.credentials;
   const disabledEnvironmentProviders = new Set(store.disabledEnvironmentProviders);
-  return Object.entries(PROVIDER_DEFINITIONS).map(([id, definition]) => {
+  return BUILTIN_PROVIDER_IDS.map((id) => {
+    const definition = BUILTIN_PROVIDER_DEFINITIONS[id];
     const managedCredential = hasValue(managed[id]);
     const environmentCredential =
       !disabledEnvironmentProviders.has(id) &&

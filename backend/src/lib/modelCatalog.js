@@ -12,12 +12,6 @@ const CLAUDE_CODE_MODELS = [
     isDefault: false,
   },
   {
-    id: 'claude-opus-5',
-    label: 'Opus 5',
-    thinkingEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
-    isDefault: false,
-  },
-  {
     id: 'claude-opus-4-8',
     label: 'Opus 4.8',
     thinkingEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
@@ -144,10 +138,21 @@ function customProviderCatalogEntry(provider) {
   };
 }
 
+function builtinCatalogEntry(provider, catalog) {
+  const entry = modelCatalogEntry(provider, catalog);
+  return {
+    ...entry,
+    label:
+      provider === 'codex' ? 'Codex' : provider === 'claude' ? 'Claude' : provider === 'openrouter' ? 'OpenRouter' : provider,
+    harnesses: provider === 'codex' ? ['codex'] : provider === 'claude' ? ['claude-code'] : ['codex', 'claude-code'],
+  };
+}
+
 export function buildModelCatalogResponse(configuredProviders, catalogs = [], { credentialsPath } = {}) {
   const configuredIds = (Array.isArray(configuredProviders) ? configuredProviders : [])
     .map(normalizedProvider)
     .filter(Boolean);
+  const configured = new Set(configuredIds);
   const catalogByProvider = new Map(
     (Array.isArray(catalogs) ? catalogs : [])
       .map((catalog) => [normalizedProvider(catalog?.provider), catalog])
@@ -159,7 +164,7 @@ export function buildModelCatalogResponse(configuredProviders, catalogs = [], { 
   return {
     providers: configuredIds.map((provider) => {
       if (customById.has(provider)) return customProviderCatalogEntry(customById.get(provider));
-      if (MODEL_PROVIDERS.includes(provider)) return modelCatalogEntry(provider, catalogByProvider.get(provider));
+      if (MODEL_PROVIDERS.includes(provider)) return builtinCatalogEntry(provider, catalogByProvider.get(provider));
       return {
         provider,
         label: provider,

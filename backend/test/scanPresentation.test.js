@@ -108,14 +108,6 @@ test('scan serialization distinguishes raw candidates from listed findings', () 
       modelProvider: 'codex',
       harness: 'codex',
       thinkingEffort: 'xhigh',
-      modelOverrides: {
-        1: {
-          model: 'claude-sonnet',
-          model_provider: 'claude',
-          harness: 'claude-code',
-          thinking_effort: 'high',
-        },
-      },
       status: 'completed',
       agentSkillIds: [],
       insertedAt: new Date(),
@@ -127,7 +119,6 @@ test('scan serialization distinguishes raw candidates from listed findings', () 
       canonicalFindings: 14,
       duplicateFindings: 4,
       exploitable: 8,
-      workflowDepths: [0, 1],
       postScriptName: 'Ease of exploitability',
       postScripts: [
         { id: 4n, name: 'Ease of exploitability' },
@@ -143,15 +134,6 @@ test('scan serialization distinguishes raw candidates from listed findings', () 
   assert.equal(serialized.exploitable, 8);
   assert.deepEqual(serialized.postScriptNames, ['Ease of exploitability', 'Patched since', 'Resource exhaustion']);
   assert.equal(serialized.postScripts[0].primary, true);
-  assert.deepEqual(serialized.workflowDepths, [0, 1]);
-  assert.deepEqual(serialized.modelOverrides, {
-    1: {
-      model: 'claude-sonnet',
-      modelProvider: 'claude',
-      harness: 'claude-code',
-      thinkingEffort: 'high',
-    },
-  });
 });
 
 test('scan serialization exposes durable logical-job limits and resume boundaries', () => {
@@ -227,18 +209,14 @@ test('provider failure presentation preserves safe retry history and identifies 
   assert.equal(cleanError(message), message);
 });
 
-test('provider throttling, subagent limits, and account quota exhaustion remain distinct', () => {
+test('provider throttling and account quota exhaustion remain distinct', () => {
   const providerThrottle =
     'The model provider temporarily throttled this request because of server demand. ' +
     'This is not the account usage quota. Diagnostic: provider_throttled.';
   const accountQuota =
     'The model provider reports that this account reached its usage quota. ' + 'Diagnostic: account_quota_limited.';
-  const subagentLimit =
-    'Codex reached a separate premium limit while starting a subagent. Diagnostic: subagent_limited.';
 
   assert.equal(knownError(providerThrottle)?.title, 'Provider busy');
-  assert.equal(knownError(subagentLimit)?.title, 'Subagent limit reached');
-  assert.equal(knownError(subagentLimit)?.fixLinks, undefined);
   assert.equal(knownError(accountQuota)?.title, 'Account quota exhausted');
   assert.deepEqual(knownError(accountQuota)?.fixLinks, [
     { label: 'View usage and limits in Accounts', url: '/accounts', internal: true },
@@ -251,7 +229,9 @@ test('Claude reconnect failures link directly to Accounts', () => {
     'Reconnect Claude in Accounts.';
 
   assert.equal(knownError(message)?.title, 'Claude sign-in required');
-  assert.deepEqual(knownError(message)?.fixLinks, [{ label: 'Open Accounts', url: '/accounts', internal: true }]);
+  assert.deepEqual(knownError(message)?.fixLinks, [
+    { label: 'Open Accounts', url: '/accounts', internal: true },
+  ]);
 });
 
 test('workspace disk exhaustion renders an actionable engine error', () => {
@@ -263,18 +243,6 @@ test('workspace disk exhaustion renders an actionable engine error', () => {
     'Engine storage full. The scanner ran out of disk space while creating a job workspace. ' +
       'Free local disk space, then resume the scan.'
   );
-});
-
-test('low-storage warning persistence failures explain the pause bug', () => {
-  const message = 'psycopg.errors.InvalidParameterValue: cannot set path in scalar';
-
-  assert.equal(knownError(message)?.title, 'Low-storage pause failed');
-  assert.equal(
-    cleanError(message),
-    'Low-storage pause failed. The engine ran low on disk space, then could not save its automatic pause warning. ' +
-      'Free disk space, lower Minimum free storage, or enable Ignore low-storage safeguard in Settings, then resume the scan; completed work is preserved.'
-  );
-  assert.deepEqual(knownError(message)?.fixLinks, [{ label: 'Open Settings', url: '/settings', internal: true }]);
 });
 
 test('cyber policy diagnostics render the actionable provider cause', () => {

@@ -9,6 +9,7 @@ import { duplicateScanPath } from '../lib/scanDuplication.js';
 import { isScanDeletable } from '../lib/scanPresentation.js';
 import { useModalDialog } from '../lib/useModalDialog.js';
 import {
+  formatDuration,
   providerCapacityAutoscalePresentation,
   rateLimitPresentation,
   rateLimitRetryText,
@@ -293,14 +294,10 @@ function NewScanDialog({ onClose }) {
                       const scanId = `${scan.id}`;
                       const selected = selectedId === scanId;
                       const label = scan.repoDisplay || scan.repoFull || `Scan ${scan.id}`;
-                      const modelOverrideCount = Object.keys(scan.modelOverrides || {}).length;
                       const detail = [
                         `#${scan.id}`,
                         scan.workflowName,
                         scan.model,
-                        modelOverrideCount
-                          ? `${modelOverrideCount} depth override${modelOverrideCount === 1 ? '' : 's'}`
-                          : null,
                         scan.repoKind === 'local' ? 'local snapshot' : null,
                         scan.age ? `${scan.age} ago` : null,
                       ]
@@ -461,7 +458,6 @@ function ScanCard({ scan, to, onResume, onToggleError, onDelete, busy, errorExpa
   const failedLabel = currentFailedAttempts
     ? `Failed after ${currentFailedAttempts} failed attempt${currentFailedAttempts === 1 ? '' : 's'}`
     : 'Failed';
-  const modelOverrideCount = Object.keys(scan.modelOverrides || {}).length;
 
   return (
     <div
@@ -484,10 +480,7 @@ function ScanCard({ scan, to, onResume, onToggleError, onDelete, busy, errorExpa
         </div>
       </div>
       <div className="mono" style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 6 }}>
-        {scan.workflowName} · {scan.model}
-        {modelOverrideCount
-          ? ` · ${modelOverrideCount} depth override${modelOverrideCount === 1 ? '' : 's'}`
-          : ''} · {scan.repoKind === 'local' ? 'local snapshot' : scan.commitShort}
+        {scan.workflowName} · {scan.model} · {scan.repoKind === 'local' ? 'local snapshot' : scan.commitShort}
       </div>
 
       {providerAutoscale && (
@@ -674,6 +667,14 @@ function ScanCard({ scan, to, onResume, onToggleError, onDelete, busy, errorExpa
           <div className="mono" style={{ marginTop: 6, fontSize: 11.5 }}>
             {rateLimitRetryText(scan.reasoning)}
           </div>
+          {summary.retryState && (
+            <div className="mono" style={{ marginTop: 4, fontSize: 11.5, color: 'var(--text-3)', lineHeight: 1.4 }}>
+              {(summary.retryState.retryStrategy || 'automatic_retry').replaceAll('_', ' ')}
+              {Number.isFinite(summary.retryState.etaSeconds)
+                ? ` · ETA ${formatDuration(summary.retryState.etaSeconds)}`
+                : ''}
+            </div>
+          )}
           <StatusMini scan={scan} />
         </div>
       )}
@@ -928,6 +929,7 @@ function ErrorFixLinks({ knownError }) {
 function StatusMini({ scan }) {
   const summary = scan.statusSummary || {};
   const active = summary.activeJobs || [];
+  const retryState = summary.retryState || null;
   const currentFailedAttempts = summary.currentFailedAttempts ?? summary.failedAttempts ?? 0;
   const rateLimited = scan.status === 'rate_limited';
   const first = active[0];
@@ -954,6 +956,9 @@ function StatusMini({ scan }) {
         <span style={{ color: rateLimited ? 'var(--pend)' : 'var(--fail)' }}>
           {currentFailedAttempts} {rateLimited ? 'attempt errors' : 'failed'}
         </span>
+      )}
+      {retryState && Number.isFinite(retryState.etaSeconds) && (
+        <span style={{ color: 'var(--pend)' }}>retry ETA {formatDuration(retryState.etaSeconds)}</span>
       )}
       {summary.postRunningAttempts > 0 && <span>{summary.postRunningAttempts} post running</span>}
     </div>

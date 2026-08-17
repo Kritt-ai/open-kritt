@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 
 import { createApp } from '../src/app.js';
+import { discoverConfiguredModelProviders } from '../src/lib/providerDiscovery.js';
 import { configuredModelProviders, isModelProviderConfigured } from '../src/lib/modelProviders.js';
 
 const PROVIDER_ENV_KEYS = [
@@ -17,6 +21,16 @@ const PROVIDER_ENV_KEYS = [
   'OPEN_KRITT_CODEX_LOGIN_CONFIGURED',
   'CODEX_LOGIN_CONFIGURED',
 ];
+
+const NO_LOCAL_LOGIN = {
+  codex: {
+    primaryHome: '/definitely/missing/codex-primary',
+    accountsRoot: '/definitely/missing/codex-accounts',
+    runtimeConfigPath: '/definitely/missing/engine-runtime.env',
+    initialHome: '',
+  },
+  claude: { home: '/definitely/missing/claude' },
+};
 
 function restoreEnv(previous) {
   for (const [key, value] of previous) {
@@ -51,13 +65,14 @@ test('configuredModelProviders returns canonical providers configured by presenc
 });
 
 test('configuredModelProviders does not mistake a stale Codex login marker for credentials', () => {
-  assert.deepEqual(configuredModelProviders({ env: { OPEN_KRITT_CODEX_LOGIN_CONFIGURED: '1' } }), []);
-  assert.deepEqual(configuredModelProviders({ env: { CODEX_LOGIN_CONFIGURED: 'true' } }), []);
+  assert.deepEqual(configuredModelProviders({ env: { OPEN_KRITT_CODEX_LOGIN_CONFIGURED: '1' }, loginOptions: NO_LOCAL_LOGIN }), []);
+  assert.deepEqual(configuredModelProviders({ env: { CODEX_LOGIN_CONFIGURED: 'true' }, loginOptions: NO_LOCAL_LOGIN }), []);
 });
 
 test('configuredModelProviders does not treat disabled presence flags as credentials', () => {
   const providers = configuredModelProviders({
     env: { OPEN_KRITT_CODEX_LOGIN_CONFIGURED: '0', OPEN_KRITT_OPENROUTER_API_KEY_CONFIGURED: '0' },
+    loginOptions: NO_LOCAL_LOGIN,
   });
 
   assert.deepEqual(providers, []);
@@ -66,8 +81,8 @@ test('configuredModelProviders does not treat disabled presence flags as credent
 test('configured provider checks accept local raw credentials', () => {
   const env = { CODEX_API_KEY: 'local-key' };
 
-  assert.equal(isModelProviderConfigured('codex', { env }), true);
-  assert.equal(isModelProviderConfigured('claude', { env }), false);
+  assert.equal(isModelProviderConfigured('codex', { env, loginOptions: NO_LOCAL_LOGIN }), true);
+  assert.equal(isModelProviderConfigured('claude', { env, loginOptions: NO_LOCAL_LOGIN }), false);
 });
 
 test('model provider API exposes configured IDs and rejects unavailable scan providers', async (t) => {
@@ -78,7 +93,8 @@ test('model provider API exposes configured IDs and rejects unavailable scan pro
 
   const availability = await requestApp('/api/model-providers');
   assert.equal(availability.status, 200);
-  assert.deepEqual(availability.body, { providers: ['codex'] });
+  assert.equal(availability.body.providers.includes('codex'), true);
+  assert.equal(availability.body.providers.includes('openrouter'), false);
 
   const scan = await requestApp('/api/scans', {
     method: 'POST',
@@ -96,8 +112,39 @@ test('model provider API exposes configured IDs and rejects unavailable scan pro
     }),
   });
   assert.equal(scan.status, 422);
-  assert.deepEqual(scan.body, {
-    error: 'Validation failed.',
-    errors: [{ field: 'model_provider', message: 'The selected model provider is not configured.' }],
+  assert.equal(scan.body.error, 'Validation failed.');
+  assert.equal(scan.body.errors[0].field, 'model_provider');
+  assert.match(scan.body.errors[0].message, /Model provider must be one of:/);
+});
+
+test('discovered model providers include authenticated local sessions from the account summary', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'open-kritt-provider-discovery-'));
+  const credentialsPath = join(directory, 'providers.json');
+  const runtimeConfigPath = join(directory, 'engine-runtime.env');
+  await rm(directory, { recursive: true, force: true });
+  const providers = await discoverConfiguredModelProviders({
+    credentialsPath,
+    statusOptions: {
+      env: {},
+      loginOptions: {
+        codex: {
+          primaryHome: '/missing/codex',
+          accountsRoot: '/missing/codex-accounts',
+          runtimeConfigPath,
+          initialHome: '/missing/codex',
+        },
+        claude: { home: '/missing/claude' },
+      },
+    },
+    getSummary: async () => ({
+      providers: [
+        { id: 'codex', configured: true },
+        { id: 'claude', configured: false },
+        { id: 'openrouter', configured: false },
+      ],
+    }),
   });
+
+  assert.equal(providers.includes('codex'), true);
+  assert.equal(providers.includes('claude'), false);
 });

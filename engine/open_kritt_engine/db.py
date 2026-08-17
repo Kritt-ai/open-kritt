@@ -1,4 +1,5 @@
 import json
+import random
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -13,25 +14,25 @@ from .models import Step, StepResultRow, Workflow
 
 RATE_LIMIT_RETRY_BASE_SECONDS = 60.0
 RATE_LIMIT_RETRY_MAX_SECONDS = 10 * 60.0
-QUOTA_RETRY_MAX_SECONDS = 8 * 24 * 60 * 60.0
+RATE_LIMIT_RETRY_JITTER_RATIO = 0.15
 QUEUED_SCAN_ADMISSION_LOCK = (0x6B726974, 0x71756575)
 
 
-def rate_limit_retry_delay(
-    retry_count: int,
-    provider_retry_after_seconds: float = 0.0,
-    *,
-    maximum_seconds: float = RATE_LIMIT_RETRY_MAX_SECONDS,
-) -> float:
+def rate_limit_retry_delay(retry_count: int, provider_retry_after_seconds: float = 0.0) -> float:
     """Return the persistent retry delay for a rate-limited scan."""
 
-    maximum_seconds = max(RATE_LIMIT_RETRY_BASE_SECONDS, float(maximum_seconds))
     exponent = max(0, retry_count - 1)
     exponential_delay = (
-        maximum_seconds if exponent >= 8 else min(RATE_LIMIT_RETRY_BASE_SECONDS * (2**exponent), maximum_seconds)
+        RATE_LIMIT_RETRY_MAX_SECONDS
+        if exponent >= 8
+        else min(RATE_LIMIT_RETRY_BASE_SECONDS * (2**exponent), RATE_LIMIT_RETRY_MAX_SECONDS)
     )
     provider_delay = max(0.0, float(provider_retry_after_seconds))
-    return min(max(exponential_delay, provider_delay), maximum_seconds)
+    base_delay = min(max(exponential_delay, provider_delay), RATE_LIMIT_RETRY_MAX_SECONDS)
+    jitter = min(RATE_LIMIT_RETRY_MAX_SECONDS - base_delay, base_delay * RATE_LIMIT_RETRY_JITTER_RATIO)
+    if jitter <= 0:
+        return base_delay
+    return min(base_delay + random.uniform(0.0, jitter), RATE_LIMIT_RETRY_MAX_SECONDS)
 
 
 def _json(value):
@@ -564,15 +565,7 @@ class Database:
         if not isinstance(previous_retries, int) or isinstance(previous_retries, bool) or previous_retries < 0:
             previous_retries = 0
         retry_count = previous_retries + 1
-        retry_delay_seconds = rate_limit_retry_delay(
-            retry_count,
-            retry_after_seconds,
-            maximum_seconds=(
-                QUOTA_RETRY_MAX_SECONDS
-                if limit_kind in {"account_quota_limited", "subagent_limited"}
-                else RATE_LIMIT_RETRY_MAX_SECONDS
-            ),
-        )
+        retry_delay_seconds = rate_limit_retry_delay(retry_count, retry_after_seconds)
 
         next_reasoning = dict(reasoning) if isinstance(reasoning, dict) else {}
         next_reasoning.update(
@@ -581,9 +574,13 @@ class Database:
                 "limit_kind": limit_kind,
                 "error": error,
                 "retry_count": retry_count,
+                "retry_strategy": "exponential_backoff_with_jitter",
+                "provider_retry_after_seconds": max(0.0, float(retry_after_seconds)),
+                "backoff_seconds": retry_delay_seconds,
+                "retry_eta_seconds": retry_delay_seconds,
             }
         )
-        if autoscale_workers and limit_kind in {"provider_throttled", "subagent_limited"}:
+        if autoscale_workers and limit_kind == "provider_throttled":
             stored_cap = next_reasoning.get("provider_capacity_worker_cap")
             if not isinstance(stored_cap, int) or isinstance(stored_cap, bool) or stored_cap < 1:
                 stored_cap = current_worker_cap
@@ -903,13 +900,7 @@ class Database:
         post_script_name: str | None = None,
         vulnerability_id: int | None = None,
     ) -> int | None:
-        # Batch indexes are chosen before this transaction. Lock batch pipelines by
-        # logical kind so two workers cannot turn the same snapshot into different
-        # batch indexes; post-script jobs remain independently claimable.
-        if kind == "post_script":
-            lock_key = f"post-process:{scan_id}:{kind}:{post_script_id or 0}:{vulnerability_id or 0}"
-        else:
-            lock_key = f"post-process:{scan_id}:{kind}"
+        lock_key = f"post-process:{scan_id}:{kind}:{batch_index or 0}:{post_script_id or 0}:{vulnerability_id or 0}"
         conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (lock_key,))
         scan = conn.execute(
             """
@@ -938,44 +929,20 @@ class Database:
                 (scan_id, kind, vulnerability_id, post_script_id),
             ).fetchone()
         else:
-            # The scan row lock serializes this recheck with every other claim.
             existing = conn.execute(
                 """
                 SELECT id
                 FROM workflows.post_process_metadata
                 WHERE scan_id = %s
                   AND kind = %s
-                  AND (
-                      status = 'running'
-                      OR (batch_index = %s AND status = 'completed')
-                  )
+                  AND batch_index = %s
+                  AND status IN ('running', 'completed')
                 LIMIT 1
                 """,
                 (scan_id, kind, batch_index),
             ).fetchone()
         if existing:
             return None
-        expected_target_ids = sorted(set(target_vulnerability_ids))
-        if kind in {"dedupe", "ranker"}:
-            if not expected_target_ids:
-                return None
-            target_state = (
-                "dedupe_is_canonical IS NULL"
-                if kind == "dedupe"
-                else "dedupe_is_canonical = true AND bounty_rank IS NULL"
-            )
-            eligible = conn.execute(
-                f"""
-                SELECT count(*) AS count
-                FROM workflows.vulnerabilities
-                WHERE scan_id = %s
-                  AND id = ANY(%s::bigint[])
-                  AND {target_state}
-                """,
-                (scan_id, expected_target_ids),
-            ).fetchone()
-            if int(eligible["count"]) != len(expected_target_ids):
-                return None
         previous = conn.execute(
             """
             SELECT id
@@ -1710,7 +1677,6 @@ class Database:
         conn,
         *,
         retain_inactive_scan_caches_after: datetime,
-        retain_finished_workspaces_after: datetime,
     ) -> tuple[set[int], set[int]]:
         # Keep cleanup mutually exclusive with scan admission. This prevents a
         # completed/failed scan from being resumed while its stale cache is
@@ -1721,14 +1687,14 @@ class Database:
             """
             SELECT id::bigint AS workspace_id
             FROM workflows.step_metadata
-            WHERE (status = 'running' OR updated_at >= %s)
+            WHERE status = 'running'
               AND coalesce(kind, 'step') = 'step'
             UNION ALL
             SELECT (%s::bigint + id)::bigint AS workspace_id
             FROM workflows.post_process_metadata
-            WHERE status = 'running' OR updated_at >= %s
+            WHERE status = 'running'
             """,
-            (retain_finished_workspaces_after, POST_WORKSPACE_ID_OFFSET, retain_finished_workspaces_after),
+            (POST_WORKSPACE_ID_OFFSET,),
         ).fetchall()
         scan_rows = conn.execute(
             """
@@ -1746,15 +1712,6 @@ class Database:
             {_to_int(row["workspace_id"]) for row in workspace_rows},
             {_to_int(row["id"]) for row in scan_rows},
         )
-
-    def load_active_scan_cache_specs(self, conn) -> list[dict[str, Any]]:
-        return conn.execute(
-            """
-            SELECT id, repo_kind, repo_full, commit_sha, dependencies, dependencies_detail
-            FROM public.scans
-            WHERE status IN ('queued', 'pending', 'prewarming_cache', 'running', 'rate_limited', 'post_processing')
-            """
-        ).fetchall()
 
 
 def now_utc():
