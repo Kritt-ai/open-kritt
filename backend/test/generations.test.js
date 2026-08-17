@@ -291,7 +291,7 @@ test('generation polling returns 404 for an unknown id', async () => {
   assert.deepEqual(response.body, { error: 'Generation not found.' });
 });
 
-test('shared model availability enforces native catalogs and leaves OpenRouter unrestricted', async () => {
+test('shared model availability enforces native catalogs and leaves OpenRouter and OpenCode Zen unrestricted', async () => {
   await assert.rejects(
     () =>
       assertModelSelectionAvailable(
@@ -324,6 +324,19 @@ test('shared model availability enforces native catalogs and leaves OpenRouter u
         getCatalog: async () => ({
           models: [{ id: 'vendor/catalog-suggestion', thinkingEfforts: ['medium'] }],
           defaultModel: 'vendor/catalog-suggestion',
+        }),
+      }
+    )
+  );
+
+  await assert.doesNotReject(() =>
+    assertModelSelectionAvailable(
+      { modelProvider: 'opencode', model: 'custom-not-in-catalog' },
+      {
+        providerConfigured: async () => true,
+        getCatalog: async () => ({
+          models: [{ id: 'gpt-5.1-codex', thinkingEfforts: ['default'] }],
+          defaultModel: 'gpt-5.1-codex',
         }),
       }
     )

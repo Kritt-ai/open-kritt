@@ -4,6 +4,7 @@ const PROVIDER_LABELS = {
   codex: 'Codex',
   claude: 'Claude',
   openrouter: 'OpenRouter',
+  opencode: 'OpenCode Zen',
 };
 
 const HARNESS_LABELS = {

@@ -61,11 +61,9 @@ const modelCatalog = configuredModelCatalog({
 
 describe('configuredModelProviders', () => {
   it('uses only supported provider IDs returned by the API', () => {
-    expect(configuredModelProviders({ providers: ['OPENROUTER', 'unknown', 'claude', 'codex', 'codex'] })).toEqual([
-      'codex',
-      'claude',
-      'openrouter',
-    ]);
+    expect(
+      configuredModelProviders({ providers: ['OPENROUTER', 'unknown', 'claude', 'codex', 'codex', 'opencode'] })
+    ).toEqual(['codex', 'claude', 'openrouter', 'opencode']);
   });
 
   it('handles empty and malformed availability responses', () => {
@@ -79,6 +77,7 @@ describe('model provider defaults', () => {
     expect(defaultModelForModelProvider('codex')).toBe('gpt-5-codex');
     expect(defaultModelForModelProvider('claude')).toBe('claude-sonnet-5');
     expect(defaultModelForModelProvider('openrouter')).toBe('z-ai/glm-5.2');
+    expect(defaultModelForModelProvider('opencode')).toBe('gpt-5.1-codex');
   });
 
   it('moves provider-owned model defaults with the provider', () => {
@@ -185,6 +184,18 @@ describe('model catalog', () => {
     expect(modelForCatalogChange('gpt-5-codex', 'codex', 'openrouter', loadingCatalog)).toBe('');
   });
 
+  it('keeps exact OpenCode Zen IDs usable while suggestions load or refresh', () => {
+    const loadingCatalog = configuredModelCatalog({
+      providers: [{ provider: 'opencode', input: 'text', status: 'loading', models: [] }],
+    });
+
+    expect(usesFreeTextModelInput(loadingCatalog, 'opencode')).toBe(true);
+    expect(modelCatalogIsReady(loadingCatalog, 'opencode')).toBe(false);
+    expect(isModelSelectionValid('gpt-5.1-codex', loadingCatalog, 'opencode')).toBe(true);
+    expect(modelForCatalogChange('gpt-5.1-codex', 'opencode', 'opencode', loadingCatalog)).toBe('gpt-5.1-codex');
+    expect(modelForCatalogChange('gpt-5-codex', 'codex', 'opencode', loadingCatalog)).toBe('');
+  });
+
   it('uses only the selected native model thinking efforts', () => {
     expect(thinkingEffortsForModel(modelCatalog, 'codex', 'gpt-5-codex', ['low', 'medium', 'high', 'xhigh'])).toEqual([
       'low',
@@ -242,6 +253,11 @@ describe('model provider harnesses', () => {
   it('defaults OpenRouter to Claude Code and retains Codex as an advanced option', () => {
     expect(harnessesForModelProvider('openrouter')).toEqual(['claude-code', 'codex']);
     expect(defaultHarnessForModelProvider('openrouter')).toBe('claude-code');
+  });
+
+  it('offers both harnesses for OpenCode Zen, since its model families are endpoint-specific', () => {
+    expect(harnessesForModelProvider('opencode')).toEqual(['claude-code', 'codex']);
+    expect(defaultHarnessForModelProvider('opencode')).toBe('claude-code');
   });
 
   it('returns no harness for an unsupported provider', () => {

@@ -678,6 +678,8 @@ test('validateScan enforces model provider and harness compatibility after norma
   assert.equal(validateScan({ ...base, model_provider: 'claude', harness: 'claude-code' }).modelProvider, 'claude');
   assert.equal(validateScan({ ...base, model_provider: 'openrouter', harness: 'codex' }).harness, 'codex');
   assert.equal(validateScan({ ...base, model_provider: 'openrouter', harness: 'claude-code' }).harness, 'claude-code');
+  assert.equal(validateScan({ ...base, model_provider: 'opencode', harness: 'codex' }).harness, 'codex');
+  assert.equal(validateScan({ ...base, model_provider: 'opencode', harness: 'claude-code' }).harness, 'claude-code');
   assert.deepEqual(
     validateScan({
       ...base,

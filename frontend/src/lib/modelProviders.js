@@ -1,4 +1,4 @@
-export const MODEL_PROVIDER_IDS = ['codex', 'claude', 'openrouter'];
+export const MODEL_PROVIDER_IDS = ['codex', 'claude', 'openrouter', 'opencode'];
 export const MODEL_CATALOG_STATUSES = ['ready', 'loading', 'unavailable'];
 const SAFE_MODEL_NOTE_URLS = new Set(['https://chatgpt.com/cyber']);
 
@@ -8,18 +8,23 @@ const PROVIDER_HARNESSES = {
   // Claude Code has first-class OpenRouter support. Codex remains available
   // for advanced installations with a matching Codex provider configuration.
   openrouter: ['claude-code', 'codex'],
+  // OpenCode Zen is not a unified gateway like OpenRouter: Claude Code only
+  // reaches its claude-*/qwen* models, Codex only reaches its gpt-* models.
+  opencode: ['claude-code', 'codex'],
 };
 
 const PROVIDER_DEFAULT_MODELS = {
   codex: 'gpt-5-codex',
   claude: 'claude-sonnet-5',
   openrouter: 'z-ai/glm-5.2',
+  opencode: 'gpt-5.1-codex',
 };
 
 const PROVIDER_THINKING_EFFORTS = {
   codex: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
   claude: ['low', 'medium', 'high', 'xhigh', 'max'],
   openrouter: ['default', 'low', 'medium', 'high', 'xhigh', 'max'],
+  opencode: ['default', 'low', 'medium', 'high', 'xhigh', 'max'],
 };
 
 const HARNESS_THINKING_EFFORTS = {
@@ -106,10 +111,15 @@ export function modelsForModelProvider(catalog, provider) {
   return modelCatalogForProvider(catalog, provider)?.models || [];
 }
 
+const FREE_TEXT_MODEL_INPUT_PROVIDERS = ['openrouter', 'opencode'];
+
 export function usesFreeTextModelInput(catalog, provider) {
   const normalizedProvider = normalizedProviderId(provider);
   const providerCatalog = modelCatalogForProvider(catalog, normalizedProvider);
-  return providerCatalog?.input === 'text' || (!providerCatalog && normalizedProvider === 'openrouter');
+  return (
+    providerCatalog?.input === 'text' ||
+    (!providerCatalog && FREE_TEXT_MODEL_INPUT_PROVIDERS.includes(normalizedProvider))
+  );
 }
 
 export function modelCatalogIsReady(catalog, provider) {

@@ -288,6 +288,12 @@ class ExecutorViewSummaryTests(unittest.TestCase):
         self.assertTrue(
             server.internal_request_path_allowed("GET", "/api/accounts/claude")
         )
+        self.assertTrue(
+            server.internal_request_path_allowed("GET", "/api/accounts/openrouter")
+        )
+        self.assertTrue(
+            server.internal_request_path_allowed("GET", "/api/accounts/opencode")
+        )
         self.assertFalse(
             server.internal_request_path_allowed("GET", "/api/accounts/unknown")
         )
@@ -514,6 +520,13 @@ class ExecutorViewSummaryTests(unittest.TestCase):
             "accounts": [],
             "configuredRaw": None,
         }
+        opencode = {
+            "active": 0,
+            "total": 0,
+            "limited": 0,
+            "accounts": [],
+            "configuredRaw": None,
+        }
         server.ACCOUNT_OVERVIEW_CACHE = {"expires_at": 0.0, "data": None}
 
         with (
@@ -525,11 +538,15 @@ class ExecutorViewSummaryTests(unittest.TestCase):
             patch.object(
                 server, "fetch_openrouter_accounts", return_value=openrouter
             ) as fetch_openrouter,
+            patch.object(
+                server, "fetch_opencode_accounts", return_value=opencode
+            ) as fetch_opencode,
         ):
             overview = server.fetch_accounts(force=True)
 
         fetch_codex.assert_called_once_with(force=True)
         fetch_openrouter.assert_called_once_with(force=True)
+        fetch_opencode.assert_called_once_with(force=True)
         self.assertEqual(overview["codex"]["total"], 1)
         self.assertEqual(overview["active"], 1)
 
@@ -1364,6 +1381,67 @@ class ExecutorViewSummaryTests(unittest.TestCase):
                 patch.dict(server.os.environ, {"OPENROUTER_API_KEY": "initial-key"}),
             ):
                 self.assertIsNone(server.configured_secret("OPENROUTER_API_KEY"))
+
+    def test_opencode_account_reports_configuration_status_without_a_remote_check(self):
+        with patch.object(
+            server,
+            "configured_secret",
+            side_effect=lambda name: (
+                "unit-test-api-key" if name == "OPENCODE_API_KEY" else None
+            ),
+        ):
+            result = server.fetch_opencode_accounts(force=True)
+
+        account = result["accounts"][0]
+        self.assertEqual(account["status"], "key configured")
+        self.assertEqual(account["statusKind"], "available")
+        serialized = json.dumps(result, default=server.encode)
+        self.assertNotIn("unit-test-api-key", serialized)
+
+    def test_opencode_account_reports_missing_key(self):
+        with patch.object(server, "configured_secret", return_value=None):
+            result = server.fetch_opencode_accounts(force=True)
+
+        account = result["accounts"][0]
+        self.assertEqual(account["status"], "missing key")
+        self.assertEqual(account["statusKind"], "missing")
+        self.assertEqual(result["active"], 0)
+
+    def test_managed_opencode_key_overrides_environment_and_disable_is_sticky(self):
+        with tempfile.TemporaryDirectory() as directory:
+            credential_path = Path(directory) / "providers.json"
+            credential_path.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "credentials": {"opencode": "managed-key"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with (
+                patch.object(server, "PROVIDER_CREDENTIALS_PATH", credential_path),
+                patch.dict(server.os.environ, {"OPENCODE_API_KEY": "initial-key"}),
+            ):
+                self.assertEqual(
+                    server.configured_secret("OPENCODE_API_KEY"), "managed-key"
+                )
+
+            credential_path.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "credentials": {},
+                        "disabledEnvironmentProviders": ["opencode"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with (
+                patch.object(server, "PROVIDER_CREDENTIALS_PATH", credential_path),
+                patch.dict(server.os.environ, {"OPENCODE_API_KEY": "initial-key"}),
+            ):
+                self.assertIsNone(server.configured_secret("OPENCODE_API_KEY"))
 
 
 if __name__ == "__main__":
