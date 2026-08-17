@@ -1,4 +1,5 @@
 import logging
+import os
 import random
 import shutil
 import threading
@@ -19,10 +20,11 @@ from .artifact_cleanup import (
     delete_quarantined_artifacts,
 )
 from .claude_auth import ClaudeCredentialRateLimited
+from .codex_auth import preserve_codex_auth_metadata
 from .codex_updater import CodexCliGate, CodexUpdater
 from .config import EngineConfig
 from .db import QUOTA_RETRY_MAX_SECONDS, Database, now_utc
-from .generation import GenerationRunner, GenerationValidationError
+from .generation import GenerationRunner, GenerationValidationError, generation_environment
 from .harnesses import (
     CAPACITY_RATE_LIMIT_FAILURES,
     RETRYABLE_RATE_LIMIT_FAILURES,
@@ -46,6 +48,11 @@ from .model_catalog import ModelCatalogRefresher
 from .model_output_artifacts import record_model_error_output
 from .models import ModelSelection, model_selection_for_depth, post_processing_model_selection
 from .post_processing import PostProcessor, PostProcessRateLimited
+from .pre_step_dedupe import (
+    PRE_STEP_3_DEDUPE_SCHEMA,
+    build_pre_step_3_dedupe_prompt,
+    validate_pre_step_3_dedupe_decision,
+)
 from .prompting import harness_prompt, native_agent_skills_prompt, render_prompt, repeat_append_prompt
 from .provider_credentials import provider_environment
 from .queue import build_pending_jobs, configured_step_ids
@@ -55,6 +62,7 @@ from .storage_cleanup import prune_docker_build_cache, prune_stopped_scan_contai
 from .workspace import (
     cleanup_job_workspace,
     cleanup_workspace,
+    codex_home_for_job,
     image_workspace_enabled,
     mark_provider_account_available,
     mark_provider_account_rate_limited,
@@ -178,6 +186,8 @@ class Worker:
         self._scan_last_dispatch: dict[int, int] = {}
         self._scan_no_work_until: dict[int, float] = {}
         self._scan_dispatch_sequence = 0
+        self._pre_step_3_dedupe_locks_guard = threading.Lock()
+        self._pre_step_3_dedupe_locks: dict[int, threading.Lock] = {}
         self.codex_cli_gate = CodexCliGate()
         self.generation_runner = GenerationRunner(config, codex_cli_gate=self.codex_cli_gate)
         self.model_catalog_refresher = ModelCatalogRefresher(
@@ -531,6 +541,175 @@ class Worker:
             runner_memory_mb=self.runtime_scan_runner_memory_mb(),
             runner_memory_reservation_mb=self.runtime_scan_runner_memory_reservation_mb(),
         )
+
+    def _pre_step_3_dedupe_lock(self, scan_id: int) -> threading.Lock:
+        with self._pre_step_3_dedupe_locks_guard:
+            return self._pre_step_3_dedupe_locks.setdefault(scan_id, threading.Lock())
+
+    def _run_pre_step_3_dedupe(
+        self,
+        *,
+        scan: dict[str, Any],
+        workflow_id: int,
+        metadata_id: int,
+        job,
+        selection: ModelSelection,
+    ) -> bool:
+        """Complete a depth-2 lineage when a conservative tool-free check finds a duplicate."""
+
+        current_result = job.state.output if isinstance(job.state.output, dict) else {}
+        scan_id = int(scan["id"])
+        with self._pre_step_3_dedupe_lock(scan_id):
+            with self.db.connect() as conn:
+                candidates = self.db.load_pre_step_3_dedupe_candidates(
+                    conn,
+                    scan_id=scan_id,
+                    workflow_id=workflow_id,
+                    metadata_id=metadata_id,
+                    current_prev_id=job.state.prev_id,
+                )
+                dedupe_model = (
+                    selection.model
+                    if scan_model_provider({"model_provider": selection.model_provider}) == "codex"
+                    else self.db.load_default_model(conn, "codex")
+                )
+                conn.commit()
+
+            if not dedupe_model:
+                LOGGER.warning(
+                    "scan %s step %s duplicate gate has no configured Codex model; continuing with verification",
+                    scan_id,
+                    job.step.id,
+                )
+                return False
+
+            prompt = build_pre_step_3_dedupe_prompt(
+                current_id=job.state.prev_id,
+                current_result=current_result,
+                existing=candidates,
+            )
+            started = now_utc()
+            selected_home = codex_home_for_job(metadata_id, data_dir=getattr(self.config, "data_dir", None))
+            env = generation_environment("codex", codex_home=selected_home)
+            work_dir = os.path.join(getattr(self.config, "data_dir", "/tmp"), "pre-step-3-dedupe")
+            os.makedirs(work_dir, exist_ok=True)
+            dedupe_harness = harness_for(
+                "codex",
+                timeout_seconds=min(self.runtime_harness_timeout_seconds(), 300),
+                model_provider="codex",
+                codex_model_provider=getattr(self.config, "codex_model_provider", None),
+                codex_cli_gate=self.codex_cli_gate,
+            )
+            with self.db.connect() as conn:
+                self.db.update_metadata(
+                    conn,
+                    metadata_id,
+                    status="running",
+                    error=None,
+                    run_time_ms=0,
+                    raw_token_usage=None,
+                    prompt_filled=prompt,
+                    phase="checking_duplicates",
+                )
+                conn.commit()
+
+            result = None
+            try:
+                with provider_account_lease(
+                    "codex",
+                    selected_home,
+                    data_dir=getattr(self.config, "data_dir", None),
+                ):
+                    with preserve_codex_auth_metadata(env):
+                        result = dedupe_harness.run(
+                            prompt=prompt,
+                            schema=PRE_STEP_3_DEDUPE_SCHEMA,
+                            repo_dir=work_dir,
+                            model=dedupe_model,
+                            thinking_effort="high",
+                            env=env,
+                            allow_tools=False,
+                        )
+                mark_provider_account_available("codex", selected_home)
+                decision = validate_pre_step_3_dedupe_decision(
+                    result.payload,
+                    allowed_ids={int(row["id"]) for row in candidates},
+                )
+            except (HarnessError, ValueError) as exc:
+                if isinstance(exc, HarnessError) and exc.code in RETRYABLE_RATE_LIMIT_FAILURES:
+                    if exc.code not in CAPACITY_RATE_LIMIT_FAILURES:
+                        mark_provider_account_rate_limited("codex", selected_home)
+                LOGGER.warning(
+                    "scan %s step %s duplicate gate was inconclusive (%s); continuing with verification",
+                    scan_id,
+                    job.step.id,
+                    type(exc).__name__,
+                )
+                with self.db.connect() as conn:
+                    self.db.update_metadata(
+                        conn,
+                        metadata_id,
+                        status="running",
+                        error=None,
+                        run_time_ms=0,
+                        raw_token_usage=None,
+                        prompt_filled="",
+                        phase="building_workspace",
+                    )
+                    conn.commit()
+                return False
+
+            if not decision.is_duplicate:
+                with self.db.connect() as conn:
+                    self.db.update_metadata(
+                        conn,
+                        metadata_id,
+                        status="running",
+                        error=None,
+                        run_time_ms=0,
+                        raw_token_usage=None,
+                        prompt_filled="",
+                        phase="building_workspace",
+                    )
+                    conn.commit()
+                return False
+
+            run_time_ms = int((now_utc() - started).total_seconds() * 1000)
+            duplicate_of_id = int(decision.duplicate_of_id)
+            decision_payload = {
+                "is_duplicate": decision.is_duplicate,
+                "duplicate_of_id": duplicate_of_id,
+                "reason": decision.reason,
+            }
+            with self.db.connect() as conn:
+                self.db.update_metadata(
+                    conn,
+                    metadata_id,
+                    status="completed",
+                    error=None,
+                    run_time_ms=run_time_ms,
+                    raw_token_usage=result.usage,
+                    codex_session_id=result.codex_session_id,
+                    codex_source_home=selected_home,
+                    stub=True,
+                    stub_explanation=f"dup of #{duplicate_of_id}",
+                    prompt_filled=prompt,
+                    phase="completed",
+                    output_json=decision_payload,
+                    duplicate_of_prev_id=duplicate_of_id,
+                    model=dedupe_model,
+                    harness="codex",
+                    thinking_effort="high",
+                    model_provider="codex",
+                )
+                conn.commit()
+            LOGGER.info(
+                "scan %s depth-2 candidate %s skipped as duplicate of %s",
+                scan_id,
+                job.state.prev_id,
+                duplicate_of_id,
+            )
+            return True
 
     def recover_orphaned_metadata(self, engine_started_at):
         with self.db.connect() as conn:
@@ -1245,6 +1424,7 @@ class Worker:
                     harness=self._harness_for_model_selection(model_selection),
                     model_selection=model_selection,
                     include_context_files=bool(getattr(workflow, "include_context_files", False)),
+                    dedupe_step_3=bool(getattr(workflow, "dedupe_step_3", False)),
                 )
                 if did_claim:
                     return True
@@ -1260,6 +1440,7 @@ class Worker:
         harness,
         model_selection: ModelSelection | None = None,
         include_context_files: bool = False,
+        dedupe_step_3: bool = False,
     ):
         step = job.step
         state = job.state
@@ -1317,6 +1498,16 @@ class Worker:
 
                 if metadata_id is None:
                     return False
+
+                if dedupe_step_3 and step.depth == 2:
+                    if self._run_pre_step_3_dedupe(
+                        scan=current_scan,
+                        workflow_id=workflow_id,
+                        metadata_id=metadata_id,
+                        job=job,
+                        selection=selection,
+                    ):
+                        return True
 
                 try:
                     prepared = prepare_dependency_workspace(

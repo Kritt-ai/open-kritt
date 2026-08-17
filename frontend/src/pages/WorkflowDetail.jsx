@@ -135,6 +135,12 @@ export default function WorkflowDetail() {
           <span>{wf.depths.length} depth levels</span>
           <span style={{ color: 'var(--border)' }}>|</span>
           <span>{wf.scanCount} scans run</span>
+          {wf.dedupeStep3 && (
+            <>
+              <span style={{ color: 'var(--border)' }}>|</span>
+              <span style={{ color: 'var(--accent)' }}>step 3 candidate dedupe enabled</span>
+            </>
+          )}
           {wf.extra && wf.extra.length > 0 && (
             <>
               <span style={{ color: 'var(--border)' }}>|</span>

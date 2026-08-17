@@ -61,6 +61,7 @@ describe('workflow transfer files', () => {
         description: 'Map public application endpoints.',
         extra: ['whitepaper'],
         includeContextFiles: true,
+        dedupeStep3: false,
         levels: [
           {
             depth: 0,
@@ -107,6 +108,7 @@ describe('workflow transfer files', () => {
     expect(payload.name).toBe('Imported workflow');
     expect(payload.extra).toEqual([]);
     expect(payload.includeContextFiles).toBe(false);
+    expect(payload.dedupeStep3).toBe(false);
     expect(payload.levels[0]).toMatchObject({
       depth: 0,
       multiOutput: true,
@@ -114,6 +116,38 @@ describe('workflow transfer files', () => {
       bindPrevious: false,
       steps: [{ name: 'Analyze', content: 'Analyze {{repo_full}}.' }],
     });
+  });
+
+  it('preserves enabled step 3 dedupe for workflows with depth 2', () => {
+    const payload = workflowPayloadFromImport({
+      name: 'Three-stage review',
+      dedupeStep3: true,
+      levels: [
+        {
+          depth: 0,
+          multiOutput: true,
+          outputFormat: { entrypoint: 'string' },
+          steps: [{ content: 'Map entrypoints.' }],
+        },
+        {
+          depth: 1,
+          multiOutput: true,
+          outputFormat: { invariant: 'string' },
+          steps: [{ content: 'Find invariants.' }],
+        },
+        {
+          depth: 2,
+          multiOutput: true,
+          outputFormat: terminalFormat,
+          steps: [{ content: 'Verify candidate.' }],
+        },
+      ],
+    });
+
+    expect(payload.dedupeStep3).toBe(true);
+    expect(() => workflowPayloadFromImport({ ...payload, levels: payload.levels.slice(0, 2) })).toThrow(
+      'workflow.dedupeStep3 requires a depth 2'
+    );
   });
 
   it('imports the existing flat API representation and enforces shared depth configuration', () => {
@@ -147,6 +181,7 @@ describe('workflow transfer files', () => {
       description: '',
       extra: [],
       includeContextFiles: false,
+      dedupeStep3: false,
       levels: [
         {
           depth: 0,

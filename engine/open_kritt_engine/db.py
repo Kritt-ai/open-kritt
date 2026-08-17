@@ -730,7 +730,65 @@ class Database:
             name=workflow["name"],
             steps=tuple(steps),
             include_context_files=bool(workflow.get("include_context_files", False)),
+            dedupe_step_3=bool(workflow.get("dedupe_step_3", False)),
         )
+
+    def load_pre_step_3_dedupe_candidates(
+        self,
+        conn,
+        *,
+        scan_id: int,
+        workflow_id: int,
+        metadata_id: int,
+        current_prev_id: int,
+    ) -> list[dict[str, Any]]:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT ON (m.prev_id)
+                   m.prev_id AS id,
+                   m.status,
+                   s.name AS step_name,
+                   r.json_answer AS result
+            FROM workflows.step_metadata m
+            JOIN public.steps s ON s.id = m.step_id
+            JOIN workflows.step_results r
+              ON r.scan_id = m.scan_id
+             AND r.id = m.prev_id
+            WHERE m.scan_id = %(scan_id)s
+              AND m.workflow_id = %(workflow_id)s
+              AND coalesce(m.kind, 'step') = 'step'
+              AND s.depth = 2
+              AND m.status IN ('running', 'completed')
+              AND m.id < %(metadata_id)s
+              AND m.prev_id IS NOT NULL
+              AND m.prev_id <> %(current_prev_id)s
+            ORDER BY m.prev_id, m.id DESC
+            """,
+            {
+                "scan_id": scan_id,
+                "workflow_id": workflow_id,
+                "metadata_id": metadata_id,
+                "current_prev_id": current_prev_id,
+            },
+        ).fetchall()
+        return [
+            {
+                "id": _to_int(row["id"]),
+                "status": row["status"],
+                "step_name": row["step_name"],
+                "result": row["result"] if isinstance(row["result"], dict) else {},
+            }
+            for row in rows
+        ]
+
+    def load_default_model(self, conn, provider: str) -> str | None:
+        row = conn.execute(
+            "SELECT default_model FROM public.model_catalogs WHERE provider = %s",
+            (provider,),
+        ).fetchone()
+        value = row.get("default_model") if row else None
+        normalized = str(value or "").strip()
+        return normalized or None
 
     def load_completed_metadata(self, conn, scan_id: int) -> set[tuple[int, int, str | None, int]]:
         return self.load_metadata_keys(conn, scan_id, ("completed",))
@@ -1552,6 +1610,12 @@ class Database:
         codex_source_home: str | None = None,
         codex_account_id: str | None = None,
         codex_account_email: str | None = None,
+        output_json: dict[str, Any] | None = None,
+        duplicate_of_prev_id: int | None = None,
+        model: str | None = None,
+        harness: str | None = None,
+        thinking_effort: str | None = None,
+        model_provider: str | None = None,
     ):
         conn.execute(
             """
@@ -1563,6 +1627,8 @@ class Database:
                 checked_out_commit = coalesce(%(checked_out_commit)s, checked_out_commit),
                 stub = coalesce(%(stub)s, stub),
                 stub_explanation = coalesce(%(stub_explanation)s, stub_explanation),
+                output_json = coalesce(%(output_json)s, output_json),
+                duplicate_of_prev_id = coalesce(%(duplicate_of_prev_id)s, duplicate_of_prev_id),
                 run_time_ms = %(run_time_ms)s,
                 raw_token_usage = %(raw_token_usage)s,
                 token_count_cached_input = %(cached_input)s,
@@ -1575,6 +1641,10 @@ class Database:
                 codex_source_home = coalesce(%(codex_source_home)s, codex_source_home),
                 codex_account_id = coalesce(%(codex_account_id)s, codex_account_id),
                 codex_account_email = coalesce(%(codex_account_email)s, codex_account_email),
+                model = coalesce(%(model)s, model),
+                harness = coalesce(%(harness)s, harness),
+                thinking_effort = coalesce(%(thinking_effort)s, thinking_effort),
+                model_provider = coalesce(%(model_provider)s, model_provider),
                 updated_at = now()
             WHERE id = %(metadata_id)s
             """,
@@ -1599,6 +1669,12 @@ class Database:
                 "stub": stub,
                 "stub_explanation": stub_explanation,
                 "prompt_filled": prompt_filled,
+                "output_json": _json(output_json),
+                "duplicate_of_prev_id": duplicate_of_prev_id,
+                "model": model,
+                "harness": harness,
+                "thinking_effort": thinking_effort,
+                "model_provider": model_provider,
             },
         )
 

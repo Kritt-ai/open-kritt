@@ -44,6 +44,7 @@ export function workflowBuilderFromGeneration(result, nextId) {
     description: typeof result.description === 'string' ? result.description : '',
     extra: [],
     includeContextFiles: false,
+    dedupeStep3: result.dedupeStep3 === true,
     schemaMode: 'visual',
     selStepId: levels[0].steps[0].id,
     levels,

@@ -2,6 +2,8 @@ import json
 import tempfile
 import time
 import unittest
+from collections import defaultdict
+from datetime import datetime, timezone
 from email.message import Message
 from pathlib import Path
 from unittest.mock import patch
@@ -91,6 +93,49 @@ class ExecutorViewSummaryTests(unittest.TestCase):
         self.assertNotIn('id="tab-accounts"', server.HTML)
         self.assertNotIn("renderAccounts", server.HTML)
         self.assertIn('id="queue"', server.HTML)
+        self.assertIn("Duplicate comparison", server.HTML)
+
+    def test_duplicate_attempt_includes_both_candidate_results(self):
+        now = datetime.now(timezone.utc)
+        rows = [
+            {
+                "id": 901,
+                "step_id": 30,
+                "status": "completed",
+                "phase": "completed",
+                "stub": True,
+                "stub_explanation": "dup of #102",
+                "prev_id": 101,
+                "prev_table": "workflows.step_results",
+                "repeat_run": 1,
+                "duplicate_of_prev_id": 102,
+                "output_json": {
+                    "is_duplicate": True,
+                    "duplicate_of_id": 102,
+                    "reason": "Same root cause and entrypoint.",
+                },
+                "inserted_at": now,
+                "updated_at": now,
+            }
+        ]
+        results = {
+            101: {"id": 101, "json_answer": {"invariant": "candidate A"}},
+            102: {"id": 102, "json_answer": {"invariant": "candidate B"}},
+        }
+
+        [attempt] = server.summarize_attempts(
+            rows,
+            {30: {"id": 30, "name": "Verify", "depth": 2, "is_last_step": True}},
+            defaultdict(list),
+            results,
+            defaultdict(list),
+        )
+
+        self.assertTrue(attempt["isDuplicate"])
+        self.assertEqual(attempt["stubExplanation"], "dup of #102")
+        self.assertEqual(attempt["duplicateInput"]["json"], {"invariant": "candidate A"})
+        self.assertEqual(attempt["duplicateTarget"]["json"], {"invariant": "candidate B"})
+        self.assertEqual(attempt["dedupeDecision"]["duplicate_of_id"], 102)
 
     def test_executor_detail_orders_steps_jobs_and_post_progress(self):
         workflow_steps = server.HTML.index(

@@ -7,6 +7,7 @@ import { isDefaultWorkflowName } from './defaultWorkflows.js';
 
 const PHASE_LABELS = {
   building_workspace: 'Building workspace',
+  checking_duplicates: 'Checking duplicates',
   running_harness: 'Running harness',
   writing_db: 'Writing to DB',
   completed: 'Completed',

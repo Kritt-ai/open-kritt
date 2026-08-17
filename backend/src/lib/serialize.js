@@ -61,6 +61,7 @@ export function serializeWorkflow(workflow, steps, { scanCount = 0, lastUsed = n
     description: workflow.description ?? '',
     extra,
     includeContextFiles: workflow.includeContextFiles === true,
+    dedupeStep3: workflow.dedupeStep3 === true,
     stepIds: (workflow.stepIds || []).map((x) => x.toString()),
     stepCount: serializedSteps.length,
     depths,
@@ -119,6 +120,7 @@ function normalizeGeneratedWorkflow(result) {
   return {
     name: valid.name,
     description: valid.description ?? '',
+    dedupeStep3: valid.dedupeStep3 === true,
     levels: valid.levels.map((level) => ({
       depth: level.depth,
       multiOutput: level.multiOutput,

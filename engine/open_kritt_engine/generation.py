@@ -164,6 +164,7 @@ def _workflow_artifact_schema() -> dict[str, Any]:
         "properties": {
             "name": {"type": "string", "minLength": 1},
             "description": {"type": "string", "minLength": 1},
+            "dedupeStep3": {"type": "boolean"},
             "levels": {
                 "type": "array",
                 "minItems": 1,
@@ -181,7 +182,7 @@ def _workflow_artifact_schema() -> dict[str, Any]:
                 },
             },
         },
-        "required": ["name", "description", "levels"],
+        "required": ["name", "description", "dedupeStep3", "levels"],
         "additionalProperties": False,
     }
 
@@ -316,6 +317,7 @@ def _normalize_raw_artifact(kind: str, raw: dict[str, Any]) -> dict[str, Any]:
         artifact = {
             "name": raw.get("name"),
             "description": raw.get("description"),
+            "dedupeStep3": raw.get("dedupeStep3"),
             "levels": normalized_levels,
         }
     elif kind == "post_script":
@@ -345,6 +347,9 @@ def _validate_workflow_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
     description = artifact.get("description")
     if not isinstance(description, str) or not description.strip():
         _error(errors, "description", "Workflow description is required.")
+    dedupe_step_3 = artifact.get("dedupeStep3")
+    if not isinstance(dedupe_step_3, bool):
+        _error(errors, "dedupeStep3", "Step 3 candidate deduplication must be a boolean.")
 
     raw_levels = artifact.get("levels")
     if not isinstance(raw_levels, list) or not raw_levels:
@@ -394,6 +399,8 @@ def _validate_workflow_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
     for depth in range(max_depth + 1):
         if depth not in depths:
             _error(errors, "levels", f"Depth {depth} is missing - depths must be contiguous from 0.")
+    if dedupe_step_3 is True and 2 not in depths:
+        _error(errors, "dedupeStep3", "Step 3 candidate deduplication requires a workflow depth 2.")
 
     levels_by_depth = {level["depth"]: level for level in levels if level["depth"] in depths}
     key_counts: dict[str, int] = {}
@@ -495,6 +502,7 @@ def _validate_workflow_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
     return {
         "name": name.strip(),
         "description": description.strip(),
+        "dedupeStep3": dedupe_step_3,
         "levels": sorted(
             [
                 {
@@ -654,6 +662,7 @@ Workflow requirements:
 - Sibling steps at one depth share that depth's one output schema. Use siblings only for parallel review missions that can return the same result shape, such as separate impact categories or attack surfaces.
 - Siblings are static and their results are combined, not joined into one record. Create one sibling for each category explicitly named in the request (or for separately named `extra.impact_1`, `extra.impact_2`, and similar inputs). If the user describes an open-ended runtime list such as `extra.impacts`, use one multi-output step that reads that array instead of inventing a variable number of siblings.
 - `multiOutput: true` means each concrete run may emit zero, one, or many records. Use it for enumeration and finding stages, or whenever the next depth should run independently for each returned item. Use `multiOutput: false` only when a run can produce at most one record.
+- `dedupeStep3` controls a conservative tool-free duplicate check before depth 2 (the third displayed step). Keep it false by default; set it true only when the user explicitly asks to suppress duplicate depth-2 candidates.
 - By default, every step at the next depth runs once for each record from the preceding depth and receives that record's fields in its context. Design output granularity with this fan-out in mind; avoid combining unrelated targets into one string when they should be reviewed separately.
 - A step prompt may reference built-in context variables: {", ".join(BUILTIN_KEYS)}. It may also reference `{{{{extra.some_key}}}}` for per-scan values.
 - For scan-supplied knobs, categories, or target lists, use an explicit `{{{{extra.<key>}}}}` reference (for example, `{{{{extra.impact_category}}}}` in sibling impact prompts). Never invent an undeclared variable name.

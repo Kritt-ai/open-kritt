@@ -575,6 +575,7 @@ def subagent_count(row):
 
 PHASE_LABELS = {
     "building_workspace": "Building workspace",
+    "checking_duplicates": "Checking duplicates",
     "running_harness": "Running harness",
     "writing_db": "Writing to DB",
     "completed": "Completed",
@@ -850,11 +851,12 @@ def fetch_state(force_accounts=False, page=1, page_size=SCAN_PAGE_SIZE):
                   AND coalesce(kind, 'step') = 'step'
             )
             SELECT m.id, scan_id, workflow_id, step_id, prev_id, prev_table, repeat_run, status, phase, error,
-                   stub, stub_explanation,
+                   stub, stub_explanation, duplicate_of_prev_id,
                    CASE WHEN detail_rank <= %s THEN left(prompt_template, %s) END AS prompt_template,
                    CASE WHEN detail_rank <= %s THEN left(prompt_filled, %s) END AS prompt_filled,
                    checked_out_commit, run_started_at, run_time_ms,
                    CASE WHEN detail_rank <= %s THEN raw_token_usage END AS raw_token_usage,
+                   CASE WHEN duplicate_of_prev_id IS NOT NULL THEN output_json END AS output_json,
                    token_count_cached_input, token_count_input, token_count_output,
                    token_count_reasoning_output, token_count_total, codex_session_id,
                    codex_source_home, codex_account_id, codex_account_email,
@@ -890,9 +892,21 @@ def fetch_state(force_accounts=False, page=1, page_size=SCAN_PAGE_SIZE):
                       AND coalesce(kind, 'step') = 'step'
                 ) ranked
                 WHERE detail_rank <= %s
+            ),
+            duplicate_result_ids AS (
+                SELECT scan_id, prev_id AS result_id
+                FROM workflows.step_metadata
+                WHERE scan_id = ANY(%s)
+                  AND duplicate_of_prev_id IS NOT NULL
+                  AND prev_id IS NOT NULL
+                UNION
+                SELECT scan_id, duplicate_of_prev_id AS result_id
+                FROM workflows.step_metadata
+                WHERE scan_id = ANY(%s)
+                  AND duplicate_of_prev_id IS NOT NULL
             )
             SELECT r.id, r.scan_id, r.workflow_id, r.step_id, r.prev_id, r.prev_table, r.repeat_run,
-                   CASE WHEN d.scan_id IS NOT NULL THEN r.json_answer END AS json_answer,
+                   CASE WHEN d.scan_id IS NOT NULL OR duplicate_ids.scan_id IS NOT NULL THEN r.json_answer END AS json_answer,
                    r.inserted_at
             FROM workflows.step_results r
             LEFT JOIN detailed_lines d
@@ -901,10 +915,13 @@ def fetch_state(force_accounts=False, page=1, page_size=SCAN_PAGE_SIZE):
              AND d.prev_id = coalesce(r.prev_id, 0)
              AND d.prev_table = coalesce(r.prev_table, '')
              AND d.repeat_run = coalesce(r.repeat_run, 1)
+            LEFT JOIN duplicate_result_ids duplicate_ids
+              ON duplicate_ids.scan_id = r.scan_id
+             AND duplicate_ids.result_id = r.id
             WHERE r.scan_id = ANY(%s)
             ORDER BY id ASC
             """,
-            (scan_ids, DETAIL_ATTEMPT_LIMIT, scan_ids),
+            (scan_ids, DETAIL_ATTEMPT_LIMIT, scan_ids, scan_ids, scan_ids),
         ).fetchall()
         vulnerabilities = conn.execute(
             """
@@ -2841,6 +2858,7 @@ def build_scan(
         if row.get("status") in ("completed", "running")
     }
     results_by_line = defaultdict(list)
+    results_by_id = {}
     result_count_by_step = defaultdict(int)
     for row in results:
         key = line_key(
@@ -2850,6 +2868,7 @@ def build_scan(
             row.get("repeat_run"),
         )
         results_by_line[key].append(row)
+        results_by_id[row["id"]] = row
         result_count_by_step[row["step_id"]] += 1
 
     queue = build_queue(scan, steps, completed_keys, claimed_keys, results_by_line)
@@ -2967,7 +2986,7 @@ def build_scan(
         },
         "steps": step_summaries,
         "attempts": summarize_attempts(
-            metadata, steps_by_id, results_by_line, vulnerabilities_by_metadata
+            metadata, steps_by_id, results_by_line, results_by_id, vulnerabilities_by_metadata
         ),
         "postProcessing": post,
         "errors": summarize_errors(scan, metadata, post_metadata, steps_by_id),
@@ -3334,7 +3353,7 @@ def summarize_step(
 
 
 def summarize_attempts(
-    metadata, steps_by_id, results_by_line, vulnerabilities_by_metadata
+    metadata, steps_by_id, results_by_line, results_by_id, vulnerabilities_by_metadata
 ):
     out = []
     for row in sorted(metadata, key=row_time, reverse=True)[:RECENT_ATTEMPT_LIMIT]:
@@ -3346,6 +3365,9 @@ def summarize_attempts(
                 outputs = vulnerabilities_by_metadata.get(row["id"], [])
             else:
                 outputs = results_by_line.get(metadata_key(row), [])
+        duplicate_of_id = row.get("duplicate_of_prev_id")
+        duplicate_input = results_by_id.get(row.get("prev_id")) if duplicate_of_id is not None else None
+        duplicate_target = results_by_id.get(duplicate_of_id) if duplicate_of_id is not None else None
         out.append(
             {
                 "id": scalar_id(row["id"]),
@@ -3356,7 +3378,22 @@ def summarize_attempts(
                 "phase": phase,
                 "phaseLabel": phase_label(phase),
                 "noResult": bool(row.get("stub")),
+                "isDuplicate": duplicate_of_id is not None,
                 "stubExplanation": row.get("stub_explanation"),
+                "duplicateOfPrevId": scalar_id(duplicate_of_id or 0),
+                "duplicateInput": {
+                    "id": scalar_id(duplicate_input["id"]),
+                    "json": duplicate_input.get("json_answer"),
+                }
+                if duplicate_input
+                else None,
+                "duplicateTarget": {
+                    "id": scalar_id(duplicate_target["id"]),
+                    "json": duplicate_target.get("json_answer"),
+                }
+                if duplicate_target
+                else None,
+                "dedupeDecision": row.get("output_json"),
                 "prevId": scalar_id(row.get("prev_id") or 0),
                 "prevTable": row.get("prev_table"),
                 "repeatRun": row.get("repeat_run") or 1,
@@ -3549,6 +3586,7 @@ HTML = r"""<!doctype html>
     .prewarming_cache { color:var(--pend); background:var(--pendbg); }
     .running { color:var(--run); background:var(--runbg); }
     .building_workspace { color:var(--pend); background:var(--pendbg); }
+    .checking_duplicates { color:var(--run); background:var(--runbg); }
     .running_harness { color:var(--run); background:var(--runbg); }
     .writing_db { color:var(--accent); background:#e8f0ff; }
     .post_processing { color:var(--run); background:var(--runbg); }
@@ -4111,16 +4149,26 @@ function attemptRow(attempt) {
   const runtime = attempt.status === 'running' ? `${ms(attempt.elapsedMs)} running` : ms(attempt.runTimeMs);
   const outputs = (attempt.outputs || []).map(output => `<pre>${esc(pretty(output.json))}</pre>`).join('') || '<pre>No persisted outputs for this attempt.</pre>';
   const noResultText = attempt.stubExplanation || 'No explanation captured for this no-finding response.';
+  const duplicateComparison = attempt.isDuplicate ? `<details data-detail="${esc(attempt.id)}:duplicate-comparison" open>
+        <summary>Duplicate comparison</summary>
+        <div class="mono small" style="margin:9px 0 5px">Skipped candidate #${esc(attempt.duplicateInput?.id || attempt.prevId)}</div>
+        <pre>${esc(pretty(attempt.duplicateInput?.json))}</pre>
+        <div class="mono small" style="margin:9px 0 5px">Matched existing candidate #${esc(attempt.duplicateTarget?.id || attempt.duplicateOfPrevId)}</div>
+        <pre>${esc(pretty(attempt.duplicateTarget?.json))}</pre>
+        <div class="mono small" style="margin:9px 0 5px">Classifier decision</div>
+        <pre>${esc(pretty(attempt.dedupeDecision))}</pre>
+      </details>` : '';
   const account = accountSummary(attempt);
   return `<div class="attempt">
     <div class="attempt-main">
-      <div style="min-width:0"><div style="display:flex;align-items:center;gap:7px"><div class="name" style="font-size:12.5px">d${attempt.depth} · ${esc(attempt.stepName)}</div>${attempt.noResult ? '<span class="chip mono" style="color:var(--ok);border-color:rgba(40,131,79,.35);background:rgba(40,131,79,.08)">no finding</span>' : ''}</div><div class="mono small" style="margin-top:4px">metadata ${esc(attempt.id)} · prev ${esc(attempt.prevId)} · repeat ${attempt.repeatRun}${account ? ` · account ${esc(account)}` : ''} · ${esc(runConfigSummary(attempt))} · ${esc(subagentSummary(attempt))}</div></div>
+      <div style="min-width:0"><div style="display:flex;align-items:center;gap:7px"><div class="name" style="font-size:12.5px">d${attempt.depth} · ${esc(attempt.stepName)}</div>${attempt.isDuplicate ? '<span class="chip mono" style="color:var(--pend);border-color:rgba(176,120,0,.35);background:rgba(176,120,0,.08)">duplicate</span>' : attempt.noResult ? '<span class="chip mono" style="color:var(--ok);border-color:rgba(40,131,79,.35);background:rgba(40,131,79,.08)">no finding</span>' : ''}</div><div class="mono small" style="margin-top:4px">metadata ${esc(attempt.id)} · prev ${esc(attempt.prevId)} · repeat ${attempt.repeatRun}${account ? ` · account ${esc(account)}` : ''} · ${esc(runConfigSummary(attempt))} · ${esc(subagentSummary(attempt))}</div></div>
       ${phaseBadge(attempt)}
       <div class="mono small">${runtime}</div>
       <div class="mono small">${time(attempt.insertedAt)}</div>
       <div style="min-width:0;color:${failed ? 'var(--fail)' : 'var(--muted)'};font-size:11.5px;line-height:1.35;overflow:hidden;text-overflow:ellipsis">${failed ? `${knownErrorBadge(attempt)} ${esc(attempt.error || '')}${knownErrorLinks(attempt)}` : esc(`${attempt.outputCount || 0} outputs · ${tokenSummary(attempt)}`)}</div>
     </div>
     <div class="attempt-details">
+      ${duplicateComparison}
       ${failed ? `<details data-detail="${esc(attempt.id)}:error">
         <summary>Error log</summary>
         <pre>${esc(attempt.rawError || attempt.error || '')}</pre>
@@ -4138,7 +4186,7 @@ function attemptRow(attempt) {
         ${outputs}
       </details>
       ${attempt.noResult ? `<details data-detail="${esc(attempt.id)}:stub-explanation">
-        <summary>No-finding explanation</summary>
+        <summary>${attempt.isDuplicate ? 'Completion reason' : 'No-finding explanation'}</summary>
         <pre>${esc(noResultText)}</pre>
       </details>` : ''}
       <details data-detail="${esc(attempt.id)}:tokens">

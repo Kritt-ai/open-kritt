@@ -68,6 +68,7 @@ async function persistWorkflow(valid) {
         stepIds,
         extra: valid.extraKeys,
         includeContextFiles: valid.includeContextFiles,
+        dedupeStep3: valid.dedupeStep3,
       },
     });
   });
@@ -97,6 +98,7 @@ export async function replaceWorkflowIfUnused(tx, id, valid) {
       stepIds,
       extra: valid.extraKeys,
       includeContextFiles: valid.includeContextFiles,
+      dedupeStep3: valid.dedupeStep3,
     },
   });
   if (existing.stepIds?.length) {

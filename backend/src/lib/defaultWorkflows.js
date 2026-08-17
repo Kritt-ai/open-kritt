@@ -55,6 +55,7 @@ export async function ensureDefaultWorkflows(client = prisma) {
         stepIds,
         extra: workflow.extra || [],
         includeContextFiles: workflow.includeContextFiles === true,
+        dedupeStep3: workflow.dedupeStep3 === true,
       };
       const saved = existing
         ? await tx.workflow.update({ where: { id: existing.id }, data })

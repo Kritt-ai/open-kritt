@@ -200,12 +200,17 @@ function normalizeWorkflow(workflow) {
     levels = levelsFromSerializedSteps(workflow.steps);
   }
   validateBindings(levels);
+  const dedupeStep3 = normalizeBoolean(workflow.dedupeStep3, 'workflow.dedupeStep3');
+  if (dedupeStep3 && !levels.some((level) => level.depth === 2)) {
+    throw workflowError('workflow.dedupeStep3 requires a depth 2.');
+  }
 
   return {
     name: workflow.name.trim(),
     description: workflow.description || '',
     extra: normalizeExtraKeys(workflow.extra),
     includeContextFiles: normalizeBoolean(workflow.includeContextFiles, 'workflow.includeContextFiles'),
+    dedupeStep3,
     levels,
   };
 }

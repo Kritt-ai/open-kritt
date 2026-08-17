@@ -133,6 +133,7 @@ model Workflow {
   // Extra scan-input keys declared by or referenced across this workflow.
   extra       String[] @default([])
   includeContextFiles Boolean  @default(false) @map("include_context_files")
+  dedupeStep3 Boolean @default(false) @map("dedupe_step_3")
   insertedAt  DateTime @default(now()) @map("inserted_at") @db.Timestamptz(6)
   updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -290,6 +291,7 @@ model StepMetadata {
   promptTemplate            String?   @map("prompt_template")
   promptFilled              String?   @map("prompt_filled")
   outputJson                Json?     @map("output_json")
+  duplicateOfPrevId         BigInt?   @map("duplicate_of_prev_id")
   checkedOutCommit          String?   @map("checked_out_commit")
   runStartedAt              DateTime? @map("run_started_at") @db.Timestamptz(6)
   runTimeMs                 Decimal?  @map("run_time_ms")

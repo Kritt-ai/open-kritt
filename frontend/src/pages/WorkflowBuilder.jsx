@@ -33,6 +33,7 @@ function blankBuilder() {
     description: '',
     extra: [],
     includeContextFiles: false,
+    dedupeStep3: false,
     schemaMode: 'visual',
     selStepId: 'b0',
     levels: [
@@ -62,6 +63,7 @@ function workflowSnapshot(builder) {
     description: builder.description,
     extra: builder.extra,
     includeContextFiles: builder.includeContextFiles,
+    dedupeStep3: builder.dedupeStep3,
     levels: builder.levels,
   });
 }
@@ -369,6 +371,7 @@ export function removeWorkflowStep(builder, stepId) {
   }
 
   clearInvalidWorkflowBindings(next.levels);
+  if (!next.levels.some((candidate) => candidate.depth === 2)) next.dedupeStep3 = false;
 
   const selectedStillExists = next.levels.some((candidate) =>
     candidate.steps.some((step) => step.id === next.selStepId)
@@ -411,6 +414,7 @@ export function builderFromWorkflow(wf, { copy = false, selectedStepId = null } 
     description: wf.description || '',
     extra: Array.isArray(wf.extra) ? wf.extra : [],
     includeContextFiles: wf.includeContextFiles === true,
+    dedupeStep3: wf.dedupeStep3 === true,
     schemaMode: 'visual',
     selStepId: requestedStepExists ? selectedStepId : levels[0].steps[0].id,
     levels,
@@ -704,6 +708,7 @@ export default function WorkflowBuilder() {
       description: b.description,
       extra: b.includeContextFiles === true ? b.extra : [],
       includeContextFiles: b.includeContextFiles === true,
+      dedupeStep3: b.dedupeStep3 === true,
       levels: b.levels.map((l) => ({
         depth: l.depth,
         multiOutput: l.multiOutput,
@@ -811,6 +816,36 @@ export default function WorkflowBuilder() {
               <strong style={{ fontSize: 12.5, color: 'var(--text)' }}>Attach extra inputs to workspace</strong>
               <span style={{ fontSize: 11.5, lineHeight: 1.45, color: 'var(--text-3)' }}>
                 Adds configuration and extra inputs as files, then tells each step to inspect only the relevant parts.
+              </span>
+            </span>
+          </label>
+
+          <label
+            style={{
+              display: 'flex',
+              alignItems: 'flex-start',
+              gap: 9,
+              marginTop: 10,
+              padding: '10px 12px',
+              border: '1px solid var(--border)',
+              borderRadius: 8,
+              background: 'var(--surface)',
+              cursor: maxDepth >= 2 ? 'pointer' : 'not-allowed',
+              opacity: maxDepth >= 2 ? 1 : 0.55,
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={b.dedupeStep3 === true}
+              disabled={maxDepth < 2}
+              onChange={(event) => mut((next) => (next.dedupeStep3 = event.target.checked))}
+              style={{ marginTop: 2 }}
+            />
+            <span style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <strong style={{ fontSize: 12.5, color: 'var(--text)' }}>Deduplicate candidates before step 3</strong>
+              <span style={{ fontSize: 11.5, lineHeight: 1.45, color: 'var(--text-3)' }}>
+                Runs a conservative tool-free Codex comparison before each depth-2 workspace is built. Uncertain
+                candidates continue normally.
               </span>
             </span>
           </label>

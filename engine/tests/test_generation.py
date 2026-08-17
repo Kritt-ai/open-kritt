@@ -50,6 +50,7 @@ def raw_workflow(*, line_type="number", trigger_flow_type="array", content="Anal
     return {
         "name": "generated-security-review",
         "description": "Find concrete vulnerabilities in externally reachable production flows.",
+        "dedupeStep3": False,
         "levels": [
             {
                 "depth": 0,
@@ -66,6 +67,7 @@ def raw_late_batch_workflow(final_content):
     return {
         "name": "late-batch",
         "description": "Aggregates the immediate prior depth only.",
+        "dedupeStep3": False,
         "levels": [
             {
                 "depth": 0,
@@ -122,6 +124,7 @@ def test_workflow_generation_normalizes_output_fields_into_api_payload():
     assert artifact["levels"][0]["outputFormat"]["line"] == "number"
     assert artifact["levels"][0]["outputFormat"]["trigger_flow"] == "array"
     assert artifact["levels"][0]["steps"][0]["name"] == "Investigate attack surface"
+    assert artifact["dedupeStep3"] is False
 
 
 def test_generation_rejects_workflow_that_backend_would_reject():
@@ -258,6 +261,7 @@ def test_generation_prompts_explain_public_workflow_contracts_and_review_guidanc
 
     assert "Sibling steps at one depth share that depth's one output schema" in workflow_prompt
     assert "`multiOutput: true` means each concrete run may emit zero, one, or many records" in workflow_prompt
+    assert "`dedupeStep3` controls a conservative tool-free duplicate check" in workflow_prompt
     assert "`{{extra.<key>}}` reference" in workflow_prompt
     assert "Siblings are static" in workflow_prompt
     assert "Turn a broad request into sequential stages" in workflow_prompt
