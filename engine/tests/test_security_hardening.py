@@ -276,7 +276,7 @@ def test_engine_sensitive_mounts_are_behind_root_only_parent():
     assert "chmod 0700 /run/open-kritt-secrets" in dockerfile
     assert "/opt/cursor-agent/" in dockerfile
     assert "/root/.local/share/cursor-agent" not in dockerfile
-    assert "GROK_BUILD_VERSION=1.0.0" in dockerfile
+    assert "GROK_BUILD_VERSION=1.0.5" in dockerfile
     assert "/usr/local/bin/grok" in dockerfile
 
 
@@ -294,11 +294,12 @@ def test_agent_cli_builds_use_exact_package_versions():
         assert "@openai/codex@0.145.0 \\\n    && codex --version" in dockerfiles[name]
         assert "@anthropic-ai/claude-code@2.1.215" in dockerfiles[name]
     assert "@anthropic-ai/claude-code@2.1.215" in dockerfiles["claude-runner"]
-    assert "GROK_BUILD_VERSION=1.0.0" in dockerfiles["engine"]
-    assert "https://x.ai/cli/grok-${GROK_BUILD_VERSION}-" in dockerfiles["engine"]
-    assert "28dbc967a5843dae2374b6834dadbab95354e685c7e5c8dc750b92a4e5fc7c3e" in dockerfiles["engine"]
-    assert "bb7c51116564a2219f6a49850815060f416918ac407f1f2ba82c53c0b0d4383f" in dockerfiles["engine"]
-    assert "&& grok --version" in dockerfiles["engine"]
+    for name in ("engine", "backend"):
+        assert "GROK_BUILD_VERSION=1.0.5" in dockerfiles[name]
+        assert "https://x.ai/cli/grok-${GROK_BUILD_VERSION}-" in dockerfiles[name]
+        assert "9ba87444e1819e8f6104adbbf4676a870c204380aa5c3e1c38a926c4ea677238" in dockerfiles[name]
+        assert "1c1fe67d7c35497fb09f44a451f57acc3787add4c9aea2c56f5c7c75dc5ffcf1" in dockerfiles[name]
+        assert "&& grok --version" in dockerfiles[name]
 
     for dockerfile in dockerfiles.values():
         assert "npm@latest" not in dockerfile

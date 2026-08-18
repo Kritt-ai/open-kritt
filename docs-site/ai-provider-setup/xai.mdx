@@ -14,9 +14,10 @@ Both methods can coexist. Scan and generation jobs authenticate with a stored lo
 the key path.
 
 After credentials are configured, the engine periodically refreshes a searchable model
-catalog from xAI's authenticated models endpoint when an API key is present. Catalog
-results are advisory: you can also enter an exact model ID as a custom value, like
-OpenRouter.
+catalog from xAI's authenticated language-model endpoint when an API key is present.
+Image, video, and audio generation models are not offered because Grok Build needs a
+language model. Catalog results are advisory: you can also enter an exact model ID as a
+custom value, like OpenRouter.
 
 ## Sign in with Grok device login
 
@@ -83,14 +84,30 @@ OpenRouter.
 ## Harness and model compatibility
 
 xAI supports only the **Grok Build** harness. The engine and backend images pin the Grok
-Build CLI to **1.0.0** (`/usr/local/bin/grok`).
+Build CLI to **1.0.5** (`/usr/local/bin/grok`) and verify the official binary checksum
+during each image build.
 
 Whether selected from the catalog or entered manually, the model must support the agent
 behavior needed by Grok Build, including a large code context, tool use for scans, and
 reliable structured output.
 
 **Thinking effort** is supported at `low`, `medium` (the open·kritt default), and `high`.
-The UI shows only levels supported for the selected model and harness.
+Grok 4.6 also supports `xhigh`. The UI shows only levels supported for the selected model
+and harness.
+
+## Security and isolation
+
+Every Grok Build job receives a fresh home containing only the selected account's
+`auth.json` plus open·kritt-selected skills. Account-level Grok configuration, trust
+records, hooks, and MCP settings are not copied into the job.
+
+For scans, open·kritt keeps Grok's folder-trust gate enabled and treats repository-local
+configuration as untrusted. It also disables project/ambient MCP servers, hooks, LSPs,
+Claude/Cursor compatibility imports, memory, background workflows, subagents, Grok web
+search, telemetry, feedback, and trace upload. The main agent can still inspect and edit
+the disposable repository copy and run shell commands inside the isolated scan container.
+That container has outbound internet access, so run untrusted scans on a dedicated Docker
+host or VM as described in the [threat model](https://github.com/Kritt-ai/open-kritt/blob/main/docs/threat-model.md).
 
 ## Catalog refresh and fallback
 
