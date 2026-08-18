@@ -111,6 +111,9 @@ def test_job_environment_only_includes_selected_provider_and_harness_credentials
         "ANTHROPIC_API_KEY": "anthropic-secret",
         "OPENROUTER_API_KEY": "openrouter-secret",
         "CURSOR_API_KEY": "cursor-secret",
+        "CLAUDE_CODE_SUBAGENT_MODEL": "claude-opus-4-8",
+        "CLAUDE_CODE_NO_MODEL_FALLBACK": "0",
+        "CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK": "0",
     }
 
     codex = job_environment("codex", "codex", source)
@@ -127,3 +130,6 @@ def test_job_environment_only_includes_selected_provider_and_harness_credentials
     for env in (codex, openrouter_claude, openrouter_cursor):
         assert "DATABASE_URL" not in env
         assert "GITHUB_TOKEN" not in env
+        assert "CLAUDE_CODE_SUBAGENT_MODEL" not in env
+        assert "CLAUDE_CODE_NO_MODEL_FALLBACK" not in env
+        assert "CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK" not in env

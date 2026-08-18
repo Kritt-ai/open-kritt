@@ -155,6 +155,34 @@ def test_snapshot_scan_runner_uses_image_workspace_without_host_workspace_mount(
     assert command[command.index("open-kritt-workspace-snapshot:test") + 1 :][:2] == ["codex", "exec"]
 
 
+def test_scan_runner_forwards_claude_model_lock_environment(monkeypatch, tmp_path):
+    data_dir = tmp_path / "engine-data"
+    host_data_dir = tmp_path / "host-engine-data"
+    repo_dir = data_dir / "jobs" / "metadata-779" / "workspace"
+    home_dir = data_dir / "jobs" / "metadata-779" / "home"
+    repo_dir.mkdir(parents=True)
+    home_dir.mkdir(parents=True)
+    monkeypatch.setenv("ENGINE_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("ENGINE_DOCKER_DATA_DIR_HOST", str(host_data_dir))
+    monkeypatch.setattr(harnesses.shutil, "which", lambda name: "docker" if name == "docker" else None)
+
+    model_lock = {
+        "CLAUDE_CODE_SUBAGENT_MODEL": "~deepseek/deepseek-v4-flash-latest",
+        "CLAUDE_CODE_NO_MODEL_FALLBACK": "1",
+        "CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK": "1",
+    }
+    command = REAL_SCAN_DOCKER_COMMAND(
+        ["claude", "-p", "--model", model_lock["CLAUDE_CODE_SUBAGENT_MODEL"]],
+        str(repo_dir),
+        {"HOME": str(home_dir), **model_lock},
+    )
+
+    inherited_keys = {
+        command[index + 1] for index, value in enumerate(command) if value == "--env" and "=" not in command[index + 1]
+    }
+    assert model_lock.keys() <= inherited_keys
+
+
 def test_prewarm_rebuilds_previous_marker_version_instead_of_promoting_it(monkeypatch, tmp_path):
     stale_base = tmp_path / "cache" / "owner__repo@HEAD"
     stale_repo = stale_base / "owner__repo"
