@@ -584,6 +584,27 @@ test('start blocks GitHub-only configuration and launches Compose with model acc
   assert.equal((await stat(join(project.rootDir, '.data', 'codex-accounts', 'cli', '.codex'))).mode & 0o777, 0o700);
 });
 
+test('Compose configures the engine service image independently from job images', async () => {
+  const compose = await readFile(new URL('../docker-compose.yml', import.meta.url), 'utf8');
+  const engineStart = compose.indexOf('\n  engine:\n');
+  const engineEnd = compose.indexOf('\n  executor-view:\n', engineStart);
+
+  assert.notEqual(engineStart, -1);
+  assert.notEqual(engineEnd, -1);
+
+  const engineService = compose.slice(engineStart, engineEnd);
+  assert.match(engineService, /^    image: \$\{ENGINE_IMAGE:-open-kritt-engine:local\}$/m);
+  assert.match(
+    engineService,
+    /^      ENGINE_SCAN_RUNNER_IMAGE: \$\{ENGINE_SCAN_RUNNER_IMAGE:-open-kritt-engine:local\}$/m
+  );
+  assert.doesNotMatch(engineService, /^    image: \$\{ENGINE_SCAN_RUNNER_IMAGE:/m);
+
+  const environmentTemplate = await readFile(new URL('../.env.example', import.meta.url), 'utf8');
+  assert.match(environmentTemplate, /^ENGINE_IMAGE=open-kritt-engine:local$/m);
+  assert.match(environmentTemplate, /^ENGINE_SCAN_RUNNER_IMAGE=open-kritt-engine:local$/m);
+});
+
 test('start reports how to repair a Codex home parent left unwritable by Docker', async (t) => {
   if (typeof process.getuid === 'function' && process.getuid() === 0) {
     t.skip('root bypasses directory permission checks');

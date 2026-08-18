@@ -82,7 +82,7 @@ services:
     build:
       context: ./engine
       dockerfile: Dockerfile
-    image: ${ENGINE_SCAN_RUNNER_IMAGE:-open-kritt-engine:local}
+    image: ${ENGINE_IMAGE:-open-kritt-engine:local}
     container_name: open-kritt-engine
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql://open_kritt:open_kritt_password@db:5432/open_kritt?schema=public}
