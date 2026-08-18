@@ -646,19 +646,52 @@ test('help is available for subcommands and unknown commands fail clearly', asyn
   assert.match(unknownIo.error.text, /Unknown command/);
 });
 
-test('secret prompt falls back to a visible prompt when the terminal cannot enter raw mode (issue #55)', async () => {
-  const apiKey = 'sk-or-visible-fallback';
-  // Reproduces Windows Git Bash / MSYS: an interactive stdin whose isTTY is
-  // undefined and that has no setRawMode. Before the fix this threw
-  // "Secret entry requires an interactive terminal." and aborted setup.
+test('secret prompt declines visible input by default when raw mode is unavailable', async () => {
   const input = new PassThrough();
   const output = new BufferStream();
   const prompter = createPrompter({ input, output, error: new BufferStream() });
 
   const pending = prompter.secret('Enter OpenRouter API key (input is hidden): ');
-  input.write(`${apiKey}\n`);
-  input.end();
+  input.end('no\n');
+
+  assert.equal(await pending, '');
+  assert.match(output.text, /cannot hide input/);
+  assert.match(output.text, /Continue with visible input\? \[y\/N\]/);
+  assert.doesNotMatch(output.text, /Enter OpenRouter API key/);
+});
+
+test('secret prompt requires consent before falling back to visible input', async () => {
+  const apiKey = 'sk-or-visible-fallback';
+  const input = new PassThrough();
+  const output = new BufferStream();
+  const prompter = createPrompter({ input, output, error: new BufferStream() });
+
+  const pending = prompter.secret('Enter OpenRouter API key (input is hidden): ');
+  input.write('yes\n');
+  await new Promise((resolve) => setImmediate(resolve));
+  input.end(`${apiKey}\n`);
 
   assert.equal(await pending, apiKey);
-  assert.match(output.text, /cannot hide input/);
+  assert.match(output.text, /Enter OpenRouter API key \(input will be visible\):/);
+  assert.doesNotMatch(output.text, /input is hidden/);
+  assert.doesNotMatch(output.text, new RegExp(apiKey));
+});
+
+test('secret prompt keeps using hidden raw-mode input when it is available', async () => {
+  const apiKey = 'sk-or-hidden-input';
+  const input = new EventEmitter();
+  const output = new BufferStream();
+  const rawModes = [];
+  input.isTTY = true;
+  input.resume = () => {};
+  input.setRawMode = (enabled) => rawModes.push(enabled);
+  const prompter = createPrompter({ input, output, error: new BufferStream() });
+
+  const pending = prompter.secret('Enter OpenRouter API key (input is hidden): ');
+  input.emit('data', Buffer.from(`${apiKey}\n`));
+
+  assert.equal(await pending, apiKey);
+  assert.deepEqual(rawModes, [true, false]);
+  assert.doesNotMatch(output.text, /visible as you type/);
+  assert.doesNotMatch(output.text, new RegExp(apiKey));
 });
