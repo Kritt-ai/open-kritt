@@ -200,28 +200,34 @@ describe('model catalog', () => {
     expect(modelForCatalogChange('gpt-5-codex', 'codex', 'xai', loadingCatalog)).toBe('');
   });
 
-  it('limits Grok Build thinking efforts to low, medium, and high', () => {
+  it('uses Grok Build model-specific efforts and includes xhigh for Grok 4.6', () => {
     const xaiCatalog = configuredModelCatalog({
       providers: [
         {
           provider: 'xai',
           input: 'text',
           status: 'ready',
-          defaultModel: 'grok-4.5',
-          models: [{ id: 'grok-4.5', thinkingEfforts: ['low', 'medium', 'high'] }],
+          defaultModel: 'grok-4.6',
+          models: [
+            { id: 'grok-4.6', thinkingEfforts: ['low', 'medium', 'high', 'xhigh'] },
+            { id: 'grok-4.5', thinkingEfforts: ['low', 'medium', 'high'] },
+          ],
         },
       ],
     });
 
-    expect(thinkingEffortsForModel(xaiCatalog, 'xai', 'grok-4.5', [], 'grok-build')).toEqual([
+    expect(thinkingEffortsForModel(xaiCatalog, 'xai', 'grok-4.6', [], 'grok-build')).toEqual([
       'low',
       'medium',
       'high',
+      'xhigh',
     ]);
+    expect(thinkingEffortsForModel(xaiCatalog, 'xai', 'grok-4.5', [], 'grok-build')).toEqual(['low', 'medium', 'high']);
     expect(thinkingEffortsForModel(xaiCatalog, 'xai', 'custom-model', [], 'grok-build')).toEqual([
       'low',
       'medium',
       'high',
+      'xhigh',
     ]);
   });
 

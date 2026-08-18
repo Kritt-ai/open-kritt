@@ -46,7 +46,7 @@ const XAI_GROK_MODELS = [
   {
     id: 'grok-4.6',
     label: 'Grok 4.6',
-    thinkingEfforts: ['low', 'medium', 'high'],
+    thinkingEfforts: ['low', 'medium', 'high', 'xhigh'],
     isDefault: true,
   },
   {

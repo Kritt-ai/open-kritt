@@ -184,7 +184,7 @@ CLAUDE_MODEL_ALIASES = {
 }
 DEFAULT_MODEL_PROVIDER = "openrouter"
 MODEL_PROVIDERS = {"codex", "claude", "openrouter", "xai"}
-GROK_BUILD_THINKING_EFFORTS = frozenset({"low", "medium", "high"})
+GROK_BUILD_THINKING_EFFORTS = frozenset({"low", "medium", "high", "xhigh"})
 DEFAULT_GROK_BUILD_MODEL = "grok-4.6"
 GROK_BUILD_RUNTIME_ENV = {
     # A fresh per-job GROK_HOME prevents account-level configuration from

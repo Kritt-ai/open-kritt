@@ -22,13 +22,13 @@ const PROVIDER_THINKING_EFFORTS = {
   codex: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
   claude: ['low', 'medium', 'high', 'xhigh', 'max'],
   openrouter: ['default', 'low', 'medium', 'high', 'xhigh', 'max'],
-  xai: ['low', 'medium', 'high'],
+  xai: ['low', 'medium', 'high', 'xhigh'],
 };
 
 const HARNESS_THINKING_EFFORTS = {
   codex: ['default', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
   'claude-code': ['default', 'low', 'medium', 'high', 'xhigh', 'max'],
-  'grok-build': ['low', 'medium', 'high'],
+  'grok-build': ['low', 'medium', 'high', 'xhigh'],
 };
 
 function normalizedProviderId(provider) {

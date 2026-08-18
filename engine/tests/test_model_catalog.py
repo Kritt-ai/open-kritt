@@ -386,7 +386,7 @@ def test_fetch_openrouter_models_rejects_oversized_or_invalid_responses(monkeypa
         fetch_openrouter_models("openrouter-test-key", 2)
 
 
-def test_fetch_xai_models_uses_models_endpoint_and_default_efforts(monkeypatch):
+def test_fetch_xai_models_uses_language_endpoint_and_model_efforts(monkeypatch):
     requests = []
 
     def fake_urlopen(request, timeout):
@@ -394,10 +394,12 @@ def test_fetch_xai_models_uses_models_endpoint_and_default_efforts(monkeypatch):
         return io.BytesIO(
             json.dumps(
                 {
-                    "data": [
-                        {"id": "grok-3", "name": "Grok 3"},
-                        {"id": "grok-4.5", "name": "Grok 4.5"},
+                    "models": [
+                        {"id": "grok-3", "name": "Grok 3", "output_modalities": ["text"]},
+                        {"id": "grok-4.5", "name": "Grok 4.5", "output_modalities": ["text"]},
+                        {"id": "grok-4.6", "name": "Grok 4.6", "output_modalities": ["text"]},
                         {"id": "grok-code-fast-1", "name": "Grok Code Fast"},
+                        {"id": "grok-imagine-image", "output_modalities": ["image"]},
                     ]
                 }
             ).encode("utf-8")
@@ -406,12 +408,13 @@ def test_fetch_xai_models_uses_models_endpoint_and_default_efforts(monkeypatch):
     monkeypatch.setattr(model_catalog, "urlopen", fake_urlopen)
     models, default_model = fetch_xai_models("xai-test-key", 2)
 
-    assert [model["id"] for model in models] == ["grok-4.6", "grok-3", "grok-4.5", "grok-code-fast-1"]
+    assert [model["id"] for model in models] == ["grok-3", "grok-4.5", "grok-4.6", "grok-code-fast-1"]
     assert default_model == "grok-4.6"
-    assert models[0]["isDefault"] is True
-    assert models[0]["thinkingEfforts"] == ["low", "medium", "high"]
+    assert models[2]["isDefault"] is True
+    assert models[1]["thinkingEfforts"] == ["low", "medium", "high"]
+    assert models[2]["thinkingEfforts"] == ["low", "medium", "high", "xhigh"]
     request, timeout = requests[0]
-    assert request.full_url == "https://api.x.ai/v1/models"
+    assert request.full_url == "https://api.x.ai/v1/language-models"
     assert request.get_header("Authorization") == "Bearer xai-test-key"
     assert timeout == 2
 
@@ -420,7 +423,7 @@ def test_fetch_xai_models_injects_default_when_missing(monkeypatch):
     monkeypatch.setattr(
         model_catalog,
         "urlopen",
-        lambda *_args, **_kwargs: io.BytesIO(json.dumps({"data": [{"id": "grok-3"}]}).encode("utf-8")),
+        lambda *_args, **_kwargs: io.BytesIO(json.dumps({"models": [{"id": "grok-3"}]}).encode("utf-8")),
     )
     models, default_model = fetch_xai_models("xai-test-key", 2)
     assert default_model == "grok-4.6"

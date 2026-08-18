@@ -68,7 +68,7 @@ MODEL_PROVIDER_HARNESSES = {
 HARNESS_THINKING_EFFORTS = {
     "codex": frozenset({"default", "low", "medium", "high", "xhigh", "max", "ultra"}),
     "claude-code": frozenset({"default", "low", "medium", "high", "xhigh", "max"}),
-    "grok-build": frozenset({"low", "medium", "high"}),
+    "grok-build": frozenset({"low", "medium", "high", "xhigh"}),
 }
 
 IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")

@@ -90,7 +90,7 @@ export const MODEL_PROVIDER_HARNESSES = {
 export const HARNESS_THINKING_EFFORTS = {
   codex: ['default', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
   'claude-code': ['default', 'low', 'medium', 'high', 'xhigh', 'max'],
-  'grok-build': ['low', 'medium', 'high'],
+  'grok-build': ['low', 'medium', 'high', 'xhigh'],
 };
 
 export const GENERATION_KINDS = ['workflow', 'post_script'];

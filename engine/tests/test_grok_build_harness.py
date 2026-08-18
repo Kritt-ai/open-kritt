@@ -30,11 +30,11 @@ def test_grok_harness_aliases_and_matrix():
     assert normalize_harness_name("grok-build") == "grok-build"
     assert "xai" in MODEL_PROVIDERS
     assert MODEL_PROVIDER_HARNESSES["xai"] == frozenset({"grok-build"})
-    assert HARNESS_THINKING_EFFORTS["grok-build"] == frozenset({"low", "medium", "high"})
+    assert HARNESS_THINKING_EFFORTS["grok-build"] == frozenset({"low", "medium", "high", "xhigh"})
     assert PROVIDER_ENV_KEYS["xai"] == "XAI_API_KEY"
 
 
-def test_generation_rejects_incompatible_xai_harness_and_effort():
+def test_generation_accepts_xhigh_but_rejects_unsupported_xai_harness_and_effort():
     job = {
         "kind": "workflow",
         "request": "draft a workflow",
@@ -49,6 +49,9 @@ def test_generation_rejects_incompatible_xai_harness_and_effort():
 
     job["harness"] = "grok"
     job["thinking_effort"] = "xhigh"
+    assert validate_generation_job(job)["thinking_effort"] == "xhigh"
+
+    job["thinking_effort"] = "max"
     with pytest.raises(GenerationValidationError) as exc_info:
         validate_generation_job(job)
     assert any(item["field"] == "thinking_effort" for item in exc_info.value.errors)
@@ -119,8 +122,8 @@ def test_grok_build_tool_free_command_and_structured_output(monkeypatch, tmp_pat
         prompt="prompt body",
         schema=output_schema('{"thing":"string"}', multi_output=False),
         repo_dir=str(tmp_path),
-        model="grok-4.5",
-        thinking_effort="high",
+        model="grok-4.6",
+        thinking_effort="xhigh",
         env=provided_env,
         allow_tools=False,
     )
@@ -135,8 +138,8 @@ def test_grok_build_tool_free_command_and_structured_output(monkeypatch, tmp_pat
     assert "--json-schema" in cmd
     schema_arg = cmd[cmd.index("--json-schema") + 1]
     assert schema_arg.startswith("{") and '"type"' in schema_arg
-    assert cmd[cmd.index("--model") + 1] == "grok-4.5"
-    assert cmd[cmd.index("--reasoning-effort") + 1] == "high"
+    assert cmd[cmd.index("--model") + 1] == "grok-4.6"
+    assert cmd[cmd.index("--reasoning-effort") + 1] == "xhigh"
     assert "--permission-mode" in cmd and cmd[cmd.index("--permission-mode") + 1] == "dontAsk"
     assert "--tools" in cmd and cmd[cmd.index("--tools") + 1] == ""
     assert "--disable-web-search" in cmd
