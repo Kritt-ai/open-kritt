@@ -81,6 +81,13 @@ def test_xai_job_and_generation_environments_are_scoped(tmp_path):
 def test_grok_build_tool_free_command_and_structured_output(monkeypatch, tmp_path):
     captured = {}
     payload = marked({"stub": True, "stub_explanation": "No matching records.", "results": []})
+    provided_env = {
+        "HOME": str(tmp_path / "home"),
+        "XAI_API_KEY": "xai-secret",
+        "PATH": "/usr/local/bin",
+        "GROK_FOLDER_TRUST": "0",
+        "GROK_TELEMETRY_ENABLED": "true",
+    }
 
     def fake_run_process(cmd, prompt, cwd, timeout, env=None):
         captured["cmd"] = cmd
@@ -114,7 +121,7 @@ def test_grok_build_tool_free_command_and_structured_output(monkeypatch, tmp_pat
         repo_dir=str(tmp_path),
         model="grok-4.5",
         thinking_effort="high",
-        env={"HOME": str(tmp_path / "home"), "XAI_API_KEY": "xai-secret", "PATH": "/usr/local/bin"},
+        env=provided_env,
         allow_tools=False,
     )
 
@@ -134,7 +141,15 @@ def test_grok_build_tool_free_command_and_structured_output(monkeypatch, tmp_pat
     assert "--tools" in cmd and cmd[cmd.index("--tools") + 1] == ""
     assert "--disable-web-search" in cmd
     assert "--no-subagents" in cmd
+    assert "--no-plan" in cmd
+    assert cmd[cmd.index("--deny") + 1] == "MCPTool"
     assert "--always-approve" not in cmd
+    assert all(captured["env"].get(key) == value for key, value in harnesses.GROK_BUILD_RUNTIME_ENV.items())
+    assert captured["env"]["GROK_FOLDER_TRUST"] == "1"
+    assert captured["env"]["GROK_TELEMETRY_ENABLED"] == "false"
+    # The harness copies a supplied environment before enforcing its settings.
+    assert provided_env["GROK_FOLDER_TRUST"] == "0"
+    assert provided_env["GROK_TELEMETRY_ENABLED"] == "true"
     # Prompt is delivered via file, not process stdin.
     assert captured["prompt"] == ""
 
@@ -191,6 +206,8 @@ def test_grok_build_docker_runner_remaps_grok_home(monkeypatch, tmp_path):
     cmd = captured["cmd"]
     grok_home_flags = [part for part in cmd if part == "GROK_HOME" or part.startswith("GROK_HOME=")]
     assert grok_home_flags == ["GROK_HOME=/home/runner/.grok"]
+    for key, value in harnesses.GROK_BUILD_RUNTIME_ENV.items():
+        assert f"{key}={value}" in cmd
 
 
 def test_grok_build_tool_enabled_uses_bypass_permissions(monkeypatch, tmp_path):
@@ -199,6 +216,7 @@ def test_grok_build_tool_enabled_uses_bypass_permissions(monkeypatch, tmp_path):
 
     def fake_scan_docker(cmd, repo_dir, env, **kwargs):
         captured["inner"] = cmd
+        captured["env"] = env
         return ["docker", "run", *cmd]
 
     def fake_run_process(cmd, prompt, cwd, timeout, env=None):
@@ -231,6 +249,11 @@ def test_grok_build_tool_enabled_uses_bypass_permissions(monkeypatch, tmp_path):
     assert "--always-approve" in inner
     assert inner[inner.index("--permission-mode") + 1] == "bypassPermissions"
     assert "--tools" not in inner or inner[inner.index("--tools") + 1] != ""
+    assert "--disable-web-search" in inner
+    assert "--no-subagents" in inner
+    assert "--no-plan" in inner
+    assert inner[inner.index("--deny") + 1] == "MCPTool"
+    assert all(captured["env"].get(key) == value for key, value in harnesses.GROK_BUILD_RUNTIME_ENV.items())
 
 
 def test_grok_build_auth_error_is_classified(monkeypatch, tmp_path):

@@ -186,6 +186,37 @@ DEFAULT_MODEL_PROVIDER = "openrouter"
 MODEL_PROVIDERS = {"codex", "claude", "openrouter", "xai"}
 GROK_BUILD_THINKING_EFFORTS = frozenset({"low", "medium", "high"})
 DEFAULT_GROK_BUILD_MODEL = "grok-4.6"
+GROK_BUILD_RUNTIME_ENV = {
+    # A fresh per-job GROK_HOME prevents account-level configuration from
+    # leaking into scans. Keep the CLI's project-config trust gate enabled too,
+    # so an untrusted repository cannot start hooks, MCP servers, or LSPs.
+    "GROK_FOLDER_TRUST": "1",
+    "GROK_MEMORY": "0",
+    "GROK_WORKFLOWS": "0",
+    "GROK_LSP_TOOLS": "0",
+    # Scan inputs may be sensitive source code. Do not upload product telemetry,
+    # session traces, or feedback from the scanner process.
+    "GROK_TELEMETRY_ENABLED": "false",
+    "GROK_TELEMETRY_TRACE_UPLOAD": "false",
+    "GROK_TELEMETRY_MIXPANEL_ENABLED": "false",
+    "GROK_FEEDBACK_ENABLED": "false",
+    "GROK_TRACE_UPLOAD": "false",
+    "GROK_EXTERNAL_OTEL": "0",
+    # Do not discover ambient Claude/Cursor instructions, agents, MCP servers,
+    # hooks, or sessions from either the repository or mounted job home.
+    "GROK_CURSOR_SKILLS_ENABLED": "false",
+    "GROK_CURSOR_RULES_ENABLED": "false",
+    "GROK_CURSOR_AGENTS_ENABLED": "false",
+    "GROK_CURSOR_MCPS_ENABLED": "false",
+    "GROK_CURSOR_HOOKS_ENABLED": "false",
+    "GROK_CURSOR_SESSIONS_ENABLED": "false",
+    "GROK_CLAUDE_SKILLS_ENABLED": "false",
+    "GROK_CLAUDE_RULES_ENABLED": "false",
+    "GROK_CLAUDE_AGENTS_ENABLED": "false",
+    "GROK_CLAUDE_MCPS_ENABLED": "false",
+    "GROK_CLAUDE_HOOKS_ENABLED": "false",
+    "GROK_CLAUDE_SESSIONS_ENABLED": "false",
+}
 CLAUDE_WORKSPACE_SYSTEM_PROMPT = (
     "Use only files under the current working directory and dependency paths listed in WORKSPACE.json. "
     "Do not search from filesystem root (/), /data, /root, /home, or other global paths. "
@@ -845,6 +876,8 @@ def _scan_docker_command(
         "NPM_CONFIG_CACHE": f"{CLAUDE_RUNNER_HOME}/.npm",
         "GIT_OPTIONAL_LOCKS": "0",
     }
+    if _command_harness(cmd) == "grok-build":
+        container_env.update(GROK_BUILD_RUNTIME_ENV)
     if Path(str(cmd[0])).name == "claude":
         # Claude Code refuses bypassPermissions as root unless the caller marks
         # the already-isolated container as a sandbox.
@@ -1992,7 +2025,10 @@ class GrokBuildHarness:
         allow_tools: bool = True,
         runner_image: str | None = None,
     ) -> HarnessResult:
-        actual_env = env if env is not None else _base_env()
+        actual_env = dict(env if env is not None else _base_env())
+        # These are scanner-enforced settings, not user configuration: hostile
+        # repository content and ambient process variables must not relax them.
+        actual_env.update(GROK_BUILD_RUNTIME_ENV)
         executable = _grok_executable(actual_env)
         model_name = (model or DEFAULT_GROK_BUILD_MODEL).strip() or DEFAULT_GROK_BUILD_MODEL
         workspace = Path(repo_dir)
@@ -2017,6 +2053,11 @@ class GrokBuildHarness:
                 "--cwd",
                 str(workspace),
                 "--no-auto-update",
+                "--no-plan",
+                "--disable-web-search",
+                "--no-subagents",
+                "--deny",
+                "MCPTool",
             ]
             effort = (thinking_effort or "").strip().lower()
             if effort in GROK_BUILD_THINKING_EFFORTS:
@@ -2030,8 +2071,6 @@ class GrokBuildHarness:
                         "dontAsk",
                         "--tools",
                         "",
-                        "--disable-web-search",
-                        "--no-subagents",
                     ]
                 )
             run_cmd = (

@@ -1920,14 +1920,14 @@ def test_job_workspace_copies_configured_grok_login_auth(monkeypatch, tmp_path):
     home_b.mkdir(parents=True)
     (home_a / "auth.json").write_text('{"email":"a@example.test"}', encoding="utf-8")
     (home_b / "auth.json").write_text('{"email":"b@example.test"}', encoding="utf-8")
+    (home_a / "config.toml").write_text("[hooks]\nenabled = true\n", encoding="utf-8")
+    (home_a / "trusted_folders.toml").write_text('folders = ["/workspace"]\n', encoding="utf-8")
+    (home_a / "hooks").mkdir()
+    (home_a / "hooks" / "pre-tool.sh").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
     monkeypatch.setenv("ENGINE_GROK_HOME", f"{home_a},{home_b}")
 
-    workspace_1 = prepare_job_workspace(
-        str(tmp_path / "data"), 1, model_provider="xai", harness_name="grok-build"
-    )
-    workspace_2 = prepare_job_workspace(
-        str(tmp_path / "data"), 2, model_provider="xai", harness_name="grok-build"
-    )
+    workspace_1 = prepare_job_workspace(str(tmp_path / "data"), 1, model_provider="xai", harness_name="grok-build")
+    workspace_2 = prepare_job_workspace(str(tmp_path / "data"), 2, model_provider="xai", harness_name="grok-build")
 
     assert _configured_grok_homes() == [str(home_a), str(home_b)]
     assert workspace_1.provider_account_provider == "xai"
@@ -1939,6 +1939,12 @@ def test_job_workspace_copies_configured_grok_login_auth(monkeypatch, tmp_path):
     assert (Path(workspace_2.env["GROK_HOME"]) / "auth.json").read_text(encoding="utf-8") == (
         '{"email":"b@example.test"}'
     )
+    copied_files = {
+        path.relative_to(workspace_1.env["GROK_HOME"]).as_posix()
+        for path in Path(workspace_1.env["GROK_HOME"]).rglob("*")
+        if path.is_file()
+    }
+    assert copied_files == {"auth.json"}
 
 
 def test_claude_rotation_reloads_live_account_list_without_engine_restart(monkeypatch, tmp_path):
