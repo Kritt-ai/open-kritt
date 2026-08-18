@@ -630,6 +630,10 @@ test('validateScan enforces model provider and harness compatibility after norma
     () => validateScan({ ...base, model_provider: 'xai', harness: 'grok-build', thinking_effort: 'max' }),
     (e) => e instanceof ValidationError && e.errors.some((error) => error.field === 'thinking_effort')
   );
+  assert.equal(
+    validateScan({ ...base, model_provider: 'abliteration', harness: 'codex' }).modelProvider,
+    'abliteration'
+  );
   assert.deepEqual(
     validateScan({
       ...base,
@@ -660,6 +664,7 @@ test('validateScan enforces model provider and harness compatibility after norma
     ['openrouter', 'cursor'],
     ['xai', 'codex'],
     ['xai', 'claude-code'],
+    ['abliteration', 'claude-code'],
   ]) {
     assert.throws(
       () => validateScan({ ...base, model_provider, harness }),

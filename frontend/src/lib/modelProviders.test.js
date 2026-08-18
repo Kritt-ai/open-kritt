@@ -78,6 +78,7 @@ describe('model provider defaults', () => {
     expect(defaultModelForModelProvider('claude')).toBe('claude-sonnet-5');
     expect(defaultModelForModelProvider('openrouter')).toBe('z-ai/glm-5.2');
     expect(defaultModelForModelProvider('xai')).toBe('grok-4.6');
+    expect(defaultModelForModelProvider('abliteration')).toBe('abliterated-model');
   });
 
   it('moves provider-owned model defaults with the provider', () => {
@@ -290,6 +291,11 @@ describe('model provider harnesses', () => {
   it('pairs xAI with the Grok Build harness', () => {
     expect(harnessesForModelProvider('xai')).toEqual(['grok-build']);
     expect(defaultHarnessForModelProvider('xai')).toBe('grok-build');
+  });
+
+  it('runs Abliteration on the Codex harness only', () => {
+    expect(harnessesForModelProvider('abliteration')).toEqual(['codex']);
+    expect(defaultHarnessForModelProvider('abliteration')).toBe('codex');
   });
 
   it('returns no harness for an unsupported provider', () => {

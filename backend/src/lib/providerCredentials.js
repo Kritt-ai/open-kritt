@@ -38,9 +38,16 @@ export const PROVIDER_DEFINITIONS = {
     description: 'Grok Build through an xAI device login or API key.',
     management: 'login',
   },
+  abliteration: {
+    label: 'Abliteration',
+    envKeys: ['ABLIT_KEY'],
+    credentialLabel: 'Abliteration API key',
+    description: 'Abliteration.ai OpenAI-compatible models through a project API key.',
+    management: 'api_key',
+  },
 };
 
-const MANAGED_CREDENTIAL_PROVIDERS = new Set(['openrouter', 'xai']);
+const MANAGED_CREDENTIAL_PROVIDERS = new Set(['openrouter', 'xai', 'abliteration']);
 
 const MAX_CREDENTIAL_LENGTH = 16 * 1024;
 let writeQueue = Promise.resolve();

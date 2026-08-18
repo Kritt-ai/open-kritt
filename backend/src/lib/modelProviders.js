@@ -7,6 +7,7 @@ const PROVIDER_CREDENTIALS = {
   claude: ['ANTHROPIC_API_KEY'],
   openrouter: ['OPENROUTER_API_KEY'],
   xai: ['XAI_API_KEY'],
+  abliteration: ['ABLIT_KEY'],
 };
 
 function hasValue(value) {
