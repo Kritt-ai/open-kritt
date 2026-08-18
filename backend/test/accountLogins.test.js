@@ -14,6 +14,7 @@ import {
   removeClaudeRuntimeHome,
   removeCodexRuntimeHome,
   removeGrokRuntimeHome,
+  scopedLoginEnvironment,
   stripTerminalFormatting,
 } from '../src/lib/accountLogins.js';
 import { parseEnvironmentText } from '../src/lib/environmentFile.js';
@@ -42,6 +43,28 @@ test('login output parser extracts xAI Grok device-auth instructions', () => {
     deviceCode: 'RRD8-SN4G',
     requiresInput: false,
   });
+});
+
+test('Grok device login environment excludes backend and provider secrets', () => {
+  assert.deepEqual(
+    scopedLoginEnvironment({
+      PATH: '/usr/local/bin',
+      LANG: 'C.UTF-8',
+      HTTPS_PROXY: 'https://proxy.example.test',
+      DATABASE_URL: 'postgres-secret',
+      GITHUB_TOKEN: 'github-secret',
+      OPENROUTER_API_KEY: 'openrouter-secret',
+      XAI_API_KEY: 'xai-secret',
+      ANTHROPIC_API_KEY: 'anthropic-secret',
+    }),
+    {
+      NO_COLOR: '1',
+      TERM: 'dumb',
+      PATH: '/usr/local/bin',
+      LANG: 'C.UTF-8',
+      HTTPS_PROXY: 'https://proxy.example.test',
+    }
+  );
 });
 
 test('login output parser recognizes the Claude callback step', () => {
@@ -658,6 +681,11 @@ test('xAI sign-in again reuses the selected Grok account home', async (t) => {
   assert.equal(invocation.command, 'grok');
   assert.deepEqual(invocation.args, ['login', '--device-auth']);
   assert.equal(invocation.options.env.GROK_HOME, accountHome);
+  assert.equal(invocation.options.env.HOME, join(accountsRoot, 'reviewer'));
+  assert.equal(invocation.options.env.DATABASE_URL, undefined);
+  assert.equal(invocation.options.env.GITHUB_TOKEN, undefined);
+  assert.equal(invocation.options.env.OPENROUTER_API_KEY, undefined);
+  assert.equal(invocation.options.env.ANTHROPIC_API_KEY, undefined);
   assert.equal(invocation.options.env.XAI_API_KEY, undefined);
   assert.equal(session.replacesAccountId, 'reviewer');
   assert.equal(session.grokDirectory, undefined);

@@ -28,6 +28,26 @@ const PROVIDER_LABELS = { codex: 'Codex', claude: 'Claude', xai: 'xAI' };
 const SESSION_TIMEOUT_MS = 20 * 60 * 1000;
 const MAX_CAPTURED_OUTPUT = 32 * 1024;
 const ACCOUNT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const LOGIN_ENV_KEYS = [
+  'PATH',
+  'TMPDIR',
+  'LANG',
+  'LC_ALL',
+  'LC_CTYPE',
+  'SSL_CERT_FILE',
+  'SSL_CERT_DIR',
+  'REQUESTS_CA_BUNDLE',
+  'CURL_CA_BUNDLE',
+  'NODE_EXTRA_CA_CERTS',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'ALL_PROXY',
+  'NO_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'all_proxy',
+  'no_proxy',
+];
 const ENGINE_RUNTIME_CONFIG_PATH =
   process.env.OPEN_KRITT_ENGINE_RUNTIME_CONFIG_PATH || '/engine-data/engine-runtime.env';
 const CODEX_RUNTIME_ACCOUNTS_ROOT = process.env.OPEN_KRITT_CODEX_RUNTIME_ACCOUNTS_DIR || '/codex-accounts';
@@ -37,6 +57,14 @@ function loginError(message, statusCode = 422) {
   const error = new Error(message);
   error.statusCode = statusCode;
   return error;
+}
+
+export function scopedLoginEnvironment(source = process.env) {
+  const env = { NO_COLOR: '1', TERM: 'dumb' };
+  for (const key of LOGIN_ENV_KEYS) {
+    if (typeof source[key] === 'string' && source[key]) env[key] = source[key];
+  }
+  return env;
 }
 
 export function stripTerminalFormatting(value) {
@@ -504,6 +532,9 @@ export class AccountLoginManager {
       env.CLAUDE_HOME = session.claudeLoginHome;
       env.CLAUDE_CONFIG_DIR = session.claudeLoginHome;
     } else {
+      // Grok is a separately distributed binary. Give device login only the
+      // process settings it needs, never backend/database or provider secrets.
+      env = scopedLoginEnvironment();
       if (reloginTarget) {
         session.grokHome = reloginTarget.home;
         session.grokRuntimeHome = reloginTarget.runtimeHome;
@@ -519,9 +550,6 @@ export class AccountLoginManager {
       args = ['login', '--device-auth'];
       env.GROK_HOME = session.grokHome;
       env.HOME = session.grokDirectory || dirname(session.grokHome);
-      // Prefer device login over any ambient API key in the backend container.
-      delete env.XAI_API_KEY;
-      delete env.GROK_CODE_XAI_API_KEY;
     }
     delete env.CI;
 
