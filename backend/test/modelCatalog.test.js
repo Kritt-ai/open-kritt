@@ -253,6 +253,39 @@ test('OpenRouter exposes cached suggestions while keeping free-text input', () =
   );
 });
 
+test('Abliteration exposes a bounded select catalog like Codex', () => {
+  const catalog = {
+    provider: 'abliteration',
+    models: [
+      { id: ' abliterated-model ', label: ' Abliterated Model ', thinkingEfforts: ['default', 'unsupported'] },
+      { id: 'abliterated-model-large', thinking_efforts: ['default'] },
+    ],
+    defaultModel: 'abliterated-model',
+  };
+
+  assert.deepEqual(buildModelCatalogResponse(['abliteration'], [catalog]), {
+    providers: [
+      {
+        provider: 'abliteration',
+        input: 'select',
+        models: [
+          { id: 'abliterated-model', label: 'Abliterated Model', thinkingEfforts: ['default'], isDefault: true },
+          {
+            id: 'abliterated-model-large',
+            label: 'abliterated-model-large',
+            thinkingEfforts: ['default'],
+            isDefault: false,
+          },
+        ],
+        defaultModel: 'abliterated-model',
+        status: 'ready',
+      },
+    ],
+  });
+  assert.equal(isCachedModel('abliteration', 'abliterated-model-large', catalog), true);
+  assert.equal(isCachedModel('abliteration', 'other-model', catalog), false);
+});
+
 test('model catalog endpoint returns only configured providers', async () => {
   let requestedCatalogProviders;
   const router = createModelCatalogRouter({

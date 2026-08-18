@@ -52,6 +52,7 @@ LOGGER = logging.getLogger("open_kritt_engine.workspace")
 SCAN_RUNNER_WORKDIR = "/workspace"
 SELECTED_AGENT_SKILLS_SLUG = "open-kritt-selected-skills"
 OPENROUTER_CODEX_BASE_URL = "https://openrouter.ai/api/v1"
+ABLITERATION_CODEX_BASE_URL = "https://api.abliteration.ai/v1"
 JOB_UID_BASE = 100_000
 JOB_UID_SPAN = 2_000_000_000
 _SHARED_WORKSPACE_LOCKS: dict[str, threading.Lock] = {}
@@ -164,6 +165,8 @@ def prepare_job_workspace(
     )
     if needs_codex_home and codex_source:
         _copy_credential_files(Path(codex_source), codex_home, ("auth.json",))
+    elif needs_codex_home and selected_provider == "abliteration":
+        _prepare_abliteration_codex_home(codex_home)
     elif needs_codex_home:
         _prepare_openrouter_codex_home(codex_home)
     if needs_claude_home and selected_provider == "claude":
@@ -265,6 +268,27 @@ def _prepare_openrouter_codex_home(codex_home: Path):
                 'name = "OpenRouter"',
                 f'base_url = "{OPENROUTER_CODEX_BASE_URL}"',
                 'env_key = "OPENROUTER_API_KEY"',
+                'wire_api = "responses"',
+                "",
+            ]
+        ),
+    )
+    config.chmod(0o600)
+
+
+def _prepare_abliteration_codex_home(codex_home: Path):
+    """Create the minimum Codex config needed for an Abliteration scan."""
+
+    codex_home.mkdir(parents=True, exist_ok=True)
+    config = codex_home / "config.toml"
+    _atomic_write_text(
+        config,
+        "\n".join(
+            [
+                "[model_providers.abliteration]",
+                'name = "Abliteration"',
+                f'base_url = "{ABLITERATION_CODEX_BASE_URL}"',
+                'env_key = "ABLIT_KEY"',
                 'wire_api = "responses"',
                 "",
             ]

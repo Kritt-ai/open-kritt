@@ -140,6 +140,7 @@ You need **one** of the following options to create scans:
 | [`CODEX_API_KEY`](/ai-provider-setup/codex) | Use the same kind of OpenAI Platform key as a direct Codex execution override. |
 | [`ANTHROPIC_API_KEY`](/ai-provider-setup/claude-code) | Use Claude Code with Anthropic API billing. |
 | [`OPENROUTER_API_KEY`](/ai-provider-setup/openrouter) | Route a compatible model through OpenRouter. |
+| [`ABLIT_KEY`](/ai-provider-setup/abliteration) | Run Abliteration.ai models on the Codex harness. |
 
 `GITHUB_TOKEN` is separate from model access. Add it only when the scan needs to clone a
 private GitHub repository or dependency.
@@ -152,8 +153,9 @@ about them, and never prints credential values.
 </Frame>
 
 For detailed instructions, choose the [Codex](/ai-provider-setup/codex),
-[Claude Code](/ai-provider-setup/claude-code), or
-[OpenRouter](/ai-provider-setup/openrouter) guide. The guides explain where to obtain the
+[Claude Code](/ai-provider-setup/claude-code),
+[OpenRouter](/ai-provider-setup/openrouter), or
+[Abliteration](/ai-provider-setup/abliteration) guide. The guides explain where to obtain the
 credential, how it is billed, which harness it enables, and how to verify it.
 
 ## CLI commands
@@ -175,7 +177,7 @@ The CLI is the recommended path. To configure the stack manually with an API key
 cp .env.example .env
 chmod 600 .env
 # Set one provider credential in .env: OPENAI_API_KEY, CODEX_API_KEY,
-# ANTHROPIC_API_KEY, or OPENROUTER_API_KEY.
+# ANTHROPIC_API_KEY, OPENROUTER_API_KEY, or ABLIT_KEY.
 mkdir -p .data/codex
 chmod 700 .data/codex
 docker compose up --build

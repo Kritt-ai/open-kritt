@@ -1848,6 +1848,27 @@ def test_job_workspace_skips_transient_codex_tmp(monkeypatch, tmp_path):
     assert "DATABASE_URL" not in workspace.env
 
 
+def test_job_workspace_prepares_abliteration_codex_home(monkeypatch, tmp_path):
+    monkeypatch.delenv("ENGINE_RUNTIME_CONFIG_PATH", raising=False)
+    monkeypatch.setenv("ABLIT_KEY", "ablit-secret")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-secret")
+    monkeypatch.setenv("GITHUB_TOKEN", "github-secret")
+
+    workspace = prepare_job_workspace(str(tmp_path / "data"), 125, model_provider="abliteration")
+
+    config = Path(workspace.env["HOME"]) / ".codex" / "config.toml"
+    assert config.exists()
+    contents = config.read_text(encoding="utf-8")
+    assert "[model_providers.abliteration]" in contents
+    assert 'base_url = "https://api.abliteration.ai/v1"' in contents
+    assert 'env_key = "ABLIT_KEY"' in contents
+    assert 'wire_api = "responses"' in contents
+    assert "ablit-secret" not in contents
+    assert workspace.env["ABLIT_KEY"] == "ablit-secret"
+    assert "OPENROUTER_API_KEY" not in workspace.env
+    assert "GITHUB_TOKEN" not in workspace.env
+
+
 def test_job_workspace_copies_only_claude_credentials(monkeypatch, tmp_path):
     monkeypatch.delenv("ENGINE_RUNTIME_CONFIG_PATH", raising=False)
     claude_home = tmp_path / "source-claude"

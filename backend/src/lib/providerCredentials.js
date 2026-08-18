@@ -31,9 +31,16 @@ export const PROVIDER_DEFINITIONS = {
     description: 'OpenRouter-compatible models through a project API key.',
     management: 'api_key',
   },
+  abliteration: {
+    label: 'Abliteration',
+    envKeys: ['ABLIT_KEY'],
+    credentialLabel: 'Abliteration API key',
+    description: 'Abliteration.ai OpenAI-compatible models through a project API key.',
+    management: 'api_key',
+  },
 };
 
-const MANAGED_CREDENTIAL_PROVIDERS = new Set(['openrouter']);
+const MANAGED_CREDENTIAL_PROVIDERS = new Set(['openrouter', 'abliteration']);
 
 const MAX_CREDENTIAL_LENGTH = 16 * 1024;
 let writeQueue = Promise.resolve();
@@ -107,7 +114,7 @@ function queuedWrite(operation) {
 
 export function validateProviderCredential(provider, credential) {
   if (!MANAGED_CREDENTIAL_PROVIDERS.has(provider)) {
-    return { field: 'provider', message: 'Only OpenRouter uses an API key in Accounts.' };
+    return { field: 'provider', message: 'Only OpenRouter and Abliteration use an API key in Accounts.' };
   }
   if (typeof credential !== 'string' || !credential.trim()) {
     return { field: 'credential', message: 'Enter an API key.' };
@@ -215,8 +222,8 @@ export function providerCredentialStatuses({
       management: definition.management,
       configured,
       source,
-      canManage: definition.management === 'login' || id === 'openrouter',
-      canRemove: id === 'openrouter' && (managedCredential || environmentCredential),
+      canManage: definition.management === 'login' || MANAGED_CREDENTIAL_PROVIDERS.has(id),
+      canRemove: MANAGED_CREDENTIAL_PROVIDERS.has(id) && (managedCredential || environmentCredential),
       managed: managedCredential,
     };
   });

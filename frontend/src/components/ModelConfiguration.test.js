@@ -106,7 +106,36 @@ describe('modelConfigurationIsValid', () => {
 
     expect(markup).toContain('<option value="claude" disabled="">Claude — add in Accounts</option>');
     expect(markup).toContain('<option value="openrouter" disabled="">OpenRouter — add in Accounts</option>');
+    expect(markup).toContain('<option value="abliteration" disabled="">Abliteration — add in Accounts</option>');
     expect(markup).toContain('href="/accounts"');
+  });
+
+  it('selects the Abliteration catalog default on the Codex harness', () => {
+    const abliterationCatalog = configuredModelCatalog({
+      providers: [
+        {
+          provider: 'abliteration',
+          input: 'select',
+          status: 'ready',
+          defaultModel: 'abliterated-model',
+          models: [
+            { id: 'abliterated-model', label: 'Abliterated Model', thinkingEfforts: ['low', 'medium', 'high'] },
+            {
+              id: 'abliterated-model-large',
+              label: 'Abliterated Model Large',
+              thinkingEfforts: ['low', 'medium', 'high'],
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(modelConfigurationForCatalog({}, ['abliteration'], abliterationCatalog)).toEqual({
+      model_provider: 'abliteration',
+      model: 'abliterated-model',
+      thinking_effort: 'medium',
+      harness: 'codex',
+    });
   });
 
   it('normalizes a stale provider to a configured provider that can be saved', () => {

@@ -21,11 +21,13 @@ const PROVIDER_HARNESSES = Object.freeze({
   codex: ['codex'],
   claude: ['claude-code'],
   openrouter: ['claude-code', 'codex'],
+  abliteration: ['codex'],
 });
 const PROVIDER_EFFORTS = Object.freeze({
   codex: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
   claude: ['low', 'medium', 'high', 'xhigh', 'max'],
   openrouter: ['default', 'low', 'medium', 'high', 'xhigh', 'max'],
+  abliteration: ['low', 'medium', 'high'],
 });
 const HARNESS_EFFORTS = Object.freeze({
   codex: ['default', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],

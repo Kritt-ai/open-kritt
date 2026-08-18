@@ -322,19 +322,25 @@ def test_generation_environment_contains_only_selected_provider_credentials():
         "OPENAI_API_KEY": "openai-secret",
         "ANTHROPIC_API_KEY": "anthropic-secret",
         "OPENROUTER_API_KEY": "openrouter-secret",
+        "ABLIT_KEY": "ablit-secret",
         "GITHUB_TOKEN": "github-secret",
         "DATABASE_URL": "database-secret",
     }
 
     codex_env = generation_environment("codex", source)
     openrouter_env = generation_environment("openrouter", source)
+    abliteration_env = generation_environment("abliteration", source)
 
     assert codex_env["CODEX_API_KEY"] == "openai-secret"
     assert codex_env["CODEX_HOME"] == "/codex-a"
     assert "ANTHROPIC_API_KEY" not in codex_env
     assert "OPENROUTER_API_KEY" not in codex_env
+    assert "ABLIT_KEY" not in codex_env
     assert openrouter_env["OPENROUTER_API_KEY"] == "openrouter-secret"
-    for env in (codex_env, openrouter_env):
+    assert abliteration_env["ABLIT_KEY"] == "ablit-secret"
+    assert "OPENROUTER_API_KEY" not in abliteration_env
+    assert "OPENAI_API_KEY" not in abliteration_env
+    for env in (codex_env, openrouter_env, abliteration_env):
         assert "GITHUB_TOKEN" not in env
         assert "DATABASE_URL" not in env
 
@@ -612,6 +618,42 @@ def test_tool_free_codex_defines_only_standard_openrouter_provider(monkeypatch):
     assert captured["env"]["OPENROUTER_API_KEY"] == "or-secret"
 
 
+def test_tool_free_codex_defines_only_standard_abliteration_provider(monkeypatch):
+    captured = {}
+
+    def fake_run_process(command, *_args, env=None, **_kwargs):
+        captured["command"] = command
+        captured["env"] = env
+        output_path = Path(command[command.index("-o") + 1])
+        output_path.write_text(json.dumps(marked({"results": []})), encoding="utf-8")
+        return SimpleNamespace(stdout="", stderr="", returncode=0)
+
+    monkeypatch.setattr(harnesses, "_run_process", fake_run_process)
+    harness = CodexHarness(
+        timeout_seconds=5,
+        model_provider="abliteration",
+        codex_model_provider="private-abliteration",
+    )
+    harness.run(
+        prompt="Generate a draft.",
+        schema={"type": "object"},
+        repo_dir="/tmp",
+        model="abliterated-model",
+        env={"ABLIT_KEY": "ablit-secret"},
+        allow_tools=False,
+    )
+
+    configs = [captured["command"][index + 1] for index, value in enumerate(captured["command"]) if value == "-c"]
+    assert 'model_provider="abliteration"' in configs
+    assert 'model_providers.abliteration.name="Abliteration"' in configs
+    assert f'model_providers.abliteration.base_url="{harnesses.ABLITERATION_CODEX_BASE_URL}"' in configs
+    assert 'model_providers.abliteration.env_key="ABLIT_KEY"' in configs
+    assert 'model_providers.abliteration.wire_api="responses"' in configs
+    assert not any("private-abliteration" in value for value in configs)
+    assert "ablit-secret" not in " ".join(captured["command"])
+    assert captured["env"]["ABLIT_KEY"] == "ablit-secret"
+
+
 def test_scan_codex_provider_mapping_preserves_custom_openrouter_config():
     common = {
         "repo_dir": "/tmp/repo",
@@ -632,6 +674,24 @@ def test_scan_codex_provider_mapping_preserves_custom_openrouter_config():
     assert not any(value.startswith("model_providers.") for value in openrouter)
     assert codex[codex.index("-m") + 1] == "glm-5.2"
     assert openrouter[openrouter.index("-m") + 1] == "z-ai/glm-5.2"
+
+
+def test_scan_codex_provider_mapping_supports_abliteration():
+    common = {
+        "repo_dir": "/tmp/repo",
+        "model": "abliterated-model",
+        "schema_path": "/tmp/schema.json",
+        "output_path": "/tmp/output.json",
+        "thinking_effort": None,
+        "allow_tools": True,
+    }
+    standard = codex_exec_command(**common, model_provider="abliteration")
+    custom = codex_exec_command(**common, model_provider="abliteration", codex_model_provider="private-abliteration")
+
+    assert 'model_provider="abliteration"' in standard
+    assert 'model_provider="private-abliteration"' in custom
+    assert not any(value.startswith("model_providers.") for value in standard)
+    assert standard[standard.index("-m") + 1] == "abliterated-model"
 
 
 def test_tool_free_claude_command_has_no_default_tools(monkeypatch):

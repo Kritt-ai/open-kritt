@@ -79,6 +79,7 @@ describe('model provider defaults', () => {
     expect(defaultModelForModelProvider('codex')).toBe('gpt-5-codex');
     expect(defaultModelForModelProvider('claude')).toBe('claude-sonnet-5');
     expect(defaultModelForModelProvider('openrouter')).toBe('z-ai/glm-5.2');
+    expect(defaultModelForModelProvider('abliteration')).toBe('abliterated-model');
   });
 
   it('moves provider-owned model defaults with the provider', () => {
@@ -242,6 +243,11 @@ describe('model provider harnesses', () => {
   it('defaults OpenRouter to Claude Code and retains Codex as an advanced option', () => {
     expect(harnessesForModelProvider('openrouter')).toEqual(['claude-code', 'codex']);
     expect(defaultHarnessForModelProvider('openrouter')).toBe('claude-code');
+  });
+
+  it('runs Abliteration on the Codex harness only', () => {
+    expect(harnessesForModelProvider('abliteration')).toEqual(['codex']);
+    expect(defaultHarnessForModelProvider('abliteration')).toBe('codex');
   });
 
   it('returns no harness for an unsupported provider', () => {

@@ -104,10 +104,38 @@ test('removing an environment-bootstrapped key keeps it removed until explicitly
 
 test('credential validation accepts only a single-line OpenRouter key', () => {
   assert.equal(validateProviderCredential('openrouter', 'valid-key'), null);
+  assert.equal(validateProviderCredential('abliteration', 'valid-key'), null);
   assert.equal(validateProviderCredential('other', 'key').field, 'provider');
   assert.equal(validateProviderCredential('claude', 'key').field, 'provider');
   assert.equal(validateProviderCredential('openrouter', ' ').field, 'credential');
+  assert.equal(validateProviderCredential('abliteration', ' ').field, 'credential');
   assert.equal(validateProviderCredential('openrouter', 'one\ntwo').field, 'credential');
+});
+
+test('managed abliteration credentials are saved privately and reported as configured', async (t) => {
+  const credentialsPath = await temporaryCredentialPath(t);
+  const environmentFilePath = join(dirname(credentialsPath), '.env');
+  await writeFile(environmentFilePath, 'ABLIT_KEY=\n');
+  await saveManagedProviderCredential('abliteration', 'ablit-secret', {
+    credentialsPath,
+    environmentFilePath,
+  });
+
+  assert.deepEqual(readManagedCredentialsSync(credentialsPath), { abliteration: 'ablit-secret' });
+  assert.deepEqual(parseEnvironmentText(await readFile(environmentFilePath, 'utf8')), { ABLIT_KEY: 'ablit-secret' });
+
+  const abliteration = providerCredentialStatuses({ env: {}, credentialsPath }).find(
+    (provider) => provider.id === 'abliteration'
+  );
+  assert.equal(abliteration.configured, true);
+  assert.equal(abliteration.source, 'managed_api_key');
+  assert.equal(abliteration.canManage, true);
+  assert.equal(abliteration.canRemove, true);
+  assert.equal(JSON.stringify(abliteration).includes('ablit-secret'), false);
+
+  assert.equal(await removeManagedProviderCredential('abliteration', { credentialsPath, environmentFilePath }), true);
+  assert.deepEqual(readManagedCredentialsSync(credentialsPath), {});
+  assert.equal(parseEnvironmentText(await readFile(environmentFilePath, 'utf8')).ABLIT_KEY, '');
 });
 
 test('provider status recognizes Codex and Claude login homes', async (t) => {

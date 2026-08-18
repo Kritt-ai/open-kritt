@@ -6,10 +6,17 @@ import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 
-export const PROVIDER_KEYS = ['CODEX_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'OPENROUTER_API_KEY'];
+export const PROVIDER_KEYS = ['CODEX_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'OPENROUTER_API_KEY', 'ABLIT_KEY'];
 export const CODEX_LOGIN_STATUS_KEY = 'CODEX_LOGIN_CONFIGURED';
 const MANAGED_PROVIDER_LABELS = {
   openrouter: 'OpenRouter API key',
+  abliteration: 'Abliteration API key',
+};
+// Environment items mirrored into the managed credential store used by running
+// services, keyed by their ENVIRONMENT_ITEMS key.
+export const MANAGED_PROVIDER_ENV_KEYS = {
+  OPENROUTER_API_KEY: 'openrouter',
+  ABLIT_KEY: 'abliteration',
 };
 const CODEX_LOGIN_CONTAINER_USER_HOME = '/open-kritt-login';
 const CODEX_LOGIN_CONTAINER_HOME = `${CODEX_LOGIN_CONTAINER_USER_HOME}/.codex`;
@@ -36,6 +43,11 @@ export const ENVIRONMENT_ITEMS = [
     key: 'OPENROUTER_API_KEY',
     label: 'OpenRouter API key',
     info: 'Used for supported OpenRouter-compatible model and harness selections.',
+  },
+  {
+    key: 'ABLIT_KEY',
+    label: 'Abliteration API key',
+    info: 'Used for Abliteration.ai models on the Codex harness through its OpenAI-compatible endpoint.',
   },
   {
     key: 'GITHUB_TOKEN',
@@ -522,7 +534,7 @@ export async function getSetupStatus({ rootDir, envFile = join(rootDir, '.env'),
   const valuesPresent = Object.fromEntries(
     ENVIRONMENT_ITEMS.map(({ key }) => [
       key,
-      Boolean(values[key]) && !(key === 'OPENROUTER_API_KEY' && disabledProviders.includes('openrouter')),
+      Boolean(values[key]) && !(MANAGED_PROVIDER_ENV_KEYS[key] && disabledProviders.includes(MANAGED_PROVIDER_ENV_KEYS[key])),
     ])
   );
   const codexAuthInspections = await Promise.all(
@@ -786,17 +798,17 @@ async function manageEnvironmentItem(context, item) {
       write(io, 'Nothing changed.');
       return;
     }
-    if (item.key === 'OPENROUTER_API_KEY') {
+    if (MANAGED_PROVIDER_ENV_KEYS[item.key]) {
       const status = await getSetupStatus(context);
-      await saveManagedProviderCredential(status.credentialsPath, 'openrouter', value);
+      await saveManagedProviderCredential(status.credentialsPath, MANAGED_PROVIDER_ENV_KEYS[item.key], value);
     }
     await setEnvValue(envFile, item.key, value);
     write(io, `${item.label} saved.`);
   } else if (action === '2') {
     if (await prompter.confirm(`Unset ${item.label}?`)) {
-      if (item.key === 'OPENROUTER_API_KEY') {
+      if (MANAGED_PROVIDER_ENV_KEYS[item.key]) {
         const status = await getSetupStatus(context);
-        await disableManagedProviderCredential(status.credentialsPath, 'openrouter');
+        await disableManagedProviderCredential(status.credentialsPath, MANAGED_PROVIDER_ENV_KEYS[item.key]);
       }
       await setEnvValue(envFile, item.key, '');
       write(io, `${item.label} unset.`);
@@ -1172,11 +1184,12 @@ export async function runSetup(options = {}) {
     write(context.io, '4) OpenAI API key');
     write(context.io, '5) Anthropic API key');
     write(context.io, '6) OpenRouter API key');
-    write(context.io, '7) GitHub token');
-    write(context.io, '8) Finish setup');
+    write(context.io, '7) Abliteration API key');
+    write(context.io, '8) GitHub token');
+    write(context.io, '9) Finish setup');
     const choice = (await context.prompter.ask('Choose an item: ')).toLowerCase();
 
-    if (choice === '8' || choice === 'q' || choice === 'quit') break;
+    if (choice === '9' || choice === 'q' || choice === 'quit') break;
     if (choice === '1') {
       await manageCodexLogin(context);
       continue;
@@ -1185,7 +1198,7 @@ export async function runSetup(options = {}) {
       await manageClaudeLogin(context);
       continue;
     }
-    const item = ENVIRONMENT_ITEMS[Number(choice) - 3] || (choice === '7' ? ENVIRONMENT_ITEMS[4] : null);
+    const item = ENVIRONMENT_ITEMS[Number(choice) - 3] || null;
     if (!item) {
       write(context.io, 'Choose a listed item.');
       continue;

@@ -44,7 +44,7 @@ completed drafts again before the UI may review them.
    host Docker socket so it can create these runners, and must be treated as a privileged
    component.
 3. **open·kritt ↔ model/provider.** Repository content is sent to the configured
-   OpenAI/Codex, Anthropic, or OpenRouter endpoint. That's a data-egress boundary.
+   OpenAI/Codex, Anthropic, OpenRouter, or Abliteration endpoint. That's a data-egress boundary.
 4. **Host ↔ secrets.** Provider API keys and `GITHUB_TOKEN` live in `.env`. The backend
    can update that file from Accounts, and the engine passes only the selected provider
    credential into each harness job.
@@ -98,7 +98,7 @@ A compromised/injected agent could try to read credentials or send data out.
 Scanning sends code to an external endpoint by default.
 
 - Know **where your data goes** before scanning sensitive code. The supported setup paths
-  use Codex/OpenAI, Anthropic, or OpenRouter credentials.
+  use Codex/OpenAI, Anthropic, OpenRouter, or Abliteration credentials.
 - Review provider data-retention terms for the endpoints you use.
 
 ### 4. Unauthenticated API exposure

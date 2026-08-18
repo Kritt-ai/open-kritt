@@ -43,6 +43,12 @@ describe('expired Codex login', () => {
       'Add Codex account'
     );
     expect(
+      providerActionLabel({ id: 'abliteration', label: 'Abliteration', management: 'api_key', configured: false })
+    ).toBe('Add Abliteration key');
+    expect(
+      providerActionLabel({ id: 'abliteration', label: 'Abliteration', management: 'api_key', configured: true })
+    ).toBe('Add or replace key');
+    expect(
       providerReloginAccountId({
         id: 'codex',
         accounts: [

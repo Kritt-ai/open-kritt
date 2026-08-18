@@ -27,6 +27,7 @@ CODEX_API_KEY=
 OPENAI_API_KEY=
 ANTHROPIC_API_KEY=
 OPENROUTER_API_KEY=
+ABLIT_KEY=
 GITHUB_TOKEN=
 `;
 
@@ -223,7 +224,7 @@ test('setup stores a selected secret without printing it', async (t) => {
   await runSetup({
     ...project,
     io,
-    prompter: answers({ ask: ['3', '1', '8'], secret: [secret] }),
+    prompter: answers({ ask: ['3', '1', '9'], secret: [secret] }),
   });
 
   assert.equal(parseEnv(await readFile(project.envFile, 'utf8')).CODEX_API_KEY, secret);
@@ -238,7 +239,7 @@ test('setup stores OpenRouter in .env and the managed credential store', async (
   await runSetup({
     ...project,
     io,
-    prompter: answers({ ask: ['6', '1', '8'], secret: [secret] }),
+    prompter: answers({ ask: ['6', '1', '9'], secret: [secret] }),
   });
 
   const env = parseEnv(await readFile(project.envFile, 'utf8'));
@@ -247,6 +248,27 @@ test('setup stores OpenRouter in .env and the managed credential store', async (
   );
   assert.equal(env.OPENROUTER_API_KEY, secret);
   assert.equal(store.credentials.openrouter, secret);
+  assert.deepEqual(store.disabledEnvironmentProviders, []);
+  assert.doesNotMatch(io.output.text, new RegExp(secret));
+});
+
+test('setup stores Abliteration in .env and the managed credential store', async (t) => {
+  const project = await createProject(t);
+  const io = testIo();
+  const secret = 'ablit-managed-secret';
+
+  await runSetup({
+    ...project,
+    io,
+    prompter: answers({ ask: ['7', '1', '9'], secret: [secret] }),
+  });
+
+  const env = parseEnv(await readFile(project.envFile, 'utf8'));
+  const store = JSON.parse(
+    await readFile(join(project.rootDir, '.data', 'engine', 'credentials', 'providers.json'), 'utf8')
+  );
+  assert.equal(env.ABLIT_KEY, secret);
+  assert.equal(store.credentials.abliteration, secret);
   assert.deepEqual(store.disabledEnvironmentProviders, []);
   assert.doesNotMatch(io.output.text, new RegExp(secret));
 });
@@ -307,7 +329,7 @@ test('guided Claude login uses the shared home monitored by Accounts', async (t)
   await runSetup({
     ...project,
     io,
-    prompter: answers({ ask: ['2', '1', '8'] }),
+    prompter: answers({ ask: ['2', '1', '9'] }),
     runner,
   });
 
@@ -340,7 +362,7 @@ test('setup explains the optional GitHub token', async (t) => {
   await runSetup({
     ...project,
     io,
-    prompter: answers({ ask: ['7', '3', '8'] }),
+    prompter: answers({ ask: ['8', '3', '9'] }),
   });
 
   assert.match(io.output.text, /private GitHub repositories/);
@@ -417,7 +439,7 @@ test('guided Docker login copies a host-owned auth file from an isolated contain
   await runSetup({
     ...project,
     io,
-    prompter: answers({ ask: ['1', '1', '8'] }),
+    prompter: answers({ ask: ['1', '1', '9'] }),
     runner,
   });
 

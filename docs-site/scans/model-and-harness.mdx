@@ -52,7 +52,7 @@ back to **Use scan model** when post-processing should follow the scan default a
   authenticated models endpoint; you can also enter an exact custom `author/model` ID as
   a compatibility escape hatch.
 - **model_provider** - where the model runs. The form lists only providers configured for
-  the engine: `openrouter`, `claude`, and/or `codex`. Run `./kritt setup` and follow the
+  the engine: `openrouter`, `claude`, `codex`, and/or `abliteration`. Run `./kritt setup` and follow the
   [AI provider setup guides](/ai-provider-setup/overview) when none are available.
 
 ## Harness
@@ -81,7 +81,7 @@ socket, database, project `.env`, or another job's workspace.
 For a standard configured provider, open·kritt chooses a compatible harness automatically:
 Codex uses `codex`; Anthropic and OpenRouter use `claude-code`. OpenRouter can also use the
 Codex harness as an advanced option when its matching Codex provider configuration is
-installed.
+installed. Abliteration uses `codex` through its OpenAI-compatible endpoint.
 
 The engine image currently contains an experimental Cursor adapter and `cursor-agent`, but
 the API/UI intentionally expose no provider/Cursor combination. Cursor headless login and
