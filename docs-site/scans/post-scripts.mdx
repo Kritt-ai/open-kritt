@@ -21,6 +21,27 @@ several:
 - Reserved keys (`_reserved_report`, `_reserved_poc`) become **Report** and **PoC** tabs,
   and `_chip_` keys become [chips](/post-scripts/chips) in the findings list.
 
+## Adding post-processing after a scan
+
+When a scan is `paused`, `completed`, `stopped`, or `failed` and already has findings, open
+its detail page and choose **Run post-script on findings**. Select any subset of findings
+(or **Select all**), choose one post-script, and queue the run.
+
+If the script references `{{extra.<key>}}`, the form requires each value before it can be
+queued. Existing scan values are prefilled when available. The execution-model controls are
+prefilled from the scan's post-processing model, and you can choose a different provider,
+model, harness, or thinking effort for this supplemental run. The execution still gets the
+same repository workspace, scan context, finding fields, and agent skills as normal
+post-processing; submitted extra values override the matching scan extras for that execution
+only.
+
+Supplemental runs are additive. Their output is attached as a new enrichment instead of
+replacing an earlier result, and the findings list shows how many additional runs targeted
+each finding. Run progress and finding-level error messages remain visible in **Supplemental
+run history**. A run that completed with errors can requeue only its failed findings; its
+snapshotted script and extra values are reused while the model settings remain editable. A scan
+cannot be resumed or deleted while supplemental targets are queued or running.
+
 <Note>
   Post-scripts are chosen per scan, independent of the workflow - so you can reuse the same
   workflow with different follow-up depending on what you need this run (just grading, or a

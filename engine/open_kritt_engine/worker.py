@@ -44,9 +44,20 @@ from .memory_budget import (
 )
 from .model_catalog import ModelCatalogRefresher
 from .model_output_artifacts import record_model_error_output
-from .models import ModelSelection, model_selection_for_depth, post_processing_model_selection
+from .models import (
+    ModelSelection,
+    model_selection_for_depth,
+    post_processing_model_selection,
+    supplemental_post_script_model_selection,
+)
 from .post_processing import PostProcessor, PostProcessRateLimited
-from .prompting import harness_prompt, native_agent_skills_prompt, render_prompt, repeat_append_prompt
+from .prompting import (
+    harness_prompt,
+    native_agent_skills_prompt,
+    patched_since_prompt,
+    render_prompt,
+    repeat_append_prompt,
+)
 from .provider_credentials import provider_environment
 from .queue import build_pending_jobs, configured_step_ids
 from .runtime_config import runtime_bool, runtime_config_path, runtime_float, runtime_int, runtime_value
@@ -176,6 +187,7 @@ class Worker:
         self._scan_last_dispatch: dict[int, int] = {}
         self._scan_no_work_until: dict[int, float] = {}
         self._scan_dispatch_sequence = 0
+        self._supplemental_dispatch_next: dict[int, bool] = {}
         self.codex_cli_gate = CodexCliGate()
         self.generation_runner = GenerationRunner(config, codex_cli_gate=self.codex_cli_gate)
         self.model_catalog_refresher = ModelCatalogRefresher(
@@ -810,9 +822,19 @@ class Worker:
     def run_scan_once(self, worker_id: int = 1) -> bool:
         if not self._worker_can_pick_job(worker_id):
             return False
+        if not hasattr(self, "_supplemental_dispatch_next"):
+            self._supplemental_dispatch_next = {}
+        supplemental_next = self._supplemental_dispatch_next.get(worker_id, True)
+        if supplemental_next and self.run_supplemental_post_script_once(worker_id=worker_id):
+            self._supplemental_dispatch_next[worker_id] = False
+            return True
         scan = self._reserve_scan()
         if not scan:
+            if not supplemental_next and self.run_supplemental_post_script_once(worker_id=worker_id):
+                self._supplemental_dispatch_next[worker_id] = False
+                return True
             return False
+        self._supplemental_dispatch_next[worker_id] = True
 
         task_finished = False
         try:
@@ -877,6 +899,105 @@ class Worker:
             self._release_scan(int(scan["id"]))
             if task_finished:
                 self._schedule_post_task_cleanup()
+
+    def run_supplemental_post_script_once(self, worker_id: int = 1) -> bool:
+        if not self._worker_can_pick_job(worker_id):
+            return False
+        claim = getattr(self.db, "claim_supplemental_post_script_target", None)
+        if not callable(claim):
+            return False
+        if not self._memory_allows_new_runner():
+            return False
+        with self.db.connect() as conn:
+            job = claim(conn)
+            conn.commit()
+        if not job:
+            return False
+
+        target_id = int(job["target"]["id"])
+        scan_id = int(job["scan"]["id"])
+        if not self._new_scan_container_allowed(scan_id):
+            with self.db.connect() as conn:
+                self.db.defer_supplemental_post_script_target(
+                    conn,
+                    target_id=target_id,
+                    error="Waiting for enough free storage to create the post-script workspace.",
+                    retry_after_seconds=max(1.0, float(getattr(self.config, "poll_seconds", 5.0) or 5.0)),
+                )
+                conn.commit()
+            return True
+
+        run = job["run"]
+        scan = job["scan"]
+        selection = supplemental_post_script_model_selection(scan, run)
+        prompt_template = run["post_script_content"]
+        if str(run.get("post_script_name") or "").strip().casefold() == "patched since":
+            prompt_template = patched_since_prompt(prompt_template)
+        metadata_id = None
+        try:
+            with self.db.connect() as conn:
+                metadata_id = self.db.create_supplemental_post_process_metadata(
+                    conn,
+                    target=job["target"],
+                    run=run,
+                    scan=scan,
+                    prompt_template=prompt_template,
+                    model=selection.model,
+                    harness=selection.harness,
+                    thinking_effort=selection.thinking_effort,
+                    model_provider=selection.model_provider,
+                    run_started_at=now_utc(),
+                )
+                conn.commit()
+            harness = self._harness_for_model_selection(selection)
+            return self.post_processor.process_supplemental_post_script_target(
+                job,
+                harness,
+                metadata_id=metadata_id,
+            )
+        except PostProcessRateLimited as exc:
+            provider = getattr(exc, "provider", None)
+            account_home = getattr(exc, "account_home", None)
+            limit_kind = getattr(exc, "limit_kind", "rate_limited")
+            retry_after_seconds = max(exc.retry_after_seconds, RATE_LIMIT_RESUME_DELAY_SECONDS)
+            if limit_kind not in CAPACITY_RATE_LIMIT_FAILURES:
+                mark_provider_account_rate_limited(provider, account_home)
+                if account_home and not provider_accounts_all_rate_limited(
+                    provider, data_dir=getattr(self.config, "data_dir", None)
+                ):
+                    retry_after_seconds = 0
+            with self.db.connect() as conn:
+                self.db.defer_supplemental_post_script_target(
+                    conn,
+                    target_id=target_id,
+                    error=str(exc),
+                    retry_after_seconds=retry_after_seconds,
+                )
+                conn.commit()
+            LOGGER.warning(
+                "supplemental post-script target %s for scan %s was rate limited and will retry",
+                target_id,
+                scan_id,
+            )
+            return True
+        except Exception as exc:
+            LOGGER.exception("supplemental post-script target %s for scan %s failed", target_id, scan_id)
+            with self.db.connect() as conn:
+                if metadata_id is not None:
+                    self.db.update_post_process_metadata(
+                        conn,
+                        metadata_id,
+                        status="failed",
+                        error=str(exc),
+                        run_time_ms=0,
+                        raw_token_usage=None,
+                        phase="failed",
+                    )
+                self.db.fail_supplemental_post_script_target(conn, target_id=target_id, error=str(exc))
+                conn.commit()
+            return True
+        finally:
+            self._schedule_post_task_cleanup()
 
     def _new_scan_container_allowed(self, scan_id: int) -> bool:
         required_bytes = self.runtime_min_free_storage_bytes()

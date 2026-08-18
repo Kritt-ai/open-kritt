@@ -4,6 +4,11 @@ import subprocess
 
 SCAN_RUNNER_LABEL = "open-kritt.scan-runner=1"
 
+# Reclaim only dangling (untagged) images. Adding --all would also collect tagged
+# images that happen to be unreferenced at prune time, which deletes a custom scan
+# runner image between jobs (issue #43); tagged images are kept instead.
+IMAGE_PRUNE_ARGS = ("image", "prune", "--force")
+
 
 def _docker_binary() -> str | None:
     return shutil.which(os.getenv("ENGINE_DOCKER_BIN", "docker"))
@@ -54,13 +59,13 @@ def prune_docker_build_cache(*, keep_storage_bytes: int, timeout_seconds: float 
 
 
 def prune_unused_docker_images(*, timeout_seconds: float = 300.0) -> str | None:
-    """Remove images unused by every running and stopped container."""
+    """Remove dangling (untagged) images, keeping tagged images such as scan runners."""
 
     docker = _docker_binary()
     if not docker:
         return None
     return _run_docker_cleanup(
-        [docker, "image", "prune", "--all", "--force"],
+        [docker, *IMAGE_PRUNE_ARGS],
         timeout_seconds=timeout_seconds,
     )
 

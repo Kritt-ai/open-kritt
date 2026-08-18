@@ -13,7 +13,12 @@ import {
   orderScanErrorsForDisplay,
   summarizeExpectedWorkflowLineages,
 } from '../src/lib/repo.js';
-import { serializeScan, serializeStep } from '../src/lib/serialize.js';
+import {
+  serializeScan,
+  serializeStep,
+  serializeSupplementalPostScriptRun,
+  serializeVulnerability,
+} from '../src/lib/serialize.js';
 import { SCAN_STATUSES } from '../src/lib/constants.js';
 
 test('active workers expose workflow depth only for workflow steps', () => {
@@ -21,6 +26,82 @@ test('active workers expose workflow depth only for workflow steps', () => {
   assert.equal(activeJobWorkflowDepth({}, { depth: 0 }), 0);
   assert.equal(activeJobWorkflowDepth({ kind: 'post_script' }, { depth: 3 }), null);
   assert.equal(activeJobWorkflowDepth({ kind: 'step' }, null), null);
+});
+
+test('finding serialization exposes cumulative supplemental enrichment identity', () => {
+  const vulnerability = serializeVulnerability(
+    {
+      id: 31n,
+      scanId: 9n,
+      jsonAnswer: { summary: 'Finding' },
+      postScriptAnswer: null,
+      insertedAt: new Date('2026-08-17T10:00:00Z'),
+    },
+    {
+      enrichments: [
+        {
+          id: 71n,
+          scanId: 9n,
+          vulnerabilityId: 31n,
+          postScriptId: 4n,
+          postScriptName: 'Report',
+          supplementalRunId: 41n,
+          insertedAt: new Date('2026-08-17T10:01:00Z'),
+        },
+        {
+          id: 72n,
+          scanId: 9n,
+          vulnerabilityId: 31n,
+          postScriptId: 5n,
+          postScriptName: 'PoC',
+          supplementalRunId: 42n,
+          insertedAt: new Date('2026-08-17T10:02:00Z'),
+        },
+      ],
+    }
+  );
+
+  assert.deepEqual(vulnerability.supplementalPostScripts, {
+    count: 2,
+    runIds: ['41', '42'],
+    lastRunAt: new Date('2026-08-17T10:02:00Z'),
+  });
+  assert.equal(vulnerability.enrichments[0].supplemental, true);
+});
+
+test('supplemental run serialization exposes model settings and safe target errors', () => {
+  const serialized = serializeSupplementalPostScriptRun(
+    {
+      id: 41n,
+      scanId: 9n,
+      postScriptId: 4n,
+      postScriptName: 'Report',
+      model: 'gpt-5-codex',
+      modelProvider: 'codex',
+      harness: 'codex',
+      thinkingEffort: 'high',
+      status: 'completed_with_errors',
+      targetCount: 1,
+      completedCount: 0,
+      failedCount: 1,
+      insertedAt: new Date('2026-08-18T10:00:00Z'),
+      updatedAt: new Date('2026-08-18T10:01:00Z'),
+    },
+    [
+      {
+        id: 51n,
+        vulnerabilityId: 31n,
+        status: 'failed',
+        attempts: 2,
+        error: 'The model timed out.',
+      },
+    ]
+  );
+
+  assert.equal(serialized.model, 'gpt-5-codex');
+  assert.equal(serialized.modelProvider, 'codex');
+  assert.equal(serialized.thinkingEffort, 'high');
+  assert.equal(serialized.targets[0].error, 'The model timed out.');
 });
 
 test('step serialization exposes bound routing IDs as JSON-safe strings', () => {

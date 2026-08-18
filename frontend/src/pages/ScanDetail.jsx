@@ -22,10 +22,17 @@ import WorkflowModelConfiguration, {
   workflowModelConfigurationForCatalog,
   workflowModelConfigurationIsValid,
 } from '../components/WorkflowModelConfiguration.jsx';
+import ModelConfiguration, {
+  modelConfigurationForCatalog,
+  modelConfigurationIsValid,
+} from '../components/ModelConfiguration.jsx';
 import { modelOverridesDraft, modelOverridesEqual, reconcileModelOverrides } from '../lib/modelOverrides.js';
 import { usePagination } from '../lib/usePagination.js';
 import Pagination from '../components/Pagination.jsx';
 import { saveBrowserDownload } from '../lib/download.js';
+import { extractExtraKeys } from '../lib/keys.js';
+
+const SUPPLEMENTAL_POST_SCRIPT_SCAN_STATUSES = new Set(['paused', 'completed', 'stopped', 'failed']);
 
 export function scanActions(status) {
   const active = ['prewarming_cache', 'running', 'post_processing'].includes(status);
@@ -60,6 +67,44 @@ export function scanFindingExportAvailability(scan) {
   };
 }
 
+export function supplementalPostScriptAvailability(scan, findings = []) {
+  if (!SUPPLEMENTAL_POST_SCRIPT_SCAN_STATUSES.has(scan?.status)) {
+    return { ready: false, message: 'Pause or stop the scan before adding post-processing.' };
+  }
+  if (!Array.isArray(findings) || findings.length === 0) {
+    return { ready: false, message: 'At least one finding is required.' };
+  }
+  return { ready: true, message: 'Run a post-script on selected findings without resuming the scan.' };
+}
+
+export function supplementalFindingRunSummary(finding, runs = []) {
+  const runIds = new Set(
+    (finding?.enrichments || [])
+      .map((enrichment) => enrichment?.supplementalRunId)
+      .filter(Boolean)
+      .map(String)
+  );
+  let active = 0;
+  let failed = 0;
+  for (const run of runs || []) {
+    const target = (run?.targets || []).find((item) => String(item.vulnerabilityId) === String(finding?.id));
+    if (!target) continue;
+    runIds.add(String(run.id));
+    if (['pending', 'running'].includes(target.status)) active += 1;
+    if (target.status === 'failed') failed += 1;
+  }
+  return { count: runIds.size, active, failed };
+}
+
+export function supplementalRunModelConfiguration(scan = {}, run = null) {
+  return {
+    model: run?.model || scan.postProcessingModel || scan.model || '',
+    model_provider: run?.modelProvider || scan.postProcessingModelProvider || scan.modelProvider || 'openrouter',
+    harness: run?.harness || scan.postProcessingHarness || scan.harness || '',
+    thinking_effort: run?.thinkingEffort || scan.postProcessingThinkingEffort || scan.thinkingEffort || 'medium',
+  };
+}
+
 export async function loadModelReferences(fetchProviders, fetchCatalog) {
   const [providerPayload, catalogResult] = await Promise.all([
     Promise.resolve().then(fetchProviders),
@@ -85,6 +130,16 @@ export default function ScanDetail() {
   const [actionError, setActionError] = useState(null);
   const [extrasOpen, setExtrasOpen] = useState(false);
   const [reviewError, setReviewError] = useState(null);
+  const [supplementalMode, setSupplementalMode] = useState(false);
+  const [selectedFindingIds, setSelectedFindingIds] = useState(() => new Set());
+  const [supplementalPostScriptId, setSupplementalPostScriptId] = useState('');
+  const [supplementalExtra, setSupplementalExtra] = useState({});
+  const [supplementalModel, setSupplementalModel] = useState(null);
+  const [supplementalSubmitting, setSupplementalSubmitting] = useState(false);
+  const [supplementalError, setSupplementalError] = useState(null);
+  const [supplementalRetry, setSupplementalRetry] = useState(null);
+  const [supplementalRetrySubmitting, setSupplementalRetrySubmitting] = useState(false);
+  const [supplementalRetryError, setSupplementalRetryError] = useState(null);
   const reviewMutations = useRef(createLatestFieldMutationQueue());
   const { data: scan, loading, error, reload } = useFetch(() => api.scan(id), [id], { pollMs: 1000 });
   const {
@@ -112,6 +167,17 @@ export default function ScanDetail() {
     [],
     { pollMs: 5000 }
   );
+  const {
+    data: availablePostScripts,
+    loading: availablePostScriptsLoading,
+    error: availablePostScriptsError,
+    reload: reloadAvailablePostScripts,
+  } = useFetch(() => api.postScripts(), [], {});
+  const {
+    data: supplementalRuns,
+    error: supplementalRunsError,
+    reload: reloadSupplementalRuns,
+  } = useFetch(() => api.supplementalPostScriptRuns(id), [id], { pollMs: 1000 });
 
   useEffect(() => {
     reviewMutations.current.dispose();
@@ -119,6 +185,17 @@ export default function ScanDetail() {
     reviewMutations.current = queue;
     setReviewError(null);
     return () => queue.dispose();
+  }, [id]);
+
+  useEffect(() => {
+    setSupplementalMode(false);
+    setSelectedFindingIds(new Set());
+    setSupplementalPostScriptId('');
+    setSupplementalExtra({});
+    setSupplementalModel(null);
+    setSupplementalError(null);
+    setSupplementalRetry(null);
+    setSupplementalRetryError(null);
   }, [id]);
 
   const findingPages = usePagination(vulns || [], { pageSize: 20, resetKey: id });
@@ -243,6 +320,142 @@ export default function ScanDetail() {
   const rateLimit = rateLimitPresentation(scan.reasoning);
   const providerAutoscale = providerCapacityAutoscalePresentation(scan.reasoning);
   const storageWarning = storageWarningPresentation(scan.reasoning);
+  const supplementalAvailability = supplementalPostScriptAvailability(scan, list);
+  const selectedPostScript = (availablePostScripts || []).find(
+    (postScript) => String(postScript.id) === supplementalPostScriptId
+  );
+  const supplementalExtraKeys = extractExtraKeys(selectedPostScript?.content || '');
+  const selectedCount = selectedFindingIds.size;
+  const allFindingsSelected = list.length > 0 && selectedCount === list.length;
+  const activeSupplementalRuns = (supplementalRuns || []).filter((run) => ['queued', 'running'].includes(run.status));
+
+  const beginSupplementalRun = () => {
+    const defaults = supplementalRunModelConfiguration(scan);
+    setSupplementalMode(true);
+    setSelectedFindingIds(new Set());
+    setSupplementalPostScriptId('');
+    setSupplementalExtra({});
+    setSupplementalModel(
+      modelReferences
+        ? modelConfigurationForCatalog(defaults, modelReferences.providers, modelReferences.catalog)
+        : defaults
+    );
+    setSupplementalError(null);
+    setSupplementalRetry(null);
+    setSupplementalRetryError(null);
+  };
+  const cancelSupplementalRun = () => {
+    setSupplementalMode(false);
+    setSelectedFindingIds(new Set());
+    setSupplementalPostScriptId('');
+    setSupplementalExtra({});
+    setSupplementalModel(null);
+    setSupplementalError(null);
+  };
+  const toggleFindingSelection = (vulnerabilityId) => {
+    setSelectedFindingIds((current) => {
+      const next = new Set(current);
+      if (next.has(vulnerabilityId)) next.delete(vulnerabilityId);
+      else next.add(vulnerabilityId);
+      return next;
+    });
+  };
+  const toggleAllFindingSelection = () => {
+    setSelectedFindingIds(allFindingsSelected ? new Set() : new Set(list.map((finding) => finding.id)));
+  };
+  const chooseSupplementalPostScript = (postScriptId) => {
+    setSupplementalPostScriptId(postScriptId);
+    const postScript = (availablePostScripts || []).find((item) => String(item.id) === postScriptId);
+    const nextExtra = {};
+    for (const key of extractExtraKeys(postScript?.content || '')) {
+      nextExtra[key] = scan.extra?.[key] === undefined ? '' : formatExtraValue(scan.extra[key]);
+    }
+    setSupplementalExtra(nextExtra);
+    setSupplementalError(null);
+  };
+  const submitSupplementalRun = async () => {
+    if (!selectedCount) {
+      setSupplementalError(new Error('Select at least one finding.'));
+      return;
+    }
+    if (!selectedPostScript) {
+      setSupplementalError(new Error('Choose a post-script.'));
+      return;
+    }
+    const missingKey = supplementalExtraKeys.find((key) => !String(supplementalExtra[key] ?? '').trim());
+    if (missingKey) {
+      setSupplementalError(new Error(`extra.${missingKey} is required.`));
+      return;
+    }
+    if (
+      !supplementalModel ||
+      !modelReferences ||
+      !modelConfigurationIsValid(supplementalModel, modelReferences.providers, modelReferences.catalog)
+    ) {
+      setSupplementalError(new Error('Choose an available model, compatible harness, and supported thinking effort.'));
+      return;
+    }
+    setSupplementalSubmitting(true);
+    setSupplementalError(null);
+    try {
+      await api.createSupplementalPostScriptRun(id, {
+        postScriptId: selectedPostScript.id,
+        vulnerabilityIds: [...selectedFindingIds],
+        extra: Object.fromEntries(supplementalExtraKeys.map((key) => [key, supplementalExtra[key]])),
+        model: supplementalModel.model,
+        model_provider: supplementalModel.model_provider,
+        harness: supplementalModel.harness,
+        thinking_effort: supplementalModel.thinking_effort,
+      });
+      cancelSupplementalRun();
+      reloadSupplementalRuns();
+      reloadVulns();
+    } catch (submitError) {
+      setSupplementalError(submitError);
+    } finally {
+      setSupplementalSubmitting(false);
+    }
+  };
+  const beginSupplementalRetry = (run) => {
+    const defaults = supplementalRunModelConfiguration(scan, run);
+    cancelSupplementalRun();
+    setSupplementalRetry({
+      runId: run.id,
+      model: modelReferences
+        ? modelConfigurationForCatalog(defaults, modelReferences.providers, modelReferences.catalog)
+        : defaults,
+    });
+    setSupplementalRetryError(null);
+  };
+  const submitSupplementalRetry = async () => {
+    if (!supplementalRetry) return;
+    if (
+      !modelReferences ||
+      !modelConfigurationIsValid(supplementalRetry.model, modelReferences.providers, modelReferences.catalog)
+    ) {
+      setSupplementalRetryError(
+        new Error('Choose an available model, compatible harness, and supported thinking effort.')
+      );
+      return;
+    }
+    setSupplementalRetrySubmitting(true);
+    setSupplementalRetryError(null);
+    try {
+      await api.retrySupplementalPostScriptRun(id, supplementalRetry.runId, {
+        model: supplementalRetry.model.model,
+        model_provider: supplementalRetry.model.model_provider,
+        harness: supplementalRetry.model.harness,
+        thinking_effort: supplementalRetry.model.thinking_effort,
+      });
+      setSupplementalRetry(null);
+      reloadSupplementalRuns();
+      reloadVulns();
+    } catch (retryError) {
+      setSupplementalRetryError(retryError);
+    } finally {
+      setSupplementalRetrySubmitting(false);
+    }
+  };
 
   return (
     <div
@@ -322,7 +535,12 @@ export default function ScanDetail() {
                 variant="danger"
                 style={{ height: 32 }}
                 onClick={() => !busy && !exporting && deleteScan()}
-                disabled={busy || exporting}
+                disabled={busy || exporting || activeSupplementalRuns.length > 0}
+                title={
+                  activeSupplementalRuns.length
+                    ? 'Wait for supplemental post-script work to finish before deleting this scan.'
+                    : undefined
+                }
               >
                 Delete
               </Button>
@@ -342,7 +560,12 @@ export default function ScanDetail() {
                 variant="primary"
                 style={{ height: 32 }}
                 onClick={() => !busy && setStatus('pending')}
-                title="Continue from completed steps and retry failed work"
+                disabled={busy || activeSupplementalRuns.length > 0}
+                title={
+                  activeSupplementalRuns.length
+                    ? 'Wait for supplemental post-script work to finish before resuming.'
+                    : 'Continue from completed steps and retry failed work'
+                }
               >
                 {busy ? '…' : 'Resume'}
               </Button>
@@ -624,6 +847,48 @@ export default function ScanDetail() {
           Ranked by the scan's severity ranker and enriched by post-scripts. Click a finding for the full trace.
         </div>
 
+        <SupplementalPostScriptControls
+          availability={supplementalAvailability}
+          mode={supplementalMode}
+          onBegin={beginSupplementalRun}
+          onCancel={cancelSupplementalRun}
+          selectedCount={selectedCount}
+          totalCount={list.length}
+          allSelected={allFindingsSelected}
+          onToggleAll={toggleAllFindingSelection}
+          postScripts={availablePostScripts || []}
+          postScriptsLoading={availablePostScriptsLoading}
+          postScriptsError={availablePostScriptsError}
+          onRetryPostScripts={reloadAvailablePostScripts}
+          selectedPostScriptId={supplementalPostScriptId}
+          onSelectPostScript={chooseSupplementalPostScript}
+          requiredExtraKeys={supplementalExtraKeys}
+          extra={supplementalExtra}
+          onExtraChange={(key, value) => setSupplementalExtra((current) => ({ ...current, [key]: value }))}
+          model={supplementalModel}
+          onModelChange={setSupplementalModel}
+          modelReferences={modelReferences}
+          modelReferencesLoading={modelReferencesLoading}
+          modelReferencesError={modelReferencesError}
+          submitting={supplementalSubmitting}
+          error={supplementalError}
+          onSubmit={submitSupplementalRun}
+          runs={supplementalRuns || []}
+          runsError={supplementalRunsError}
+          findings={list}
+          scanId={id}
+          retry={supplementalRetry}
+          onBeginRetry={beginSupplementalRetry}
+          onCancelRetry={() => {
+            setSupplementalRetry(null);
+            setSupplementalRetryError(null);
+          }}
+          onRetryModelChange={(model) => setSupplementalRetry((current) => (current ? { ...current, model } : null))}
+          onSubmitRetry={submitSupplementalRetry}
+          retrySubmitting={supplementalRetrySubmitting}
+          retryError={supplementalRetryError}
+        />
+
         {reviewError && (
           <div
             role="alert"
@@ -685,7 +950,21 @@ export default function ScanDetail() {
                   textTransform: 'uppercase',
                 }}
               >
-                Finding
+                {supplementalMode ? (
+                  <label
+                    style={{ position: 'relative', zIndex: 2, display: 'inline-flex', alignItems: 'center', gap: 8 }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={allFindingsSelected}
+                      onChange={toggleAllFindingSelection}
+                      aria-label="Select all findings"
+                    />
+                    Finding
+                  </label>
+                ) : (
+                  'Finding'
+                )}
               </span>
               <span
                 className="mono"
@@ -726,6 +1005,7 @@ export default function ScanDetail() {
               const interesting = v.interesting ?? null;
               const dot = interestingDot(interesting);
               const severity = findingSeverity(v);
+              const supplementalSummary = supplementalFindingRunSummary(v, supplementalRuns || []);
               return (
                 <div
                   key={v.id}
@@ -753,6 +1033,16 @@ export default function ScanDetail() {
                       minWidth: 0,
                     }}
                   >
+                    {supplementalMode && (
+                      <input
+                        type="checkbox"
+                        checked={selectedFindingIds.has(v.id)}
+                        onClick={(event) => event.stopPropagation()}
+                        onChange={() => toggleFindingSelection(v.id)}
+                        aria-label={`Select finding ${v.rank}`}
+                        style={{ position: 'relative', zIndex: 2, flex: 'none' }}
+                      />
+                    )}
                     <span
                       onClick={(e) => cycleInteresting(v, e)}
                       title={dot.title}
@@ -837,6 +1127,28 @@ export default function ScanDetail() {
                             ✎
                           </span>
                         )}
+                        {supplementalSummary.count > 0 && (
+                          <span
+                            className="mono"
+                            title={`${supplementalSummary.count} supplemental post-script run${
+                              supplementalSummary.count === 1 ? '' : 's'
+                            }${supplementalSummary.active ? ` · ${supplementalSummary.active} active` : ''}${
+                              supplementalSummary.failed ? ` · ${supplementalSummary.failed} failed` : ''
+                            }`}
+                            style={{
+                              flex: 'none',
+                              padding: '2px 6px',
+                              borderRadius: 5,
+                              color: supplementalSummary.failed ? 'var(--pend)' : 'var(--accent)',
+                              background: supplementalSummary.failed ? 'var(--pend-bg)' : 'var(--accent-subtle)',
+                              fontSize: 9.5,
+                              fontWeight: 650,
+                            }}
+                          >
+                            +post ×{supplementalSummary.count}
+                            {supplementalSummary.active ? ' · running' : ''}
+                          </span>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -889,6 +1201,364 @@ export default function ScanDetail() {
         )}
       </div>
     </div>
+  );
+}
+
+export function SupplementalPostScriptControls({
+  availability,
+  mode,
+  onBegin,
+  onCancel,
+  selectedCount,
+  totalCount,
+  allSelected,
+  onToggleAll,
+  postScripts,
+  postScriptsLoading,
+  postScriptsError,
+  onRetryPostScripts,
+  selectedPostScriptId,
+  onSelectPostScript,
+  requiredExtraKeys,
+  extra,
+  onExtraChange,
+  model,
+  onModelChange,
+  modelReferences,
+  modelReferencesLoading,
+  modelReferencesError,
+  submitting,
+  error,
+  onSubmit,
+  runs,
+  runsError,
+  findings,
+  scanId,
+  retry,
+  onBeginRetry,
+  onCancelRetry,
+  onRetryModelChange,
+  onSubmitRetry,
+  retrySubmitting,
+  retryError,
+}) {
+  const visible = mode || availability.ready || runs.length > 0 || runsError;
+  if (!visible) return null;
+  const modelValid =
+    !!model &&
+    !!modelReferences &&
+    modelConfigurationIsValid(model, modelReferences.providers, modelReferences.catalog);
+  const retryModelValid =
+    !!retry?.model &&
+    !!modelReferences &&
+    modelConfigurationIsValid(retry.model, modelReferences.providers, modelReferences.catalog);
+  const findingsById = new Map((findings || []).map((finding) => [String(finding.id), finding]));
+
+  return (
+    <section
+      aria-label="Additional post-processing"
+      style={{
+        border: '1px solid var(--border)',
+        borderRadius: 11,
+        background: 'var(--surface)',
+        marginBottom: 16,
+        overflow: 'hidden',
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          flexWrap: 'wrap',
+          gap: 12,
+          padding: '13px 15px',
+        }}
+      >
+        <div>
+          <div style={{ fontSize: 13.5, fontWeight: 650 }}>Additional post-processing</div>
+          <div style={{ marginTop: 3, color: 'var(--text-3)', fontSize: 11.5 }}>
+            {mode
+              ? `${selectedCount} of ${totalCount} findings selected`
+              : 'Apply a post-script to selected findings without resuming the scan.'}
+          </div>
+        </div>
+        {!mode ? (
+          <Button variant="subtle" onClick={onBegin} disabled={!availability.ready} title={availability.message}>
+            Run post-script on findings
+          </Button>
+        ) : (
+          <div style={{ display: 'flex', gap: 8 }}>
+            <Button variant="ghost" onClick={onToggleAll} disabled={submitting}>
+              {allSelected ? 'Clear selection' : 'Select all'}
+            </Button>
+            <Button variant="ghost" onClick={onCancel} disabled={submitting}>
+              Cancel
+            </Button>
+          </div>
+        )}
+      </div>
+
+      {mode && (
+        <div style={{ borderTop: '1px solid var(--border-2)', padding: '15px' }}>
+          <label style={{ display: 'block', fontSize: 12, color: 'var(--text-2)' }}>
+            Post-script
+            <select
+              value={selectedPostScriptId}
+              onChange={(event) => onSelectPostScript(event.target.value)}
+              disabled={submitting || postScriptsLoading}
+              className="account-credential-input"
+              style={{ marginTop: 7 }}
+            >
+              <option value="">{postScriptsLoading ? 'Loading post-scripts…' : 'Choose a post-script'}</option>
+              {postScripts.map((postScript) => (
+                <option key={postScript.id} value={postScript.id}>
+                  {postScript.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          {postScriptsError && (
+            <div className="account-dialog-error" role="alert">
+              Could not load post-scripts. {postScriptsError.message}{' '}
+              <button
+                type="button"
+                onClick={onRetryPostScripts}
+                style={{ border: 0, padding: 0, color: 'inherit', background: 'transparent', cursor: 'pointer' }}
+              >
+                Try again
+              </button>
+            </div>
+          )}
+          <div
+            style={{
+              marginTop: 14,
+              padding: 13,
+              border: '1px solid var(--border)',
+              borderRadius: 9,
+              background: 'var(--surface-2)',
+            }}
+          >
+            <span className="mono" style={{ display: 'block', fontSize: 10.5, color: 'var(--text-3)' }}>
+              EXECUTION MODEL
+            </span>
+            <div style={{ margin: '5px 0 11px', color: 'var(--text-3)', fontSize: 11.5 }}>
+              Prefilled from this scan&apos;s post-processing settings. Changes apply only to this supplemental run.
+            </div>
+            {modelReferencesLoading || !modelReferences || !model ? (
+              <div style={{ color: modelReferencesError ? 'var(--fail)' : 'var(--text-3)', fontSize: 12 }}>
+                {modelReferencesError ? formatApiError(modelReferencesError) : 'Loading model choices…'}
+              </div>
+            ) : (
+              <ModelConfiguration
+                value={model}
+                onChange={onModelChange}
+                providers={modelReferences.providers}
+                catalog={modelReferences.catalog}
+                catalogError={modelReferences.catalogError}
+                disabled={submitting}
+                showAvailabilityHelp={false}
+              />
+            )}
+          </div>
+          {requiredExtraKeys.length > 0 && (
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+                gap: 12,
+                marginTop: 14,
+              }}
+            >
+              {requiredExtraKeys.map((key) => (
+                <label key={key} style={{ display: 'block', fontSize: 12, color: 'var(--text-2)' }}>
+                  <span className="mono">extra.{key}</span> <span style={{ color: 'var(--fail)' }}>*</span>
+                  <input
+                    value={extra[key] ?? ''}
+                    onChange={(event) => onExtraChange(key, event.target.value)}
+                    disabled={submitting}
+                    required
+                    className="account-credential-input"
+                    style={{ marginTop: 7 }}
+                    placeholder={`Value for extra.${key}`}
+                  />
+                </label>
+              ))}
+            </div>
+          )}
+          {error && (
+            <div className="account-dialog-error" role="alert">
+              {formatApiError(error)}
+            </div>
+          )}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 15 }}>
+            <Button
+              onClick={onSubmit}
+              disabled={submitting || selectedCount === 0 || !selectedPostScriptId || postScriptsLoading || !modelValid}
+            >
+              {submitting ? 'Queuing…' : `Queue for ${selectedCount} finding${selectedCount === 1 ? '' : 's'}`}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {(runs.length > 0 || runsError) && (
+        <div style={{ borderTop: '1px solid var(--border-2)', padding: '11px 15px 13px' }}>
+          <div className="mono" style={{ fontSize: 9.5, color: 'var(--text-3)', textTransform: 'uppercase' }}>
+            Supplemental run history
+          </div>
+          {runsError ? (
+            <div style={{ marginTop: 7, color: 'var(--fail)', fontSize: 11.5 }}>{runsError.message}</div>
+          ) : (
+            <div style={{ display: 'grid', gap: 7, marginTop: 8 }}>
+              {runs.map((run) => {
+                const progress = run.targetCount
+                  ? Math.round(((run.completedCount + run.failedCount) / run.targetCount) * 100)
+                  : 0;
+                const failedTargets = (run.targets || []).filter((target) => target.status === 'failed');
+                const retrying = String(retry?.runId) === String(run.id);
+                const statusColor =
+                  run.status === 'completed'
+                    ? 'var(--ok)'
+                    : run.status === 'completed_with_errors'
+                      ? 'var(--pend)'
+                      : 'var(--run)';
+                return (
+                  <div
+                    key={run.id}
+                    style={{
+                      minWidth: 0,
+                      padding: '10px 11px',
+                      border: '1px solid var(--border-2)',
+                      borderRadius: 8,
+                      background: 'var(--surface-2)',
+                      fontSize: 11.5,
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+                      <span className="mono" style={{ color: statusColor, width: 152, flex: 'none' }}>
+                        {run.status.replaceAll('_', ' ')}
+                      </span>
+                      <span style={{ minWidth: 0, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {run.postScriptName}
+                      </span>
+                      <span className="mono" style={{ color: 'var(--text-3)', flex: 'none' }}>
+                        {run.completedCount + run.failedCount}/{run.targetCount} · {progress}%
+                        {run.failedCount ? ` · ${run.failedCount} failed` : ''}
+                      </span>
+                    </div>
+                    <div className="mono" style={{ marginTop: 6, color: 'var(--text-3)', fontSize: 10.5 }}>
+                      {run.modelProvider && run.model
+                        ? `${run.modelProvider} · ${run.model} · ${run.harness || 'default harness'} · ${
+                            run.thinkingEffort || 'default effort'
+                          }`
+                        : 'Scan post-processing model'}
+                    </div>
+                    {failedTargets.length > 0 && (
+                      <>
+                        <details style={{ marginTop: 9 }}>
+                          <summary style={{ color: 'var(--fail)', cursor: 'pointer', fontWeight: 600 }}>
+                            View {failedTargets.length} error{failedTargets.length === 1 ? '' : 's'}
+                          </summary>
+                          <div
+                            style={{
+                              display: 'grid',
+                              gap: 8,
+                              maxHeight: 280,
+                              overflowY: 'auto',
+                              marginTop: 8,
+                            }}
+                          >
+                            {failedTargets.map((target) => {
+                              const finding = findingsById.get(String(target.vulnerabilityId));
+                              return (
+                                <div
+                                  key={target.id}
+                                  style={{ padding: '8px 9px', borderRadius: 7, background: 'var(--fail-bg)' }}
+                                >
+                                  <Link
+                                    to={`/scans/${scanId}/vulnerabilities/${target.vulnerabilityId}`}
+                                    style={{ color: 'var(--text)', fontWeight: 600 }}
+                                  >
+                                    {finding
+                                      ? `Finding #${finding.rank}: ${finding.summary}`
+                                      : `Finding ${target.vulnerabilityId}`}
+                                  </Link>
+                                  <div
+                                    className="mono"
+                                    style={{ marginTop: 5, color: 'var(--fail)', whiteSpace: 'pre-wrap' }}
+                                  >
+                                    {target.error || 'The worker did not record an error message.'}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </details>
+                        {!retrying && (
+                          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 9 }}>
+                            <Button
+                              variant="ghost"
+                              onClick={() => onBeginRetry(run)}
+                              disabled={retrySubmitting || !availability.ready}
+                            >
+                              Re-run failed
+                            </Button>
+                          </div>
+                        )}
+                      </>
+                    )}
+                    {retrying && (
+                      <div
+                        style={{
+                          marginTop: 10,
+                          padding: 11,
+                          border: '1px solid var(--border)',
+                          borderRadius: 8,
+                          background: 'var(--surface)',
+                        }}
+                      >
+                        <div style={{ marginBottom: 10, color: 'var(--text-2)', lineHeight: 1.5 }}>
+                          Re-run only the {failedTargets.length} failed finding
+                          {failedTargets.length === 1 ? '' : 's'}. The original script and extra values are reused; you
+                          can change the execution model below.
+                        </div>
+                        {modelReferences && retry?.model ? (
+                          <ModelConfiguration
+                            value={retry.model}
+                            onChange={onRetryModelChange}
+                            providers={modelReferences.providers}
+                            catalog={modelReferences.catalog}
+                            catalogError={modelReferences.catalogError}
+                            disabled={retrySubmitting}
+                            showAvailabilityHelp={false}
+                          />
+                        ) : (
+                          <div style={{ color: 'var(--fail)' }}>Model choices are not available.</div>
+                        )}
+                        {retryError && (
+                          <div className="account-dialog-error" role="alert">
+                            {formatApiError(retryError)}
+                          </div>
+                        )}
+                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 10 }}>
+                          <Button variant="ghost" onClick={onCancelRetry} disabled={retrySubmitting}>
+                            Cancel
+                          </Button>
+                          <Button onClick={onSubmitRetry} disabled={retrySubmitting || !retryModelValid}>
+                            {retrySubmitting ? 'Queuing…' : `Queue retry for ${failedTargets.length}`}
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+    </section>
   );
 }
 

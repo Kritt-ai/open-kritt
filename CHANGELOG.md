@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.1](https://github.com/Kritt-ai/open-kritt/compare/v1.4.0...v1.4.1) (2026-08-16)
+
+
+### Bug Fixes
+
+* ranker didn't actually used the user provided ranking rules ([3f4a15c](https://github.com/Kritt-ai/open-kritt/commit/3f4a15c43caa6a6f1e7c45f2570daadc05ae1b8e))
+
 ## [1.4.0](https://github.com/Kritt-ai/open-kritt/compare/v1.3.0...v1.4.0) (2026-08-12)
 
 

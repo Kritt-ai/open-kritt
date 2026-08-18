@@ -89,6 +89,18 @@ def post_processing_model_selection(scan: dict[str, Any]) -> ModelSelection:
     )
 
 
+def supplemental_post_script_model_selection(scan: dict[str, Any], run: dict[str, Any]) -> ModelSelection:
+    """Resolve a run's snapshotted model settings with legacy scan fallbacks."""
+
+    default = post_processing_model_selection(scan)
+    return ModelSelection(
+        model=_selection_value(run, "model", "model", default.model),
+        model_provider=_selection_value(run, "model_provider", "modelProvider", default.model_provider),
+        harness=_selection_value(run, "harness", "harness", default.harness),
+        thinking_effort=_selection_value(run, "thinking_effort", "thinkingEffort", default.thinking_effort),
+    )
+
+
 @dataclass(frozen=True)
 class Step:
     id: int

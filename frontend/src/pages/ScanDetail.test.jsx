@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
+import { configuredModelCatalog } from '../lib/modelProviders.js';
 
 import {
   activeJobDepthSummary,
@@ -13,8 +14,172 @@ import {
   runSettingsPayload,
   scanActions,
   scanFindingExportAvailability,
+  supplementalFindingRunSummary,
+  supplementalPostScriptAvailability,
+  supplementalRunModelConfiguration,
+  SupplementalPostScriptControls,
   ScanStatusPanel,
 } from './ScanDetail.jsx';
+
+const supplementalModelReferences = {
+  providers: ['codex'],
+  catalog: configuredModelCatalog({
+    providers: [
+      {
+        provider: 'codex',
+        input: 'select',
+        status: 'ready',
+        defaultModel: 'gpt-5-codex',
+        models: [{ id: 'gpt-5-codex', thinkingEfforts: ['high'] }],
+      },
+    ],
+  }),
+  catalogError: null,
+};
+const supplementalModel = {
+  model: 'gpt-5-codex',
+  model_provider: 'codex',
+  harness: 'codex',
+  thinking_effort: 'high',
+};
+
+describe('supplemental post-script runs', () => {
+  it('is available only for non-running scans with findings', () => {
+    expect(supplementalPostScriptAvailability({ status: 'completed' }, [{ id: '1' }]).ready).toBe(true);
+    expect(supplementalPostScriptAvailability({ status: 'paused' }, [{ id: '1' }]).ready).toBe(true);
+    expect(supplementalPostScriptAvailability({ status: 'running' }, [{ id: '1' }]).ready).toBe(false);
+    expect(supplementalPostScriptAvailability({ status: 'completed' }, []).ready).toBe(false);
+  });
+
+  it('preserves multiple run indicators and does not double-count a persisted enrichment', () => {
+    expect(
+      supplementalFindingRunSummary({ id: '31', enrichments: [{ supplementalRunId: '41' }] }, [
+        { id: '41', targets: [{ vulnerabilityId: '31', status: 'completed' }] },
+        { id: '42', targets: [{ vulnerabilityId: '31', status: 'running' }] },
+        { id: '43', targets: [{ vulnerabilityId: '31', status: 'failed' }] },
+      ])
+    ).toEqual({ count: 3, active: 1, failed: 1 });
+  });
+
+  it('prefills a supplemental run from the scan post-processing model', () => {
+    expect(
+      supplementalRunModelConfiguration({
+        model: 'workflow-model',
+        modelProvider: 'openrouter',
+        harness: 'codex',
+        thinkingEffort: 'medium',
+        postProcessingModel: 'gpt-5-codex',
+        postProcessingModelProvider: 'codex',
+        postProcessingHarness: 'codex',
+        postProcessingThinkingEffort: 'high',
+      })
+    ).toEqual(supplementalModel);
+  });
+
+  it('renders required extra fields and live additive progress', () => {
+    const html = renderToStaticMarkup(
+      createElement(
+        MemoryRouter,
+        null,
+        createElement(SupplementalPostScriptControls, {
+          availability: { ready: true, message: 'Ready' },
+          mode: true,
+          onBegin: () => {},
+          onCancel: () => {},
+          selectedCount: 2,
+          totalCount: 3,
+          allSelected: false,
+          onToggleAll: () => {},
+          postScripts: [{ id: '5', name: 'Report creator' }],
+          postScriptsLoading: false,
+          postScriptsError: null,
+          onRetryPostScripts: () => {},
+          selectedPostScriptId: '5',
+          onSelectPostScript: () => {},
+          requiredExtraKeys: ['network'],
+          extra: { network: 'mainnet' },
+          onExtraChange: () => {},
+          model: supplementalModel,
+          onModelChange: () => {},
+          modelReferences: supplementalModelReferences,
+          modelReferencesLoading: false,
+          modelReferencesError: null,
+          submitting: false,
+          error: null,
+          onSubmit: () => {},
+          runs: [
+            {
+              id: '41',
+              status: 'running',
+              postScriptName: 'Report creator',
+              model: 'gpt-5-codex',
+              modelProvider: 'codex',
+              harness: 'codex',
+              thinkingEffort: 'high',
+              targetCount: 4,
+              completedCount: 2,
+              failedCount: 0,
+            },
+          ],
+          runsError: null,
+          findings: [],
+          retry: null,
+        })
+      )
+    );
+
+    expect(html).toContain('extra.network');
+    expect(html).toContain('value="mainnet"');
+    expect(html).toContain('Queue for 2 findings');
+    expect(html).toContain('2/4 · 50%');
+    expect(html).toContain('EXECUTION MODEL');
+    expect(html).toContain('gpt-5-codex');
+  });
+
+  it('shows finding-level errors and a configurable failed-target retry', () => {
+    const html = renderToStaticMarkup(
+      createElement(
+        MemoryRouter,
+        null,
+        createElement(SupplementalPostScriptControls, {
+          availability: { ready: true, message: 'Ready' },
+          mode: false,
+          runsError: null,
+          runs: [
+            {
+              id: '41',
+              status: 'completed_with_errors',
+              postScriptName: 'Report creator',
+              model: 'gpt-5-codex',
+              modelProvider: 'codex',
+              harness: 'codex',
+              thinkingEffort: 'high',
+              targetCount: 2,
+              completedCount: 1,
+              failedCount: 1,
+              targets: [{ id: '51', vulnerabilityId: '31', status: 'failed', error: 'Model timed out.' }],
+            },
+          ],
+          findings: [{ id: '31', rank: 2, summary: 'Unsafe call' }],
+          scanId: '9',
+          retry: { runId: '41', model: supplementalModel },
+          onRetryModelChange: () => {},
+          onCancelRetry: () => {},
+          onSubmitRetry: () => {},
+          retrySubmitting: false,
+          retryError: null,
+          modelReferences: supplementalModelReferences,
+        })
+      )
+    );
+
+    expect(html).toContain('View 1 error');
+    expect(html).toContain('Finding #2: Unsafe call');
+    expect(html).toContain('Model timed out.');
+    expect(html).toContain('original script and extra values are reused');
+    expect(html).toContain('Queue retry for 1');
+  });
+});
 
 describe('scan model references', () => {
   it('keeps OpenRouter exact-ID editing available when catalog discovery fails', async () => {
