@@ -38,6 +38,7 @@ from open_kritt_engine.post_processing import (
     PostProcessor,
     PostProcessRateLimited,
     build_dedupe_prompt,
+    build_ranker_prompt,
     configured_post_script_ids,
     dedupe_batch,
     dedupe_mapping_from_clusters,
@@ -399,6 +400,83 @@ def test_ranker_batch_uses_only_canonicals_and_next_50_unranked():
 
     assert [row["id"] for row in anchors] == [2]
     assert [row["id"] for row in targets] == list(range(3, 53))
+
+
+def test_ranker_prompt_applies_the_scan_severity_ranker_before_protocol_constraints():
+    configured_rules = """# Program ranking policy
+
+1. Unauthenticated loss of funds is Critical and ranks first.
+2. Findings requiring validator collusion are no higher than Medium."""
+    configured_scan = {**scan(), "severity_ranker": configured_rules}
+
+    prompt = build_ranker_prompt(configured_scan, [], [vuln(3, canonical=True, canonical_id=3)])
+
+    assert configured_rules in prompt
+    assert "Treat the configured severity ranking rules below as authoritative" in prompt
+    assert prompt.index(configured_rules) < prompt.index("Required ranking protocol:")
+    assert "Return every target id exactly once" in prompt
+    assert "Return only minified JSON matching the provided schema" in prompt
+
+
+def test_ranker_prompt_keeps_a_safe_fallback_for_legacy_scans_without_rules():
+    prompt = build_ranker_prompt(scan(), [], [vuln(3, canonical=True, canonical_id=3)])
+
+    assert "No additional scan-specific ranking rules were configured." in prompt
+    assert "Target findings JSON" in prompt
+
+
+def test_ranker_batch_sends_the_configured_severity_rules_to_the_harness():
+    configured_rules = "Rank public consensus-halting bugs above authenticated denial of service."
+    current = {
+        **scan(),
+        "status": "post_processing",
+        "model_provider": "codex",
+        "thinking_effort": "medium",
+        "severity_ranker": configured_rules,
+    }
+
+    class FakeRankerDb:
+        def __init__(self):
+            self.updates = []
+
+        @contextmanager
+        def connect(self):
+            yield FakeConn()
+
+        def count_running_post_process(self, _conn, _scan_id, _kind):
+            return 0
+
+        def load_scan(self, _conn, _scan_id):
+            return current
+
+        def load_vulnerabilities(self, _conn, _scan_id):
+            return [vuln(3, canonical=True, canonical_id=3)]
+
+        def next_post_process_batch_index(self, _conn, _scan_id, _kind):
+            return 0
+
+        def claim_post_process_metadata(self, _conn, **_kwargs):
+            return 9
+
+        def update_post_process_metadata(self, _conn, metadata_id, **kwargs):
+            self.updates.append({"metadata_id": metadata_id, **kwargs})
+
+    captured = {}
+    database = FakeRankerDb()
+    processor = PostProcessor(SimpleNamespace(data_dir="/tmp", github_token=None), database)
+
+    def capture_prompt(**kwargs):
+        captured.update(kwargs)
+        raise PostProcessRateLimited("stop after prompt capture", retry_after_seconds=1.0)
+
+    processor._run_harness_with_retries = capture_prompt
+
+    with pytest.raises(PostProcessRateLimited):
+        processor._run_next_ranker_batch(current, object())
+
+    assert configured_rules in captured["prompt"]
+    assert captured["kind"] == "ranker"
+    assert database.updates[-1]["status"] == "interrupted"
 
 
 def test_post_script_context_contains_only_scan_and_finding_fields():

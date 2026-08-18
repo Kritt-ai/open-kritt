@@ -149,6 +149,11 @@ export const api = {
   },
   scan: (id) => request(`/scans/${id}`),
   scanVulnerabilities: (id) => request(`/scans/${id}/vulnerabilities`),
+  supplementalPostScriptRuns: (id) => request(`/scans/${id}/supplemental-post-script-runs`),
+  createSupplementalPostScriptRun: (id, body) =>
+    request(`/scans/${id}/supplemental-post-script-runs`, { method: 'POST', body }),
+  retrySupplementalPostScriptRun: (id, runId, body) =>
+    request(`/scans/${id}/supplemental-post-script-runs/${runId}/retry`, { method: 'POST', body }),
   exportScanFindings: (id) => download(`/scans/${id}/export`, `scan-${id}-findings.zip`),
   createScan: (body) => request('/scans', { method: 'POST', body }),
   updateScan: (id, body) => request(`/scans/${id}`, { method: 'PATCH', body }),

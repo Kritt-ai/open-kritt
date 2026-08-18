@@ -6,12 +6,13 @@ import { prisma } from '../db.js';
 import {
   validateScan,
   validateScanJobLimit,
+  validateModelSelection,
   validateModelOverrides,
   validateProspectiveScanRuntimeSettings,
   ValidationError,
 } from '../lib/validation.js';
 import { assembleScans, assembleScan } from '../lib/repo.js';
-import { repoDisplayName, serializeVulnerability } from '../lib/serialize.js';
+import { repoDisplayName, serializeSupplementalPostScriptRun, serializeVulnerability } from '../lib/serialize.js';
 import { SCAN_STATUSES, extractExtraKeys } from '../lib/constants.js';
 import { localRepoNames } from '../lib/localRepos.js';
 import { assertModelSelectionAvailable } from '../lib/modelSelection.js';
@@ -42,6 +43,8 @@ export const ACTIVE_SCAN_STATUSES = ['prewarming_cache', 'running', 'post_proces
 export const SCAN_LAUNCH_POLICIES = ['immediate', 'queue'];
 export const DEFAULT_SCAN_PAGE_SIZE = 6;
 export const MAX_SCAN_PAGE_SIZE = 100;
+export const MAX_SUPPLEMENTAL_POST_SCRIPT_TARGETS = 10_000;
+export const SUPPLEMENTAL_POST_SCRIPT_SCAN_STATUSES = ['paused', 'completed', 'stopped', 'failed'];
 export const SCAN_LIST_ORDER = Object.freeze([{ updatedAt: 'desc' }, { id: 'desc' }]);
 const USER_STATUS_TRANSITIONS = Object.freeze({
   queued: new Set(['stopped']),
@@ -112,11 +115,251 @@ export async function deleteScanOwnedData(tx, scanId) {
 
   await tx.triage.deleteMany({ where: { vulnerabilityId: { in: vulnerabilityIds } } });
   await tx.vulnerabilityEnrichment.deleteMany({ where: { scanId } });
+  await tx.supplementalPostScriptTarget.deleteMany({ where: { scanId } });
+  await tx.supplementalPostScriptRun.deleteMany({ where: { scanId } });
   await tx.stepMetadata.deleteMany({ where: { scanId } });
   await tx.postProcessMetadata.deleteMany({ where: { scanId } });
   await tx.vulnerability.deleteMany({ where: { scanId } });
   await tx.stepResult.deleteMany({ where: { scanId } });
   await tx.scan.delete({ where: { id: scanId } });
+}
+
+function positiveDatabaseId(value, field, errors) {
+  const text = typeof value === 'bigint' ? value.toString() : typeof value === 'number' ? `${value}` : value;
+  if (typeof text !== 'string' || !/^[1-9]\d*$/.test(text)) {
+    errors.push({ field, message: 'Choose a valid record.' });
+    return null;
+  }
+  try {
+    return BigInt(text);
+  } catch {
+    errors.push({ field, message: 'Choose a valid record.' });
+    return null;
+  }
+}
+
+export function validateSupplementalPostScriptRequest(body, postScript = null) {
+  const errors = [];
+  const postScriptId = positiveDatabaseId(body?.postScriptId ?? body?.post_script_id, 'postScriptId', errors);
+  const requestedIds = body?.vulnerabilityIds ?? body?.vulnerability_ids;
+  let vulnerabilityIds = [];
+  if (!Array.isArray(requestedIds) || requestedIds.length === 0) {
+    errors.push({ field: 'vulnerabilityIds', message: 'Select at least one finding.' });
+  } else if (requestedIds.length > MAX_SUPPLEMENTAL_POST_SCRIPT_TARGETS) {
+    errors.push({
+      field: 'vulnerabilityIds',
+      message: `Select no more than ${MAX_SUPPLEMENTAL_POST_SCRIPT_TARGETS} findings in one run.`,
+    });
+  } else {
+    vulnerabilityIds = requestedIds.flatMap((value, index) => {
+      const parsed = positiveDatabaseId(value, `vulnerabilityIds[${index}]`, errors);
+      return parsed === null ? [] : [parsed];
+    });
+    if (new Set(vulnerabilityIds.map((id) => id.toString())).size !== vulnerabilityIds.length) {
+      errors.push({ field: 'vulnerabilityIds', message: 'Each finding may only be selected once.' });
+    }
+  }
+
+  const providedExtra = body?.extra;
+  if (
+    providedExtra !== undefined &&
+    (providedExtra === null || typeof providedExtra !== 'object' || Array.isArray(providedExtra))
+  ) {
+    errors.push({ field: 'extra', message: 'Extra values must be an object.' });
+  }
+  const requiredExtraKeys = postScript ? extractExtraKeys(postScript.content) : [];
+  const extraSource =
+    providedExtra && typeof providedExtra === 'object' && !Array.isArray(providedExtra) ? providedExtra : {};
+  for (const key of requiredExtraKeys) {
+    const value = extraSource[key];
+    if (value === undefined || value === null || (typeof value === 'string' && value.trim() === '')) {
+      errors.push({
+        field: `extra.${key}`,
+        message: `Extra value "${key}" is required by the selected post-script.`,
+      });
+    }
+  }
+  if (errors.length) throw new ValidationError(errors);
+
+  const extra = {};
+  for (const key of requiredExtraKeys) extra[key] = extraSource[key];
+  return { postScriptId, vulnerabilityIds, requiredExtraKeys, extra };
+}
+
+function supplementalModelSelection(scan, body = {}, fallbackRun = null) {
+  const configuration =
+    scan?.configuration && typeof scan.configuration === 'object' && !Array.isArray(scan.configuration)
+      ? scan.configuration
+      : {};
+  const fallback = {
+    model:
+      fallbackRun?.model ?? configuration.post_processing_model ?? configuration.postProcessingModel ?? scan?.model,
+    model_provider:
+      fallbackRun?.modelProvider ??
+      configuration.post_processing_model_provider ??
+      configuration.postProcessingModelProvider ??
+      scan?.modelProvider,
+    harness:
+      fallbackRun?.harness ??
+      configuration.post_processing_harness ??
+      configuration.postProcessingHarness ??
+      scan?.harness,
+    thinking_effort:
+      fallbackRun?.thinkingEffort ??
+      configuration.post_processing_thinking_effort ??
+      configuration.postProcessingThinkingEffort ??
+      scan?.thinkingEffort,
+  };
+  return validateModelSelection({
+    model: body?.model ?? fallback.model,
+    model_provider: body?.model_provider ?? body?.modelProvider ?? fallback.model_provider,
+    harness: body?.harness ?? fallback.harness,
+    thinking_effort: body?.thinking_effort ?? body?.thinkingEffort ?? fallback.thinking_effort,
+  });
+}
+
+async function createSupplementalRunRecords(tx, scanId, postScript, vulnerabilityIds, extra, selection) {
+  const run = await tx.supplementalPostScriptRun.create({
+    data: {
+      scanId,
+      postScriptId: postScript.id,
+      postScriptName: postScript.name,
+      postScriptContent: postScript.content,
+      postScriptOutputFormat: postScript.outputFormat,
+      model: selection.model,
+      modelProvider: selection.modelProvider,
+      harness: selection.harness,
+      thinkingEffort: selection.thinkingEffort,
+      extra,
+      targetCount: vulnerabilityIds.length,
+    },
+  });
+  await tx.supplementalPostScriptTarget.createMany({
+    data: vulnerabilityIds.map((vulnerabilityId) => ({
+      runId: run.id,
+      scanId,
+      vulnerabilityId,
+    })),
+  });
+  const targets = await tx.supplementalPostScriptTarget.findMany({
+    where: { runId: run.id },
+    orderBy: { id: 'asc' },
+  });
+  return { kind: 'created', run, targets };
+}
+
+export async function createSupplementalPostScriptRun(tx, scanId, body, { assertAvailable } = {}) {
+  await lockScanForMutation(tx, scanId);
+  const scan = await tx.scan.findUnique({ where: { id: scanId } });
+  if (!scan) return { kind: 'scan-not-found' };
+  if (!SUPPLEMENTAL_POST_SCRIPT_SCAN_STATUSES.includes(scan.status)) {
+    return { kind: 'scan-active', status: scan.status };
+  }
+
+  const preliminary = validateSupplementalPostScriptRequest(body);
+  await lockPostScriptForScan(tx, preliminary.postScriptId);
+  const postScript = await tx.postScript.findUnique({ where: { id: preliminary.postScriptId } });
+  if (!postScript) return { kind: 'post-script-not-found' };
+  const valid = validateSupplementalPostScriptRequest(body, postScript);
+  const selection = supplementalModelSelection(scan, body);
+  if (typeof assertAvailable === 'function') await assertAvailable(selection);
+
+  const findings = await tx.vulnerability.findMany({
+    where: {
+      scanId,
+      id: { in: valid.vulnerabilityIds },
+      OR: [{ dedupeIsCanonical: true }, { dedupeIsCanonical: null }],
+    },
+    select: { id: true },
+  });
+  const foundIds = new Set(findings.map((finding) => finding.id.toString()));
+  const missingIds = valid.vulnerabilityIds.filter((id) => !foundIds.has(id.toString()));
+  if (missingIds.length) {
+    throw new ValidationError([
+      {
+        field: 'vulnerabilityIds',
+        message: 'One or more selected findings do not belong to this scan or are duplicate records.',
+      },
+    ]);
+  }
+
+  return createSupplementalRunRecords(tx, scanId, postScript, valid.vulnerabilityIds, valid.extra, selection);
+}
+
+export async function retrySupplementalPostScriptRun(tx, scanId, runId, body = {}, { assertAvailable } = {}) {
+  await lockScanForMutation(tx, scanId);
+  const scan = await tx.scan.findUnique({ where: { id: scanId } });
+  if (!scan) return { kind: 'scan-not-found' };
+  if (!SUPPLEMENTAL_POST_SCRIPT_SCAN_STATUSES.includes(scan.status)) {
+    return { kind: 'scan-active', status: scan.status };
+  }
+
+  await tx.$queryRaw`
+    SELECT id
+    FROM workflows.supplemental_post_script_runs
+    WHERE id = ${runId} AND scan_id = ${scanId}
+    FOR UPDATE
+  `;
+  const original = await tx.supplementalPostScriptRun.findFirst({ where: { id: runId, scanId } });
+  if (!original) return { kind: 'run-not-found' };
+  if (!['completed', 'completed_with_errors'].includes(original.status)) {
+    return { kind: 'run-active', status: original.status };
+  }
+
+  const failedTargets = await tx.supplementalPostScriptTarget.findMany({
+    where: { runId, scanId, status: 'failed' },
+    select: { vulnerabilityId: true },
+    orderBy: { id: 'asc' },
+  });
+  if (!failedTargets.length) return { kind: 'no-failures' };
+  const vulnerabilityIds = failedTargets.map((target) => target.vulnerabilityId);
+  const availableFindings = await tx.vulnerability.count({
+    where: {
+      scanId,
+      id: { in: vulnerabilityIds },
+      OR: [{ dedupeIsCanonical: true }, { dedupeIsCanonical: null }],
+    },
+  });
+  if (availableFindings !== vulnerabilityIds.length) {
+    throw new ValidationError([
+      { field: 'vulnerabilityIds', message: 'One or more failed findings are no longer available on this scan.' },
+    ]);
+  }
+
+  const selection = supplementalModelSelection(scan, body, original);
+  if (typeof assertAvailable === 'function') await assertAvailable(selection);
+  return createSupplementalRunRecords(
+    tx,
+    scanId,
+    {
+      id: original.postScriptId,
+      name: original.postScriptName,
+      content: original.postScriptContent,
+      outputFormat: original.postScriptOutputFormat,
+    },
+    vulnerabilityIds,
+    original.extra,
+    selection
+  );
+}
+
+export async function listSupplementalPostScriptRuns(db, scanId) {
+  const runs = await db.supplementalPostScriptRun.findMany({
+    where: { scanId },
+    orderBy: [{ insertedAt: 'desc' }, { id: 'desc' }],
+  });
+  if (!runs.length) return [];
+  const targets = await db.supplementalPostScriptTarget.findMany({
+    where: { runId: { in: runs.map((run) => run.id) } },
+    orderBy: { id: 'asc' },
+  });
+  const byRun = new Map();
+  for (const target of targets) {
+    const key = target.runId.toString();
+    if (!byRun.has(key)) byRun.set(key, []);
+    byRun.get(key).push(target);
+  }
+  return runs.map((run) => serializeSupplementalPostScriptRun(run, byRun.get(run.id.toString()) || []));
 }
 
 export async function serializedScanVulnerabilities(
@@ -358,6 +601,14 @@ export async function patchScanIfPresent(tx, scanId, body, { assertAvailable, av
     if (status !== existing.status && !USER_STATUS_TRANSITIONS[existing.status]?.has(status)) {
       throw invalidScanTransition(existing.status, status);
     }
+    if (status === 'pending' && existing.status !== 'pending') {
+      const supplementalWork = await tx.supplementalPostScriptTarget.count({
+        where: { scanId, status: { in: ['pending', 'running'] } },
+      });
+      if (supplementalWork > 0) {
+        return { kind: 'supplemental-in-use', supplementalWorkCount: supplementalWork };
+      }
+    }
     data.status = status;
     if (status === 'pending' && existing.status !== 'pending') {
       // Nullable Prisma JSON fields distinguish SQL NULL from the JSON scalar
@@ -417,12 +668,13 @@ export async function deleteScanIfSafe(tx, scanId) {
     return { kind: 'not-terminal', status: existing.status };
   }
 
-  const [runningStepCount, runningPostProcessCount] = await Promise.all([
+  const [runningStepCount, runningPostProcessCount, supplementalWorkCount] = await Promise.all([
     tx.stepMetadata.count({ where: { scanId, status: 'running' } }),
     tx.postProcessMetadata.count({ where: { scanId, status: 'running' } }),
+    tx.supplementalPostScriptTarget.count({ where: { scanId, status: { in: ['pending', 'running'] } } }),
   ]);
-  if (runningStepCount > 0 || runningPostProcessCount > 0) {
-    return { kind: 'in-use', runningStepCount, runningPostProcessCount };
+  if (runningStepCount > 0 || runningPostProcessCount > 0 || supplementalWorkCount > 0) {
+    return { kind: 'in-use', runningStepCount, runningPostProcessCount, supplementalWorkCount };
   }
 
   await deleteScanOwnedData(tx, scanId);
@@ -487,6 +739,70 @@ router.get('/:id/vulnerabilities', async (req, res, next) => {
     if (!scan) return res.status(404).json({ error: 'Scan not found.' });
     const includeDuplicates = req.query.includeDuplicates === '1' || req.query.includeDuplicates === 'true';
     res.json(await serializedScanVulnerabilities(id, { includeDuplicates }));
+  } catch (e) {
+    next(e);
+  }
+});
+
+// GET /api/scans/:id/supplemental-post-script-runs — durable history and progress.
+router.get('/:id/supplemental-post-script-runs', async (req, res, next) => {
+  try {
+    const id = BigInt(req.params.id);
+    const scan = await prisma.scan.findUnique({ where: { id }, select: { id: true } });
+    if (!scan) return res.status(404).json({ error: 'Scan not found.' });
+    res.json(await listSupplementalPostScriptRuns(prisma, id));
+  } catch (e) {
+    next(e);
+  }
+});
+
+// POST /api/scans/:id/supplemental-post-script-runs — queue one script for selected findings.
+router.post('/:id/supplemental-post-script-runs', async (req, res, next) => {
+  try {
+    const id = BigInt(req.params.id);
+    const result = await prisma.$transaction((tx) =>
+      createSupplementalPostScriptRun(tx, id, req.body || {}, {
+        assertAvailable: transactionModelAvailabilityChecker(tx),
+      })
+    );
+    if (result.kind === 'scan-not-found') return res.status(404).json({ error: 'Scan not found.' });
+    if (result.kind === 'post-script-not-found') return res.status(404).json({ error: 'Post-script not found.' });
+    if (result.kind === 'scan-active') {
+      return res.status(409).json({
+        error: `Cannot add post-processing while this scan is ${result.status}. Pause or stop it first.`,
+      });
+    }
+    res.status(201).json(serializeSupplementalPostScriptRun(result.run, result.targets));
+  } catch (e) {
+    next(e);
+  }
+});
+
+// POST /api/scans/:id/supplemental-post-script-runs/:runId/retry — requeue only failed findings.
+router.post('/:id/supplemental-post-script-runs/:runId/retry', async (req, res, next) => {
+  try {
+    const id = BigInt(req.params.id);
+    const runId = BigInt(req.params.runId);
+    const result = await prisma.$transaction((tx) =>
+      retrySupplementalPostScriptRun(tx, id, runId, req.body || {}, {
+        assertAvailable: transactionModelAvailabilityChecker(tx),
+      })
+    );
+    if (result.kind === 'scan-not-found' || result.kind === 'run-not-found') {
+      return res.status(404).json({ error: 'Supplemental post-script run not found.' });
+    }
+    if (result.kind === 'scan-active') {
+      return res.status(409).json({
+        error: `Cannot retry post-processing while this scan is ${result.status}. Pause or stop it first.`,
+      });
+    }
+    if (result.kind === 'run-active') {
+      return res.status(409).json({ error: `This supplemental run is still ${result.status}.` });
+    }
+    if (result.kind === 'no-failures') {
+      return res.status(409).json({ error: 'This supplemental run has no failed findings to retry.' });
+    }
+    res.status(201).json(serializeSupplementalPostScriptRun(result.run, result.targets));
   } catch (e) {
     next(e);
   }
@@ -803,6 +1119,11 @@ router.patch('/:id', async (req, res, next) => {
     const body = req.body || {};
     const result = await prisma.$transaction((tx) => patchScanIfPresent(tx, id, body));
     if (result.kind === 'not-found') return res.status(404).json({ error: 'Scan not found.' });
+    if (result.kind === 'supplemental-in-use') {
+      return res.status(409).json({
+        error: 'Wait for supplemental post-script work to finish before resuming this scan.',
+      });
+    }
     res.json(await assembleScan(result.scan));
   } catch (e) {
     next(e);

@@ -1166,12 +1166,13 @@ def test_database_releases_orphaned_running_jobs_even_when_scan_is_active():
         error="interrupted",
     )
 
-    assert counts == {"step": 1, "post": 1}
+    assert counts == {"step": 1, "post": 1, "supplemental": 0}
     release_queries = "\n".join(query for query, _params in conn.queries[:2])
     assert "s.status NOT IN" not in release_queries
     assert "m.updated_at < %(engine_started_at)s" in release_queries
     assert "p.updated_at < %(engine_started_at)s" in release_queries
     assert "post_process_metadata_id = ANY" in conn.queries[2][0]
+    assert "supplemental_post_script_targets" in conn.queries[3][0]
 
 
 def test_metadata_claims_take_scan_update_lock_and_stop_if_scan_was_deleted():

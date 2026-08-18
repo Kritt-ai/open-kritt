@@ -13,11 +13,14 @@ import {
   assertModelOverridesAvailable,
   deleteScanIfSafe,
   deleteScanOwnedData,
+  createSupplementalPostScriptRun,
+  retrySupplementalPostScriptRun,
   lockScanConfigurationResources,
   patchScanIfPresent,
   requiredScanExtraKeys,
   scanLaunchDecision,
   validateScanRuntimeUpdate,
+  validateSupplementalPostScriptRequest,
 } from '../src/routes/scans.js';
 import { deleteWorkflowIfUnused, replaceWorkflowIfUnused, workflowInUseResponse } from '../src/routes/workflows.js';
 
@@ -205,6 +208,8 @@ test('scan cleanup deletes every owned record in dependency order', async () => 
     },
     triage: deletion('triage'),
     vulnerabilityEnrichment: deletion('vulnerabilityEnrichment'),
+    supplementalPostScriptTarget: deletion('supplementalPostScriptTarget'),
+    supplementalPostScriptRun: deletion('supplementalPostScriptRun'),
     stepMetadata: deletion('stepMetadata'),
     postProcessMetadata: deletion('postProcessMetadata'),
     stepResult: deletion('stepResult'),
@@ -215,7 +220,17 @@ test('scan cleanup deletes every owned record in dependency order', async () => 
 
   assert.deepEqual(
     calls.map((call) => call.name),
-    ['triage', 'vulnerabilityEnrichment', 'stepMetadata', 'postProcessMetadata', 'vulnerability', 'stepResult', 'scan']
+    [
+      'triage',
+      'vulnerabilityEnrichment',
+      'supplementalPostScriptTarget',
+      'supplementalPostScriptRun',
+      'stepMetadata',
+      'postProcessMetadata',
+      'vulnerability',
+      'stepResult',
+      'scan',
+    ]
   );
   assert.deepEqual(calls[0].args, { where: { vulnerabilityId: { in: [31n, 32n] } } });
   for (const call of calls.slice(1)) {
@@ -230,6 +245,11 @@ test('scan deletion requires a terminal status and no active engine metadata', a
     vulnerability: { findMany: async () => [], deleteMany: async () => mutations.push('vulnerability') },
     triage: { deleteMany: async () => mutations.push('triage') },
     vulnerabilityEnrichment: { deleteMany: async () => mutations.push('enrichment') },
+    supplementalPostScriptTarget: {
+      count: async () => 0,
+      deleteMany: async () => mutations.push('supplementalTarget'),
+    },
+    supplementalPostScriptRun: { deleteMany: async () => mutations.push('supplementalRun') },
     stepResult: { deleteMany: async () => mutations.push('stepResult') },
   };
   const nonTerminal = {
@@ -250,8 +270,26 @@ test('scan deletion requires a terminal status and no active engine metadata', a
     kind: 'in-use',
     runningStepCount: 1,
     runningPostProcessCount: 0,
+    supplementalWorkCount: 0,
   });
   assert.deepEqual(mutations, []);
+
+  const supplemental = {
+    ...base,
+    scan: { findUnique: async () => ({ id: 9n, status: 'completed' }), delete: async () => mutations.push('scan') },
+    stepMetadata: { count: async () => 0, deleteMany: async () => mutations.push('stepMetadata') },
+    postProcessMetadata: { count: async () => 0, deleteMany: async () => mutations.push('postMetadata') },
+    supplementalPostScriptTarget: {
+      ...base.supplementalPostScriptTarget,
+      count: async () => 1,
+    },
+  };
+  assert.deepEqual(await deleteScanIfSafe(supplemental, 9n), {
+    kind: 'in-use',
+    runningStepCount: 0,
+    runningPostProcessCount: 0,
+    supplementalWorkCount: 1,
+  });
 
   const paused = {
     ...base,
@@ -471,6 +509,7 @@ test('runtime PATCH verifies override keys against the locked scan workflow', as
         return { ...current, ...data };
       },
     },
+    supplementalPostScriptTarget: { count: async () => 0 },
   };
 
   const result = await patchScanIfPresent(
@@ -629,6 +668,7 @@ test('failed scans resume through pending and establish a new error-history boun
         return { ...existing, ...data };
       },
     },
+    supplementalPostScriptTarget: { count: async () => 0 },
   };
 
   const result = await patchScanIfPresent(tx, 8n, { status: 'pending' }, { assertAvailable: async () => {} });
@@ -638,6 +678,22 @@ test('failed scans resume through pending and establish a new error-history boun
   assert.equal(calls[1].data.status, 'pending');
   assert.equal(calls[1].data.reasoning, Prisma.DbNull);
   assert.ok(calls[1].data.lastResumedAt instanceof Date);
+});
+
+test('scans cannot resume while supplemental findings are queued or running', async () => {
+  const tx = {
+    $queryRaw: async () => [],
+    scan: {
+      findUnique: async () => ({ id: 8n, status: 'stopped' }),
+      update: async () => assert.fail('a scan with supplemental work must not resume'),
+    },
+    supplementalPostScriptTarget: { count: async () => 2 },
+  };
+
+  assert.deepEqual(await patchScanIfPresent(tx, 8n, { status: 'pending' }, { assertAvailable: async () => {} }), {
+    kind: 'supplemental-in-use',
+    supplementalWorkCount: 2,
+  });
 });
 
 test('scan status updates accept only user-owned lifecycle transitions', async () => {
@@ -718,6 +774,215 @@ test('scan extras include workflow and selected post-script prompt requirements'
     'primary_post_script_key',
     'secondary_post_script_key',
   ]);
+});
+
+test('supplemental post-script requests require unique findings and every referenced extra value', () => {
+  assert.throws(
+    () =>
+      validateSupplementalPostScriptRequest(
+        { postScriptId: '4', vulnerabilityIds: ['31', '31'], extra: {} },
+        { content: 'Use {{extra.network}}' }
+      ),
+    (error) => {
+      assert.ok(error instanceof ValidationError);
+      assert.ok(error.errors.some((item) => item.field === 'vulnerabilityIds'));
+      assert.ok(error.errors.some((item) => item.field === 'extra.network'));
+      return true;
+    }
+  );
+
+  assert.deepEqual(
+    validateSupplementalPostScriptRequest(
+      {
+        postScriptId: '4',
+        vulnerabilityIds: ['31', 32],
+        extra: { network: 'mainnet', ignored: 'not persisted' },
+      },
+      { content: 'Use {{extra.network}} twice: {{ extra.network }}' }
+    ),
+    {
+      postScriptId: 4n,
+      vulnerabilityIds: [31n, 32n],
+      requiredExtraKeys: ['network'],
+      extra: { network: 'mainnet' },
+    }
+  );
+});
+
+test('supplemental creation snapshots the script and queues only canonical findings from the locked scan', async () => {
+  const calls = [];
+  const now = new Date();
+  const tx = {
+    $queryRaw: async () => calls.push('lock'),
+    scan: {
+      findUnique: async () => ({
+        id: 9n,
+        status: 'completed',
+        model: 'gpt-5-codex',
+        modelProvider: 'codex',
+        harness: 'codex',
+        thinkingEffort: 'high',
+        configuration: {},
+      }),
+    },
+    postScript: {
+      findUnique: async () => ({
+        id: 4n,
+        name: 'Network report',
+        content: 'Inspect {{repo_full}} on {{extra.network}}',
+        outputFormat: '{"_reserved_report":"string"}',
+      }),
+    },
+    vulnerability: {
+      findMany: async (args) => {
+        calls.push({ findingQuery: args });
+        return [{ id: 31n }, { id: 32n }];
+      },
+    },
+    supplementalPostScriptRun: {
+      create: async ({ data }) => {
+        calls.push({ run: data });
+        return { id: 71n, status: 'queued', completedCount: 0, failedCount: 0, ...data, insertedAt: now };
+      },
+    },
+    supplementalPostScriptTarget: {
+      createMany: async ({ data }) => calls.push({ targets: data }),
+      findMany: async () => [
+        { id: 81n, runId: 71n, vulnerabilityId: 31n, status: 'pending', attempts: 0 },
+        { id: 82n, runId: 71n, vulnerabilityId: 32n, status: 'pending', attempts: 0 },
+      ],
+    },
+  };
+
+  const result = await createSupplementalPostScriptRun(
+    tx,
+    9n,
+    {
+      postScriptId: '4',
+      vulnerabilityIds: ['31', '32'],
+      extra: { network: 'mainnet' },
+    },
+    { assertAvailable: async (selection) => calls.push({ selection }) }
+  );
+
+  assert.equal(result.kind, 'created');
+  assert.deepEqual(calls.slice(0, 2), ['lock', 'lock']);
+  assert.deepEqual(calls.find((call) => call.selection).selection, {
+    model: 'gpt-5-codex',
+    modelProvider: 'codex',
+    harness: 'codex',
+    thinkingEffort: 'high',
+  });
+  assert.deepEqual(calls.find((call) => call.run).run, {
+    scanId: 9n,
+    postScriptId: 4n,
+    postScriptName: 'Network report',
+    postScriptContent: 'Inspect {{repo_full}} on {{extra.network}}',
+    postScriptOutputFormat: '{"_reserved_report":"string"}',
+    model: 'gpt-5-codex',
+    modelProvider: 'codex',
+    harness: 'codex',
+    thinkingEffort: 'high',
+    extra: { network: 'mainnet' },
+    targetCount: 2,
+  });
+  assert.deepEqual(
+    calls.find((call) => call.targets).targets.map((target) => target.vulnerabilityId),
+    [31n, 32n]
+  );
+});
+
+test('supplemental retry clones the snapshot and extras but queues only failed findings with the chosen model', async () => {
+  const created = [];
+  const tx = {
+    $queryRaw: async () => [],
+    scan: {
+      findUnique: async () => ({
+        id: 9n,
+        status: 'completed',
+        model: 'scan-model',
+        modelProvider: 'codex',
+        harness: 'codex',
+        thinkingEffort: 'medium',
+        configuration: {},
+      }),
+    },
+    supplementalPostScriptRun: {
+      findFirst: async () => ({
+        id: 71n,
+        scanId: 9n,
+        status: 'completed_with_errors',
+        postScriptId: 4n,
+        postScriptName: 'Network report',
+        postScriptContent: 'Inspect {{extra.network}}',
+        postScriptOutputFormat: '{"note":"string"}',
+        model: 'old-model',
+        modelProvider: 'codex',
+        harness: 'codex',
+        thinkingEffort: 'medium',
+        extra: { network: 'mainnet' },
+      }),
+      create: async ({ data }) => {
+        created.push(data);
+        return {
+          id: 72n,
+          status: 'queued',
+          completedCount: 0,
+          failedCount: 0,
+          insertedAt: new Date(),
+          ...data,
+        };
+      },
+    },
+    supplementalPostScriptTarget: {
+      findMany: async (args) =>
+        args.select
+          ? [{ vulnerabilityId: 31n }, { vulnerabilityId: 33n }]
+          : [
+              { id: 91n, runId: 72n, vulnerabilityId: 31n, status: 'pending', attempts: 0 },
+              { id: 92n, runId: 72n, vulnerabilityId: 33n, status: 'pending', attempts: 0 },
+            ],
+      createMany: async ({ data }) => created.push({ targets: data }),
+    },
+    vulnerability: { count: async () => 2 },
+  };
+
+  const result = await retrySupplementalPostScriptRun(tx, 9n, 71n, {
+    model: 'retry-model',
+    model_provider: 'openrouter',
+    harness: 'codex',
+    thinking_effort: 'high',
+  });
+
+  assert.equal(result.kind, 'created');
+  assert.deepEqual(created[0], {
+    scanId: 9n,
+    postScriptId: 4n,
+    postScriptName: 'Network report',
+    postScriptContent: 'Inspect {{extra.network}}',
+    postScriptOutputFormat: '{"note":"string"}',
+    model: 'retry-model',
+    modelProvider: 'openrouter',
+    harness: 'codex',
+    thinkingEffort: 'high',
+    extra: { network: 'mainnet' },
+    targetCount: 2,
+  });
+  assert.deepEqual(
+    created[1].targets.map((target) => target.vulnerabilityId),
+    [31n, 33n]
+  );
+});
+
+test('supplemental creation rejects scans that can still execute automatically', async () => {
+  const tx = {
+    $queryRaw: async () => [],
+    scan: { findUnique: async () => ({ id: 9n, status: 'running' }) },
+  };
+  assert.deepEqual(await createSupplementalPostScriptRun(tx, 9n, {}), {
+    kind: 'scan-active',
+    status: 'running',
+  });
 });
 
 test('post-script deletion usage includes primary and secondary configuration ids', async () => {

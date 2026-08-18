@@ -394,6 +394,8 @@ function serializeEnrichment(e) {
     result: e.result && typeof e.result === 'object' ? e.result : null,
     stub: Boolean(e.stub),
     stubExplanation: e.stubExplanation ?? null,
+    supplementalRunId: e.supplementalRunId?.toString() ?? null,
+    supplemental: e.supplementalRunId !== null && e.supplementalRunId !== undefined,
     insertedAt: e.insertedAt,
     updatedAt: e.updatedAt,
   };
@@ -403,6 +405,7 @@ export function serializeVulnerability(v, options = {}) {
   const answer = v.jsonAnswer && typeof v.jsonAnswer === 'object' ? v.jsonAnswer : {};
   const post = v.postScriptAnswer && typeof v.postScriptAnswer === 'object' ? v.postScriptAnswer : null;
   const enrichments = (options.enrichments || []).map(serializeEnrichment);
+  const supplementalEnrichments = enrichments.filter((enrichment) => enrichment.supplemental);
   return {
     id: v.id.toString(),
     scanId: v.scanId.toString(),
@@ -446,9 +449,46 @@ export function serializeVulnerability(v, options = {}) {
       rankedAt: v.bountyRankTs ?? null,
     },
     enrichments,
+    supplementalPostScripts: {
+      count: supplementalEnrichments.length,
+      runIds: [...new Set(supplementalEnrichments.map((enrichment) => enrichment.supplementalRunId))],
+      lastRunAt: supplementalEnrichments.at(-1)?.insertedAt ?? null,
+    },
     comments: v.comments ?? null,
     // User review: 1 = interesting, 0 = not interesting, null = unmarked.
     interesting: v.interesting === null || v.interesting === undefined ? null : Number(v.interesting),
     insertedAt: v.insertedAt,
+  };
+}
+
+export function serializeSupplementalPostScriptRun(run, targets = []) {
+  return {
+    id: run.id.toString(),
+    scanId: run.scanId.toString(),
+    postScriptId: run.postScriptId.toString(),
+    postScriptName: run.postScriptName,
+    model: run.model ?? null,
+    modelProvider: run.modelProvider ?? null,
+    harness: run.harness ?? null,
+    thinkingEffort: run.thinkingEffort ?? null,
+    status: run.status,
+    targetCount: run.targetCount,
+    completedCount: run.completedCount,
+    failedCount: run.failedCount,
+    pendingCount: Math.max(0, run.targetCount - run.completedCount - run.failedCount),
+    startedAt: run.startedAt ?? null,
+    completedAt: run.completedAt ?? null,
+    insertedAt: run.insertedAt,
+    updatedAt: run.updatedAt,
+    targets: targets.map((target) => ({
+      id: target.id.toString(),
+      vulnerabilityId: target.vulnerabilityId.toString(),
+      status: target.status,
+      attempts: target.attempts,
+      error: publicText(target.error, 2000),
+      enrichmentId: target.enrichmentId?.toString() ?? null,
+      startedAt: target.startedAt ?? null,
+      completedAt: target.completedAt ?? null,
+    })),
   };
 }

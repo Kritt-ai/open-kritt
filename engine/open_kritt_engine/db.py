@@ -876,6 +876,239 @@ class Database:
             (scan_id,),
         ).fetchall()
 
+    def claim_supplemental_post_script_target(self, conn) -> dict[str, Any] | None:
+        """Claim one ready supplemental finding without changing the scan status."""
+
+        candidate = conn.execute(
+            """
+            SELECT t.id, t.scan_id
+            FROM workflows.supplemental_post_script_targets t
+            INNER JOIN workflows.supplemental_post_script_runs r ON r.id = t.run_id
+            INNER JOIN public.scans s ON s.id = t.scan_id
+            WHERE t.status = 'pending'
+              AND t.available_at <= now()
+              AND r.status IN ('queued', 'running')
+              AND s.status IN ('paused', 'completed', 'stopped', 'failed')
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM workflows.step_metadata sm
+                  WHERE sm.scan_id = t.scan_id
+                    AND sm.status = 'running'
+                    AND coalesce(sm.kind, 'step') = 'step'
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM workflows.post_process_metadata pm
+                  WHERE pm.scan_id = t.scan_id
+                    AND pm.status = 'running'
+                    AND pm.supplemental_run_id IS NULL
+              )
+            ORDER BY r.inserted_at ASC, r.id ASC, t.id ASC
+            FOR UPDATE OF t SKIP LOCKED
+            LIMIT 1
+            """
+        ).fetchone()
+        if not candidate:
+            return None
+
+        # Share-lock the scan so a resume/delete cannot race the target claim.
+        scan = conn.execute(
+            """
+            SELECT *
+            FROM public.scans
+            WHERE id = %s
+              AND status IN ('paused', 'completed', 'stopped', 'failed')
+            FOR SHARE
+            """,
+            (_to_int(candidate["scan_id"]),),
+        ).fetchone()
+        if not scan:
+            return None
+
+        target = conn.execute(
+            """
+            UPDATE workflows.supplemental_post_script_targets
+            SET status = 'running',
+                attempts = attempts + 1,
+                error = NULL,
+                started_at = coalesce(started_at, now()),
+                updated_at = now()
+            WHERE id = %s AND status = 'pending'
+            RETURNING *
+            """,
+            (_to_int(candidate["id"]),),
+        ).fetchone()
+        if not target:
+            return None
+        run = conn.execute(
+            "SELECT * FROM workflows.supplemental_post_script_runs WHERE id = %s",
+            (_to_int(target["run_id"]),),
+        ).fetchone()
+        vulnerability = conn.execute(
+            """
+            SELECT * FROM workflows.vulnerabilities
+            WHERE id = %s AND scan_id = %s
+            """,
+            (_to_int(target["vulnerability_id"]), _to_int(target["scan_id"])),
+        ).fetchone()
+        if not run or not vulnerability:
+            conn.execute(
+                """
+                UPDATE workflows.supplemental_post_script_targets
+                SET status = 'failed', error = %s, completed_at = now(), updated_at = now()
+                WHERE id = %s
+                """,
+                ("The selected scan or finding no longer exists.", _to_int(target["id"])),
+            )
+            self.refresh_supplemental_post_script_run(conn, _to_int(target["run_id"]))
+            return None
+        conn.execute(
+            """
+            UPDATE workflows.supplemental_post_script_runs
+            SET status = 'running', started_at = coalesce(started_at, now()), updated_at = now()
+            WHERE id = %s AND status = 'queued'
+            """,
+            (_to_int(run["id"]),),
+        )
+        run["status"] = "running"
+        return {"target": target, "run": run, "scan": scan, "vulnerability": vulnerability}
+
+    def create_supplemental_post_process_metadata(
+        self,
+        conn,
+        *,
+        target: dict[str, Any],
+        run: dict[str, Any],
+        scan: dict[str, Any],
+        prompt_template: str,
+        model: str,
+        harness: str,
+        thinking_effort: str | None,
+        model_provider: str | None,
+        run_started_at: datetime,
+    ) -> int:
+        row = conn.execute(
+            """
+            INSERT INTO workflows.post_process_metadata (
+                scan_id, workflow_id, post_script_id, post_script_name, vulnerability_id,
+                supplemental_run_id, kind, target_vulnerability_ids, status, phase,
+                prompt_template, prompt_filled, run_started_at, run_time_ms,
+                model, harness, thinking_effort, model_provider
+            )
+            VALUES (
+                %(scan_id)s, %(workflow_id)s, %(post_script_id)s, %(post_script_name)s, %(vulnerability_id)s,
+                %(supplemental_run_id)s, 'supplemental_post_script', %(target_ids)s, 'running',
+                'building_workspace', %(prompt_template)s, '', %(run_started_at)s, 0,
+                %(model)s, %(harness)s, %(thinking_effort)s, %(model_provider)s
+            )
+            RETURNING id
+            """,
+            {
+                "scan_id": _to_int(scan["id"]),
+                "workflow_id": _to_int(scan["workflow_id"]),
+                "post_script_id": _to_int(run["post_script_id"]),
+                "post_script_name": run["post_script_name"],
+                "vulnerability_id": _to_int(target["vulnerability_id"]),
+                "supplemental_run_id": _to_int(run["id"]),
+                "target_ids": [_to_int(target["vulnerability_id"])],
+                "prompt_template": prompt_template,
+                "run_started_at": run_started_at,
+                "model": model,
+                "harness": harness,
+                "thinking_effort": thinking_effort,
+                "model_provider": model_provider,
+            },
+        ).fetchone()
+        metadata_id = _to_int(row["id"])
+        conn.execute(
+            """
+            UPDATE workflows.supplemental_post_script_targets
+            SET post_process_metadata_id = %s, updated_at = now()
+            WHERE id = %s AND status = 'running'
+            """,
+            (metadata_id, _to_int(target["id"])),
+        )
+        self.mirror_post_process_metadata(conn, metadata_id)
+        return metadata_id
+
+    def refresh_supplemental_post_script_run(self, conn, run_id: int) -> dict[str, Any] | None:
+        return conn.execute(
+            """
+            WITH counts AS (
+                SELECT
+                    count(*) FILTER (WHERE status = 'completed')::integer AS completed_count,
+                    count(*) FILTER (WHERE status = 'failed')::integer AS failed_count,
+                    count(*) FILTER (WHERE status IN ('pending', 'running'))::integer AS open_count
+                FROM workflows.supplemental_post_script_targets
+                WHERE run_id = %(run_id)s
+            )
+            UPDATE workflows.supplemental_post_script_runs r
+            SET completed_count = counts.completed_count,
+                failed_count = counts.failed_count,
+                status = CASE
+                    WHEN counts.open_count > 0 THEN 'running'
+                    WHEN counts.failed_count > 0 THEN 'completed_with_errors'
+                    ELSE 'completed'
+                END,
+                completed_at = CASE WHEN counts.open_count = 0 THEN coalesce(r.completed_at, now()) ELSE NULL END,
+                updated_at = now()
+            FROM counts
+            WHERE r.id = %(run_id)s
+            RETURNING r.*
+            """,
+            {"run_id": run_id},
+        ).fetchone()
+
+    def complete_supplemental_post_script_target(self, conn, *, target_id: int, enrichment_id: int) -> bool:
+        row = conn.execute(
+            """
+            UPDATE workflows.supplemental_post_script_targets
+            SET status = 'completed', enrichment_id = %s, error = NULL,
+                completed_at = now(), updated_at = now()
+            WHERE id = %s AND status = 'running'
+            RETURNING run_id
+            """,
+            (enrichment_id, target_id),
+        ).fetchone()
+        if not row:
+            return False
+        self.refresh_supplemental_post_script_run(conn, _to_int(row["run_id"]))
+        return True
+
+    def fail_supplemental_post_script_target(self, conn, *, target_id: int, error: str) -> bool:
+        row = conn.execute(
+            """
+            UPDATE workflows.supplemental_post_script_targets
+            SET status = 'failed', error = %s, completed_at = now(), updated_at = now()
+            WHERE id = %s AND status = 'running'
+            RETURNING run_id
+            """,
+            (error, target_id),
+        ).fetchone()
+        if not row:
+            return False
+        self.refresh_supplemental_post_script_run(conn, _to_int(row["run_id"]))
+        return True
+
+    def defer_supplemental_post_script_target(
+        self, conn, *, target_id: int, error: str, retry_after_seconds: float
+    ) -> bool:
+        row = conn.execute(
+            """
+            UPDATE workflows.supplemental_post_script_targets
+            SET status = 'pending', error = %s,
+                available_at = now() + make_interval(secs => %s::double precision),
+                post_process_metadata_id = NULL, updated_at = now()
+            WHERE id = %s AND status = 'running'
+            RETURNING run_id
+            """,
+            (error, max(0.0, float(retry_after_seconds)), target_id),
+        ).fetchone()
+        if not row:
+            return False
+        self.refresh_supplemental_post_script_run(conn, _to_int(row["run_id"]))
+        return True
+
     def count_running_post_process(self, conn, scan_id: int, kind: str | None = None) -> int:
         params: list[Any] = [scan_id]
         kind_sql = ""
@@ -1069,7 +1302,8 @@ class Database:
             INSERT INTO workflows.step_metadata (
                 scan_id, workflow_id, step_id, prev_id, prev_table, repeat_run,
                 status, phase, error, kind, post_process_metadata_id, post_script_id,
-                post_script_name, vulnerability_id, target_vulnerability_ids, batch_index,
+                post_script_name, vulnerability_id, supplemental_run_id,
+                target_vulnerability_ids, batch_index,
                 prompt_template, prompt_filled, output_json, checked_out_commit,
                 run_started_at, run_time_ms, raw_token_usage, token_count_cached_input,
                 token_count_input, token_count_output, token_count_reasoning_output,
@@ -1092,6 +1326,7 @@ class Database:
                 p.post_script_id,
                 p.post_script_name,
                 p.vulnerability_id,
+                p.supplemental_run_id,
                 p.target_vulnerability_ids,
                 p.batch_index,
                 p.prompt_template,
@@ -1134,6 +1369,7 @@ class Database:
                 post_script_id = EXCLUDED.post_script_id,
                 post_script_name = EXCLUDED.post_script_name,
                 vulnerability_id = EXCLUDED.vulnerability_id,
+                supplemental_run_id = EXCLUDED.supplemental_run_id,
                 target_vulnerability_ids = EXCLUDED.target_vulnerability_ids,
                 batch_index = EXCLUDED.batch_index,
                 prompt_template = EXCLUDED.prompt_template,
@@ -1321,7 +1557,40 @@ class Database:
         result: dict[str, Any] | None,
         stub: bool,
         stub_explanation: str | None,
+        supplemental_run_id: int | None = None,
     ) -> int:
+        if supplemental_run_id is not None:
+            row = conn.execute(
+                """
+                INSERT INTO workflows.vulnerability_enrichments (
+                    scan_id, vulnerability_id, post_script_id, post_script_name,
+                    result, stub, stub_explanation, supplemental_run_id
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (supplemental_run_id, vulnerability_id)
+                    WHERE supplemental_run_id IS NOT NULL
+                DO UPDATE SET
+                    scan_id = EXCLUDED.scan_id,
+                    post_script_id = EXCLUDED.post_script_id,
+                    post_script_name = EXCLUDED.post_script_name,
+                    result = EXCLUDED.result,
+                    stub = EXCLUDED.stub,
+                    stub_explanation = EXCLUDED.stub_explanation,
+                    updated_at = now()
+                RETURNING id
+                """,
+                (
+                    scan_id,
+                    vulnerability_id,
+                    post_script_id,
+                    post_script_name,
+                    _json(result),
+                    stub,
+                    stub_explanation,
+                    supplemental_run_id,
+                ),
+            ).fetchone()
+            return _to_int(row["id"])
         row = conn.execute(
             """
             INSERT INTO workflows.vulnerability_enrichments (
@@ -1330,6 +1599,7 @@ class Database:
             )
             VALUES (%s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (vulnerability_id, post_script_id)
+                WHERE supplemental_run_id IS NULL
             DO UPDATE SET
                 scan_id = EXCLUDED.scan_id,
                 post_script_name = EXCLUDED.post_script_name,
@@ -1728,7 +1998,24 @@ class Database:
                 {"post_ids": post_ids, "error": error},
             )
 
-        return {"step": len(step_rows), "post": len(post_rows)}
+        supplemental_rows = conn.execute(
+            """
+            UPDATE workflows.supplemental_post_script_targets
+            SET status = 'pending',
+                error = %(error)s,
+                post_process_metadata_id = NULL,
+                available_at = now(),
+                updated_at = now()
+            WHERE status = 'running'
+              AND updated_at < %(engine_started_at)s
+            RETURNING run_id
+            """,
+            {"engine_started_at": engine_started_at, "error": error},
+        ).fetchall()
+        for run_id in {_to_int(row["run_id"]) for row in supplemental_rows}:
+            self.refresh_supplemental_post_script_run(conn, run_id)
+
+        return {"step": len(step_rows), "post": len(post_rows), "supplemental": len(supplemental_rows)}
 
     def load_artifact_cleanup_state(
         self,
