@@ -636,6 +636,11 @@ a {
   background: var(--run-bg);
 }
 
+.account-provider-mark-xai {
+  color: var(--depth-1);
+  background: var(--depth-1-bg);
+}
+
 .account-status-badge,
 .account-kind {
   display: inline-flex;

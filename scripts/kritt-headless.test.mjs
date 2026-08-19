@@ -293,6 +293,34 @@ test('interactive scan creation asks workflow and post-scripts first and submits
   ]);
 });
 
+test('interactive scan creation supports xAI and Grok Build without a cached catalog', async (t) => {
+  const rootDir = await temporaryProject(t);
+  const client = scanCreationClient();
+  client.modelProviders = async () => ({ providers: ['xai'] });
+  client.modelCatalog = async () => ({ providers: [] });
+  const prompter = new ScanPrompter();
+  const originalSelect = prompter.select.bind(prompter);
+  const originalAsk = prompter.ask.bind(prompter);
+  prompter.select = async (question, items) => {
+    if (question.endsWith('Model provider')) return 'xai';
+    if (question.endsWith('Harness')) return 'grok-build';
+    if (question.endsWith('Thinking effort') || question === 'Post-processing thinking effort') return 'xhigh';
+    return originalSelect(question, items);
+  };
+  prompter.ask = async (question, options) => {
+    if (question.endsWith('Exact model ID')) return 'grok-4.6';
+    return originalAsk(question, options);
+  };
+
+  await createScanInteractively({ client, prompter, io: testIo(), rootDir });
+
+  assert.equal(client.calls[0].model, 'grok-4.6');
+  assert.equal(client.calls[0].model_provider, 'xai');
+  assert.equal(client.calls[0].harness, 'grok-build');
+  assert.equal(client.calls[0].thinking_effort, 'xhigh');
+  assert.equal(client.calls[0].post_processing_thinking_effort, 'xhigh');
+});
+
 test('interactive scan creation handles the backend launch-policy choice', async (t) => {
   const rootDir = await temporaryProject(t);
   const client = scanCreationClient();

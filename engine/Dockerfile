@@ -25,13 +25,16 @@ RUN mkdir -p /run/open-kritt-secrets \
     && ln -s /run/open-kritt-secrets/credentials /credentials \
     && ln -s /run/open-kritt-secrets/codex-accounts /codex-accounts \
     && ln -s /run/open-kritt-secrets/claude-accounts /claude-accounts \
+    && ln -s /run/open-kritt-secrets/grok-accounts /grok-accounts \
     && ln -s /run/open-kritt-secrets/codex-home-source /codex-home-source \
     && ln -s /run/open-kritt-secrets/local-repos /local_repos
 
 # Tool-enabled scans run as root inside disposable per-job containers. Keep
-# Cursor in a shared, checksummed image path so every runner can invoke it.
+# Cursor and Grok Build in shared, checksummed image paths so every runner can
+# invoke them.
 ARG TARGETARCH
 ARG CURSOR_AGENT_VERSION=2026.07.09-a3815c0
+ARG GROK_BUILD_VERSION=1.0.5
 RUN case "${TARGETARCH}" in \
       amd64) cursor_arch=x64; cursor_sha256=c7c1f32249cedb99cc20cd4eed1f9308dc2299a78c283bbc6efd6d658cd4977e ;; \
       arm64) cursor_arch=arm64; cursor_sha256=11b2b6801136a11a3632a4b1080ea3bfc7d97d0a68382be9ede1faf5333207fb ;; \
@@ -43,7 +46,17 @@ RUN case "${TARGETARCH}" in \
     && tar --strip-components=1 -xzf /tmp/cursor-agent.tar.gz -C "/opt/cursor-agent/versions/${CURSOR_AGENT_VERSION}" \
     && ln -s "/opt/cursor-agent/versions/${CURSOR_AGENT_VERSION}/cursor-agent" /usr/local/bin/agent \
     && ln -s "/opt/cursor-agent/versions/${CURSOR_AGENT_VERSION}/cursor-agent" /usr/local/bin/cursor-agent \
-    && rm /tmp/cursor-agent.tar.gz
+    && rm /tmp/cursor-agent.tar.gz \
+    && case "${TARGETARCH}" in \
+      amd64) grok_arch=linux-x86_64; grok_sha256=9ba87444e1819e8f6104adbbf4676a870c204380aa5c3e1c38a926c4ea677238 ;; \
+      arm64) grok_arch=linux-aarch64; grok_sha256=1c1fe67d7c35497fb09f44a451f57acc3787add4c9aea2c56f5c7c75dc5ffcf1 ;; \
+      *) echo "unsupported Grok Build architecture: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL "https://x.ai/cli/grok-${GROK_BUILD_VERSION}-${grok_arch}" -o /tmp/grok \
+    && echo "${grok_sha256}  /tmp/grok" | sha256sum -c - \
+    && install -m 0755 /tmp/grok /usr/local/bin/grok \
+    && rm /tmp/grok \
+    && grok --version
 
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 

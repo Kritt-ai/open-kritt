@@ -155,7 +155,7 @@ model Scan {
   agentSkillIds BigInt[] @default([]) @map("agent_skill_ids")
   configuration Json     @map("configuration")
   model         String
-  modelProvider String  @default("openrouter") @map("model_provider") // codex, claude, openrouter
+  modelProvider String  @default("openrouter") @map("model_provider") // codex, claude, openrouter, xai
   harness       String
   thinkingEffort String? @map("thinking_effort") // default, low, medium, high, xhigh, max, ultra
   // Optional depth-keyed model tuples. The top-level tuple remains the fallback

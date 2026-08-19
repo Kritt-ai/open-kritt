@@ -21,8 +21,9 @@ disclosure process in [SECURITY.md](../SECURITY.md).
 
 Flow: UI → backend (create workflow/scan) → Postgres queue → **engine** checks out the
 target repo (+ dependency repos), builds a workspace, and runs each workflow step through
-an AI **harness** (`codex` / `claude-code`), which sends repository content to the
-**configured model/provider endpoint** → results are written back to Postgres → UI.
+an AI **harness** (`codex` / `claude-code` / `grok-build`), which sends repository
+content to the **configured model/provider endpoint** → results are written back to
+Postgres → UI.
 
 Workflow and post-script generation uses a separate Postgres queue. The natural-language
 request is sent to the selected provider, but the generation harness runs without model
@@ -44,7 +45,7 @@ completed drafts again before the UI may review them.
    host Docker socket so it can create these runners, and must be treated as a privileged
    component.
 3. **open·kritt ↔ model/provider.** Repository content is sent to the configured
-   OpenAI/Codex, Anthropic, or OpenRouter endpoint. That's a data-egress boundary.
+   OpenAI/Codex, Anthropic, OpenRouter, or xAI endpoint. That's a data-egress boundary.
 4. **Host ↔ secrets.** Provider API keys and `GITHUB_TOKEN` live in `.env`. The backend
    can update that file from Accounts, and the engine passes only the selected provider
    credential into each harness job.
@@ -52,7 +53,7 @@ completed drafts again before the UI may review them.
 ## Assets to protect
 
 - **Provider credentials** (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`,
-  `CODEX_API_KEY`) and the Codex/Claude login homes.
+  `XAI_API_KEY`, `CODEX_API_KEY`) and the Codex/Claude login homes.
 - **`GITHUB_TOKEN`** used to check out private repos.
 - **Source code** of scanned repositories (often sensitive/proprietary).
 - **Findings** (real vulnerabilities — sensitive until fixed/disclosed).
@@ -98,7 +99,7 @@ A compromised/injected agent could try to read credentials or send data out.
 Scanning sends code to an external endpoint by default.
 
 - Know **where your data goes** before scanning sensitive code. The supported setup paths
-  use Codex/OpenAI, Anthropic, or OpenRouter credentials.
+  use Codex/OpenAI, Anthropic, OpenRouter, or xAI (Grok Build) credentials.
 - Review provider data-retention terms for the endpoints you use.
 
 ### 4. Unauthenticated API exposure

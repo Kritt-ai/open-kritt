@@ -1990,6 +1990,7 @@ const ACTIVE_JOB_DEPTH_PALETTE_SIZE = 6;
 const ACTIVE_JOB_HARNESS_LABELS = Object.freeze({
   codex: 'Codex CLI',
   'claude-code': 'Claude Code',
+  'grok-build': 'Grok Build',
   droid: 'Factory Droid',
 });
 

@@ -191,6 +191,32 @@ test('cached model lookup identifies exact catalog entries', () => {
   assert.equal(isCachedModel('claude', 'claude-opus-4-8', null), true);
   assert.equal(isCachedModel('claude', 'claude-sonnet-4', null), false);
   assert.equal(isCachedModel('openrouter', 'any/provider-model', null), false);
+  assert.equal(isCachedModel('xai', 'grok-4.6', null), true);
+  assert.equal(isCachedModel('xai', 'grok-4.5', null), true);
+  assert.equal(isCachedModel('xai', 'grok-4.6-high', null), false);
+});
+
+test('xAI device login keeps a default Grok model when the API catalog is empty', () => {
+  assert.deepEqual(buildModelCatalogResponse(['xai']).providers[0], {
+    provider: 'xai',
+    input: 'text',
+    models: [
+      {
+        id: 'grok-4.6',
+        label: 'Grok 4.6',
+        thinkingEfforts: ['low', 'medium', 'high', 'xhigh'],
+        isDefault: true,
+      },
+      {
+        id: 'grok-4.5',
+        label: 'Grok 4.5',
+        thinkingEfforts: ['low', 'medium', 'high'],
+        isDefault: false,
+      },
+    ],
+    defaultModel: 'grok-4.6',
+    status: 'ready',
+  });
 });
 
 test('a last refresh error retains a previously valid cached catalog', () => {

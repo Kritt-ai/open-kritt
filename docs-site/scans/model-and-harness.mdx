@@ -48,12 +48,12 @@ back to **Use scan model** when post-processing should follow the scan default a
 ## Model and provider
 
 - **model** - Codex and Anthropic use searchable choices populated for the configured
-  account. OpenRouter uses a periodically refreshed searchable catalog from its
-  authenticated models endpoint; you can also enter an exact custom `author/model` ID as
-  a compatibility escape hatch.
+  account. OpenRouter and xAI use a periodically refreshed searchable catalog from their
+  authenticated models endpoints; you can also enter an exact custom model ID as a
+  compatibility escape hatch.
 - **model_provider** - where the model runs. The form lists only providers configured for
-  the engine: `openrouter`, `claude`, and/or `codex`. Run `./kritt setup` and follow the
-  [AI provider setup guides](/ai-provider-setup/overview) when none are available.
+  the engine: `openrouter`, `claude`, `codex`, and/or `xai`. Run `./kritt setup` and
+  follow the [AI provider setup guides](/ai-provider-setup/overview) when none are available.
 
 ## Harness
 
@@ -63,14 +63,15 @@ The **harness** is the CLI agent runtime that executes the prompt against the wo
 | --- | --- |
 | `codex` | The Codex CLI runner (each job gets an isolated home). |
 | `claude-code` | The Claude Code runner. |
+| `grok-build` | The Grok Build runner (`grok`, pinned to 1.0.5 in the engine image). |
 
 The harness is what actually reads the repository, runs the agent loop, and returns the
 structured output your steps require.
 
 Model catalogs are cached. A form can show a catalog as loading before the first
 successful refresh. If a later refresh fails, the last usable catalog remains available;
-without a cached result, discovery is shown as unavailable. An OpenRouter catalog entry is
-a suggestion rather than proof that the model supports every harness feature.
+without a cached result, discovery is shown as unavailable. An OpenRouter or xAI catalog
+entry is a suggestion rather than proof that the model supports every harness feature.
 
 Tool-enabled harness jobs run as root inside a disposable container. Each receives a
 writable copy of the target and dependency repositories plus direct outbound internet,
@@ -79,9 +80,16 @@ information, and build proof-of-concept artifacts. The job does not receive the 
 socket, database, project `.env`, or another job's workspace.
 
 For a standard configured provider, open·kritt chooses a compatible harness automatically:
-Codex uses `codex`; Anthropic and OpenRouter use `claude-code`. OpenRouter can also use the
-Codex harness as an advanced option when its matching Codex provider configuration is
-installed.
+Codex uses `codex`; Anthropic and OpenRouter use `claude-code`; xAI uses `grok-build`.
+OpenRouter can also use the Codex harness as an advanced option when its matching Codex
+provider configuration is installed.
+
+| Provider | Default harness | Other supported harnesses |
+| --- | --- | --- |
+| `codex` | `codex` | — |
+| `claude` | `claude-code` | — |
+| `openrouter` | `claude-code` | `codex` (advanced) |
+| `xai` | `grok-build` | — |
 
 The engine image currently contains an experimental Cursor adapter and `cursor-agent`, but
 the API/UI intentionally expose no provider/Cursor combination. Cursor headless login and

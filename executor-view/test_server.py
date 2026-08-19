@@ -469,6 +469,13 @@ class ExecutorViewSummaryTests(unittest.TestCase):
             "accounts": [],
             "configuredRaw": None,
         }
+        xai = {
+            "active": 0,
+            "total": 0,
+            "limited": 0,
+            "accounts": [],
+            "configuredRaw": "XAI_API_KEY",
+        }
         server.ACCOUNT_OVERVIEW_CACHE = {"expires_at": 0.0, "data": None}
 
         with (
@@ -480,12 +487,15 @@ class ExecutorViewSummaryTests(unittest.TestCase):
             patch.object(
                 server, "fetch_openrouter_accounts", return_value=openrouter
             ) as fetch_openrouter,
+            patch.object(server, "fetch_xai_accounts", return_value=xai) as fetch_xai,
         ):
             overview = server.fetch_accounts(force=True)
 
         fetch_codex.assert_called_once_with(force=True)
         fetch_openrouter.assert_called_once_with(force=True)
+        fetch_xai.assert_called_once_with(force=True)
         self.assertEqual(overview["codex"]["total"], 1)
+        self.assertEqual(overview["xai"]["configuredRaw"], "XAI_API_KEY")
         self.assertEqual(overview["active"], 1)
 
     def test_account_provider_refresh_loads_only_the_requested_provider(self):
@@ -1283,6 +1293,112 @@ class ExecutorViewSummaryTests(unittest.TestCase):
         self.assertNotIn("unit-test-api-key", serialized)
         self.assertNotIn("must-not-leak", serialized)
         self.assertNotIn("deprecated", serialized)
+
+    def test_xai_account_reports_masked_key_metadata(self):
+        server.XAI_KEY_CACHE = {
+            "expires_at": 0.0,
+            "credential": None,
+            "data": None,
+        }
+        with (
+            patch.dict(server.os.environ, {"EXECUTOR_VIEW_XAI_REMOTE_CHECK": "1"}),
+            patch.object(server, "configured_grok_homes", return_value=[]),
+            patch.object(
+                server,
+                "configured_secret",
+                side_effect=lambda name: (
+                    "unit-test-xai-key" if name == "XAI_API_KEY" else None
+                ),
+            ),
+            patch.object(
+                server,
+                "fetch_xai_models",
+                return_value={
+                    "checkedAt": "2026-07-14T16:00:00+00:00",
+                    "statusCode": 200,
+                    "verified": True,
+                    "modelCount": 3,
+                },
+            ) as fetch_models,
+        ):
+            result = server.fetch_xai_accounts(force=True)
+            cached_result = server.fetch_xai_accounts(force=True)
+
+        account = result["accounts"][0]
+        fetch_models.assert_called_once_with("unit-test-xai-key")
+        self.assertEqual(cached_result["accounts"][0]["status"], account["status"])
+        self.assertEqual(account["status"], "verified")
+        self.assertEqual(
+            next(item["value"] for item in account["details"] if item["label"] == "Models accessible"),
+            "3",
+        )
+        serialized = json.dumps(result, default=server.encode)
+        self.assertNotIn("unit-test-xai-key", serialized)
+
+    def test_xai_accounts_include_grok_login_homes_and_api_key(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory) / "reviewer" / ".grok"
+            home.mkdir(parents=True)
+            (home / "auth.json").write_text(
+                json.dumps({"email": "grok@example.test", "tokens": {"access_token": "x"}}),
+                encoding="utf-8",
+            )
+            with (
+                patch.object(server, "GROK_ACCOUNTS_ROOT", Path(directory)),
+                patch.object(server, "configured_grok_homes", return_value=[home]),
+                patch.object(
+                    server,
+                    "configured_secret",
+                    side_effect=lambda name: (
+                        "unit-test-xai-key" if name == "XAI_API_KEY" else None
+                    ),
+                ),
+                patch.dict(server.os.environ, {"EXECUTOR_VIEW_XAI_REMOTE_CHECK": "0"}),
+            ):
+                result = server.fetch_xai_accounts(force=True)
+
+            self.assertEqual(result["total"], 2)
+            login = next(account for account in result["accounts"] if account["path"] == str(home))
+            key = next(account for account in result["accounts"] if account["path"] == "XAI_API_KEY")
+            self.assertEqual(login["id"], "reviewer")
+            self.assertTrue(login["canRemove"])
+            self.assertEqual(login["statusKind"], "available")
+            self.assertTrue(key["active"])
+            self.assertIn("XAI_API_KEY", result["configuredRaw"])
+
+    def test_managed_xai_key_overrides_environment_and_disable_is_sticky(self):
+        with tempfile.TemporaryDirectory() as directory:
+            credential_path = Path(directory) / "providers.json"
+            credential_path.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "credentials": {"xai": "managed-xai-key"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with (
+                patch.object(server, "PROVIDER_CREDENTIALS_PATH", credential_path),
+                patch.dict(server.os.environ, {"XAI_API_KEY": "initial-key"}),
+            ):
+                self.assertEqual(server.configured_secret("XAI_API_KEY"), "managed-xai-key")
+
+            credential_path.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "credentials": {},
+                        "disabledEnvironmentProviders": ["xai"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with (
+                patch.object(server, "PROVIDER_CREDENTIALS_PATH", credential_path),
+                patch.dict(server.os.environ, {"XAI_API_KEY": "initial-key"}),
+            ):
+                self.assertIsNone(server.configured_secret("XAI_API_KEY"))
 
     def test_managed_openrouter_key_overrides_environment_and_disable_is_sticky(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -71,9 +71,9 @@ curl --fail http://127.0.0.1:3002/api/severity-rankers
 curl --fail http://127.0.0.1:3002/api/model-catalog
 ```
 
-The model-catalog response is cached and refreshed by the engine. For OpenRouter it
-contains searchable choices returned through the configured key. The list is a discovery
-aid, not an allowlist: automation may still submit an exact custom OpenRouter model ID.
+The model-catalog response is cached and refreshed by the engine. For OpenRouter and xAI
+it contains searchable choices returned through the configured key. The list is a discovery
+aid, not an allowlist: automation may still submit an exact custom model ID.
 
 The create body accepts these fields:
 
@@ -89,9 +89,9 @@ The create body accepts these fields:
 | `repo_scope` | No | Focus description exposed as `{{repo_scope}}`; defaults to `full repository`. |
 | `dependencies` | No | Array of `{ "kind", "repo_full", "commit_sha"? }` references. |
 | `configuration` | No | JSON object exposed as `{{configuration}}`; `repeat_runs` and additional post-script IDs also live here. |
-| `model` | Yes | Provider model ID or supported alias. Use a current catalog entry, or an exact custom OpenRouter ID. |
-| `model_provider` | Yes | `codex`, `claude`, or `openrouter`. |
-| `harness` | Yes | Supported values are `codex` and `claude-code`; it must be compatible with the provider. |
+| `model` | Yes | Provider model ID or supported alias. Use a current catalog entry, or an exact custom OpenRouter or xAI model ID. |
+| `model_provider` | Yes | `codex`, `claude`, `openrouter`, or `xai`. |
+| `harness` | Yes | Supported values are `codex`, `claude-code`, and `grok-build`; it must be compatible with the provider. |
 | `thinking_effort` | No | Model/harness-specific: `default`, `low`, `medium`, `high`, `xhigh`, `max`, or `ultra`; defaults to `medium`. |
 | `post_processing_model` | No | Independent model ID for deduplication, ranking, and post-scripts. Omit it to use the top-level scan model. |
 | `post_processing_model_provider` | With `post_processing_model` | Provider for the independent post-processing model. |
@@ -102,8 +102,9 @@ The create body accepts these fields:
 | `severity_ranker` | Yes | Non-empty combined Markdown ranking rules, not a ranker ID. |
 | `extra` | As required by selected prompts | Object containing every `{{extra.<key>}}` referenced by the selected workflow or post-scripts. Unknown keys are discarded. |
 
-Provider/harness combinations are `codex` + `codex`, `claude` + `claude-code`, and
-`openrouter` + `claude-code` or advanced `codex`. The API returns `422`
+Provider/harness combinations are `codex` + `codex`, `claude` + `claude-code`,
+`openrouter` + `claude-code` or advanced `codex`, and `xai` + `grok-build`. The API
+returns `422`
 with field-specific errors when IDs, required scan extras, local folders, configured
 providers, models, or combinations are invalid.
 
@@ -114,7 +115,7 @@ with `immediate` or `queue`.
 ### Remote scan example
 
 Replace the resource IDs and model with values from your installation's endpoints. For
-OpenRouter, use an ID returned by `/api/model-catalog` or an exact custom model ID. This
+OpenRouter or xAI, use an ID returned by `/api/model-catalog` or an exact custom model ID. This
 example pins the target commit, adds a remote dependency, attaches a skill and two
 post-scripts, and uses OpenRouter through Claude Code:
 

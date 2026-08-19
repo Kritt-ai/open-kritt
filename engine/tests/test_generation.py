@@ -322,19 +322,23 @@ def test_generation_environment_contains_only_selected_provider_credentials():
         "OPENAI_API_KEY": "openai-secret",
         "ANTHROPIC_API_KEY": "anthropic-secret",
         "OPENROUTER_API_KEY": "openrouter-secret",
+        "XAI_API_KEY": "xai-secret",
         "GITHUB_TOKEN": "github-secret",
         "DATABASE_URL": "database-secret",
     }
 
     codex_env = generation_environment("codex", source)
     openrouter_env = generation_environment("openrouter", source)
+    xai_env = generation_environment("xai", source)
 
     assert codex_env["CODEX_API_KEY"] == "openai-secret"
     assert codex_env["CODEX_HOME"] == "/codex-a"
     assert "ANTHROPIC_API_KEY" not in codex_env
     assert "OPENROUTER_API_KEY" not in codex_env
     assert openrouter_env["OPENROUTER_API_KEY"] == "openrouter-secret"
-    for env in (codex_env, openrouter_env):
+    assert xai_env["XAI_API_KEY"] == "xai-secret"
+    assert "OPENROUTER_API_KEY" not in xai_env
+    for env in (codex_env, openrouter_env, xai_env):
         assert "GITHUB_TOKEN" not in env
         assert "DATABASE_URL" not in env
 
@@ -347,6 +351,17 @@ def test_generation_environment_prefers_live_codex_home():
     )
 
     assert env["CODEX_HOME"] == "/runtime-home"
+
+
+def test_generation_environment_prefers_live_grok_home():
+    env = generation_environment(
+        "xai",
+        {"XAI_API_KEY": "xai-secret", "ENGINE_GROK_HOME": "/also-stale", "GROK_HOME": "/startup-home"},
+        grok_home="/runtime-grok",
+    )
+
+    assert env["GROK_HOME"] == "/runtime-grok"
+    assert env["XAI_API_KEY"] == "xai-secret"
 
 
 def test_generation_runner_retries_validation_with_feedback_and_no_tools(monkeypatch, tmp_path):

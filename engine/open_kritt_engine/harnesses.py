@@ -6,7 +6,7 @@ import shutil
 import subprocess
 import tempfile
 import time
-from contextlib import nullcontext
+from contextlib import nullcontext, suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -183,7 +183,40 @@ CLAUDE_MODEL_ALIASES = {
     "opus-4.8": "claude-opus-4-8",
 }
 DEFAULT_MODEL_PROVIDER = "openrouter"
-MODEL_PROVIDERS = {"codex", "claude", "openrouter"}
+MODEL_PROVIDERS = {"codex", "claude", "openrouter", "xai"}
+GROK_BUILD_THINKING_EFFORTS = frozenset({"low", "medium", "high", "xhigh"})
+DEFAULT_GROK_BUILD_MODEL = "grok-4.6"
+GROK_BUILD_RUNTIME_ENV = {
+    # A fresh per-job GROK_HOME prevents account-level configuration from
+    # leaking into scans. Keep the CLI's project-config trust gate enabled too,
+    # so an untrusted repository cannot start hooks, MCP servers, or LSPs.
+    "GROK_FOLDER_TRUST": "1",
+    "GROK_MEMORY": "0",
+    "GROK_WORKFLOWS": "0",
+    "GROK_LSP_TOOLS": "0",
+    # Scan inputs may be sensitive source code. Do not upload product telemetry,
+    # session traces, or feedback from the scanner process.
+    "GROK_TELEMETRY_ENABLED": "false",
+    "GROK_TELEMETRY_TRACE_UPLOAD": "false",
+    "GROK_TELEMETRY_MIXPANEL_ENABLED": "false",
+    "GROK_FEEDBACK_ENABLED": "false",
+    "GROK_TRACE_UPLOAD": "false",
+    "GROK_EXTERNAL_OTEL": "0",
+    # Do not discover ambient Claude/Cursor instructions, agents, MCP servers,
+    # hooks, or sessions from either the repository or mounted job home.
+    "GROK_CURSOR_SKILLS_ENABLED": "false",
+    "GROK_CURSOR_RULES_ENABLED": "false",
+    "GROK_CURSOR_AGENTS_ENABLED": "false",
+    "GROK_CURSOR_MCPS_ENABLED": "false",
+    "GROK_CURSOR_HOOKS_ENABLED": "false",
+    "GROK_CURSOR_SESSIONS_ENABLED": "false",
+    "GROK_CLAUDE_SKILLS_ENABLED": "false",
+    "GROK_CLAUDE_RULES_ENABLED": "false",
+    "GROK_CLAUDE_AGENTS_ENABLED": "false",
+    "GROK_CLAUDE_MCPS_ENABLED": "false",
+    "GROK_CLAUDE_HOOKS_ENABLED": "false",
+    "GROK_CLAUDE_SESSIONS_ENABLED": "false",
+}
 CLAUDE_WORKSPACE_SYSTEM_PROMPT = (
     "Use only files under the current working directory and dependency paths listed in WORKSPACE.json. "
     "Do not search from filesystem root (/), /data, /root, /home, or other global paths. "
@@ -355,6 +388,8 @@ def _command_harness(cmd: list[str]) -> str:
         return "codex"
     if "claude" in executables:
         return "claude-code"
+    if "grok" in executables:
+        return "grok-build"
     return Path(str(cmd[0])).name if cmd else "model"
 
 
@@ -433,7 +468,9 @@ def _classify_harness_output(output: str, *, provider: str | None = None) -> str
             "authentication_error",
             "invalid_api_key",
             "invalid api key",
+            "incorrect api key",
             "not logged in",
+            "not signed in",
             "login required",
             "401 unauthorized",
         )
@@ -832,12 +869,15 @@ def _scan_docker_command(
         "CODEX_HOME": f"{CLAUDE_RUNNER_HOME}/.codex",
         "CLAUDE_HOME": f"{CLAUDE_RUNNER_HOME}/.claude",
         "CLAUDE_CONFIG_DIR": f"{CLAUDE_RUNNER_HOME}/.claude",
+        "GROK_HOME": f"{CLAUDE_RUNNER_HOME}/.grok",
         "XDG_CONFIG_HOME": f"{CLAUDE_RUNNER_HOME}/.config",
         "XDG_CACHE_HOME": f"{CLAUDE_RUNNER_HOME}/.cache",
         "XDG_DATA_HOME": f"{CLAUDE_RUNNER_HOME}/.local/share",
         "NPM_CONFIG_CACHE": f"{CLAUDE_RUNNER_HOME}/.npm",
         "GIT_OPTIONAL_LOCKS": "0",
     }
+    if _command_harness(cmd) == "grok-build":
+        container_env.update(GROK_BUILD_RUNTIME_ENV)
     if Path(str(cmd[0])).name == "claude":
         # Claude Code refuses bypassPermissions as root unless the caller marks
         # the already-isolated container as a sandbox.
@@ -846,6 +886,7 @@ def _scan_docker_command(
         "CODEX_API_KEY",
         "OPENAI_API_KEY",
         "OPENROUTER_API_KEY",
+        "XAI_API_KEY",
         "ANTHROPIC_BASE_URL",
         "ANTHROPIC_AUTH_TOKEN",
         "ANTHROPIC_API_KEY",
@@ -854,6 +895,7 @@ def _scan_docker_command(
         "CURSOR_API_KEY",
         "CURSOR_AUTH_TOKEN",
         "CURSOR_AGENT_BIN",
+        "GROK_BIN",
         "SSL_CERT_FILE",
         "SSL_CERT_DIR",
         "NODE_EXTRA_CA_CERTS",
@@ -1094,17 +1136,21 @@ def _extract_json(value: Any) -> dict[str, Any]:
     if isinstance(value, str):
         return _parse_json_text(value)
     if isinstance(value, dict):
-        structured_output = value.get("structured_output")
-        if isinstance(structured_output, dict):
-            return _with_extractor_marker(structured_output)
+        # Prefer camelCase structuredOutput (Grok Build --json-schema) over free text.
+        for key in ("structuredOutput", "structured_output"):
+            structured_output = value.get(key)
+            if isinstance(structured_output, dict):
+                return _with_extractor_marker(structured_output)
         for key in ("output", "data"):
             nested = value.get(key)
             if _looks_like_structured_output(nested):
                 return _with_extractor_marker(nested)
         result = value.get("result")
         if isinstance(result, dict):
-            if _looks_like_structured_output(result.get("structured_output")):
-                return _with_extractor_marker(result["structured_output"])
+            for key in ("structuredOutput", "structured_output"):
+                nested = result.get(key)
+                if _looks_like_structured_output(nested):
+                    return _with_extractor_marker(nested)
             content = result.get("content")
             if isinstance(content, list):
                 text = "".join(part.get("text", "") for part in content if isinstance(part, dict))
@@ -1182,6 +1228,7 @@ def _collect_json_text_candidates(value: Any) -> list[str]:
             candidates.extend(_collect_json_text_candidates(item))
     elif isinstance(value, dict):
         for key in (
+            "structuredOutput",
             "structured_output",
             "result",
             "response",
@@ -1895,11 +1942,194 @@ class CursorHarness:
         return HarnessResult(payload=payload, usage=usage, output=process_output)
 
 
+def _grok_executable(env: dict[str, str]) -> str:
+    configured = env.get("GROK_BIN") or os.getenv("GROK_BIN")
+    if configured:
+        return configured
+    found = shutil.which("grok", path=env.get("PATH"))
+    if found:
+        return found
+    local_grok = Path(env.get("HOME") or str(Path.home())) / ".local/bin/grok"
+    if local_grok.exists():
+        return str(local_grok)
+    raise HarnessError(
+        "grok CLI is not available; install Grok Build 1.0.0 into the engine image.",
+        code="start_failed",
+        harness="grok-build",
+    )
+
+
+def _grok_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Drop dialect annotations that some CLIs try to resolve locally."""
+    return {key: value for key, value in schema.items() if key != "$schema"}
+
+
+def _extract_json_from_grok_json(stdout: str) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    try:
+        wrapper = json.loads(stdout)
+    except json.JSONDecodeError:
+        return _parse_json_text(stdout), None
+    if isinstance(wrapper, dict) and wrapper.get("type") == "error":
+        raise _classified_harness_error(
+            json.dumps(wrapper),
+            harness="grok-build",
+            default_code="auth_failed" if "sign" in str(wrapper.get("message", "")).lower() else "model_process_error",
+        )
+    usage = None
+    if isinstance(wrapper, dict):
+        usage = {
+            key: wrapper.get(key)
+            for key in ("usage", "modelUsage", "total_cost_usd", "cost", "sessionId", "stopReason", "num_turns")
+            if wrapper.get(key) is not None
+        } or None
+    try:
+        return _extract_json(wrapper), usage
+    except HarnessError as exc:
+        last_error: Exception = exc
+        for candidate in reversed(_collect_json_text_candidates(wrapper)):
+            try:
+                return _parse_json_text(candidate), usage
+            except (HarnessError, json.JSONDecodeError) as parse_exc:
+                last_error = parse_exc
+        raise HarnessError(
+            "Grok Build did not return a usable structured response.",
+            code="invalid_output",
+            harness="grok-build",
+        ) from last_error
+
+
+class GrokBuildHarness:
+    name = "grok-build"
+
+    def __init__(
+        self,
+        timeout_seconds: int,
+        model_provider: str | None = None,
+        runner_memory_mb: int = 0,
+        runner_memory_reservation_mb: int = 0,
+    ):
+        self.timeout_seconds = timeout_seconds
+        self.model_provider = model_provider
+        self.runner_memory_mb = max(0, int(runner_memory_mb))
+        self.runner_memory_reservation_mb = max(0, int(runner_memory_reservation_mb))
+
+    def run(
+        self,
+        *,
+        prompt: str,
+        schema: dict[str, Any],
+        repo_dir: str,
+        model: str,
+        thinking_effort: str | None = None,
+        env: dict[str, str] | None = None,
+        allow_tools: bool = True,
+        runner_image: str | None = None,
+    ) -> HarnessResult:
+        actual_env = dict(env if env is not None else _base_env())
+        # These are scanner-enforced settings, not user configuration: hostile
+        # repository content and ambient process variables must not relax them.
+        actual_env.update(GROK_BUILD_RUNTIME_ENV)
+        executable = _grok_executable(actual_env)
+        model_name = (model or DEFAULT_GROK_BUILD_MODEL).strip() or DEFAULT_GROK_BUILD_MODEL
+        workspace = Path(repo_dir)
+        workspace.mkdir(parents=True, exist_ok=True)
+        # Snapshot runners do not bind-mount the host workspace, but their
+        # per-job home is always mounted. Keep the prompt there so Grok can
+        # read a file created after the workspace image was committed.
+        prompt_dir = Path(actual_env.get("HOME") or workspace)
+        prompt_dir.mkdir(parents=True, exist_ok=True)
+        # Unique filenames avoid collisions when tool-free generation shares a home.
+        # --json-schema requires inline JSON (file paths are rejected by the CLI).
+        suffix = f"{os.getpid()}.{time.time_ns()}"
+        prompt_path = prompt_dir / f".open-kritt-grok-prompt.{suffix}.txt"
+        prompt_path.write_text(prompt, encoding="utf-8")
+        prompt_path.chmod(0o600)
+        schema_json = json.dumps(_grok_json_schema(schema))
+        try:
+            cmd = [
+                executable,
+                "--prompt-file",
+                str(prompt_path),
+                "--output-format",
+                "json",
+                "--json-schema",
+                schema_json,
+                "--model",
+                model_name,
+                "--cwd",
+                str(workspace),
+                "--no-auto-update",
+                "--no-plan",
+                "--disable-web-search",
+                "--no-subagents",
+                "--deny",
+                "MCPTool",
+            ]
+            effort = (thinking_effort or "").strip().lower()
+            if effort in GROK_BUILD_THINKING_EFFORTS:
+                cmd.extend(["--reasoning-effort", effort])
+            if allow_tools:
+                cmd.extend(["--always-approve", "--permission-mode", "bypassPermissions"])
+            else:
+                cmd.extend(
+                    [
+                        "--permission-mode",
+                        "dontAsk",
+                        "--tools",
+                        "",
+                    ]
+                )
+            run_cmd = (
+                _scan_docker_command(
+                    cmd,
+                    repo_dir,
+                    actual_env,
+                    runner_image=runner_image,
+                    memory_limit_mb=self.runner_memory_mb,
+                    memory_reservation_mb=self.runner_memory_reservation_mb,
+                )
+                if allow_tools
+                else cmd
+            )
+            # Prompt content is already on disk; do not also send it on stdin.
+            proc = _run_process(run_cmd, "", repo_dir, self.timeout_seconds, env=actual_env)
+            process_output = _process_output(
+                proc,
+                files={
+                    "grok-prompt.txt": prompt,
+                    "grok-schema.json": schema_json,
+                },
+            )
+            try:
+                payload, usage = _extract_json_from_grok_json(proc.stdout)
+            except HarnessError as exc:
+                raise _harness_error_with_output(exc, process_output) from exc
+            except json.JSONDecodeError as exc:
+                raise HarnessError(
+                    "Grok Build did not return a usable structured response.",
+                    output=process_output,
+                    code="invalid_output",
+                    harness="grok-build",
+                ) from exc
+            if usage is None and thinking_effort:
+                usage = {"thinking_effort": thinking_effort}
+            elif usage is not None and thinking_effort:
+                usage = {**usage, "thinking_effort": thinking_effort}
+            if normalize_model_provider(self.model_provider) == "xai":
+                usage = {**(usage or {}), "model_provider": "xai", "xai_model": model_name}
+            return HarnessResult(payload=payload, usage=usage, output=process_output)
+        finally:
+            with suppress(OSError):
+                prompt_path.unlink(missing_ok=True)
+
+
 def normalize_harness_name(name: str) -> str:
     if name == "codex-cli":
         return "codex"
     if name in {"cursor-cli", "cursor-agent"}:
         return "cursor"
+    if name == "grok":
+        return "grok-build"
     return name
 
 
@@ -1935,6 +2165,13 @@ def harness_for(
         )
     if normalized == "cursor":
         return CursorHarness(
+            timeout_seconds,
+            provider,
+            runner_memory_mb=runner_memory_mb,
+            runner_memory_reservation_mb=runner_memory_reservation_mb,
+        )
+    if normalized == "grok-build":
+        return GrokBuildHarness(
             timeout_seconds,
             provider,
             runner_memory_mb=runner_memory_mb,

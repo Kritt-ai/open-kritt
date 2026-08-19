@@ -55,7 +55,7 @@ over their prompts, workflows, model providers, and infrastructure.
 - **Prioritize results** — apply custom severity rankers, a consistent finding schema,
   and automatic de-duplication.
 - **Bring your own model access** — use a Codex login or connect through OpenAI,
-  Anthropic, or OpenRouter.
+  Anthropic, OpenRouter, or xAI.
 
 > **Built from real security research.** The Kritt team has earned over **$1,500,000 in
 > bug-bounty payouts** under the researcher name **Blockian**

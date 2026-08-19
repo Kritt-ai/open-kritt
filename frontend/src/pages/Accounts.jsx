@@ -8,6 +8,7 @@ import { usePagination } from '../lib/usePagination.js';
 
 const PROVIDER_LINKS = {
   openrouter: 'https://openrouter.ai/settings/keys',
+  xai: 'https://console.x.ai/',
 };
 
 const WEEKLY_WINDOW_MINUTES = 7 * 24 * 60;
@@ -17,8 +18,11 @@ const SOURCE_LABELS = {
   managed_api_key: 'Managed in open·kritt',
   codex_login: 'Codex login',
   claude_login: 'Claude login',
+  xai_login: 'xAI login',
   environment: 'Environment configuration',
 };
+
+const LOGIN_PROVIDERS = new Set(['codex', 'claude', 'xai']);
 
 export default function Accounts() {
   const [data, setData] = useState(null);
@@ -26,6 +30,7 @@ export default function Accounts() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(null);
   const [editing, setEditing] = useState(null);
+  const [editingKey, setEditingKey] = useState(null);
   const [removingAccount, setRemovingAccount] = useState(null);
   const [startingUsage, setStartingUsage] = useState(() => new Set());
   const [resettingUsage, setResettingUsage] = useState(() => new Set());
@@ -98,10 +103,11 @@ export default function Accounts() {
     const next = await api.saveProviderCredential(provider.id, credential);
     setData(next);
     setEditing(null);
+    setEditingKey(null);
   };
 
   const remove = async (provider) => {
-    if (!window.confirm('Remove the OpenRouter API key from open·kritt?')) return;
+    if (!window.confirm(`Remove the ${provider.label} API key from open·kritt?`)) return;
     const previous = data;
     setData(removeProviderFromOverview(data, provider.id));
     try {
@@ -115,10 +121,8 @@ export default function Accounts() {
 
   const removeLoginAccount = async (provider, account) => {
     const label = account.email || account.label;
-    const impact =
-      provider.id === 'codex'
-        ? 'This signs Codex out locally and removes its managed account home when applicable. Existing scans and results are kept.'
-        : 'This signs Claude out locally and removes its managed account home when applicable. Existing scans and results are kept.';
+    const providerName = provider.id === 'codex' ? 'Codex' : provider.id === 'xai' ? 'xAI' : 'Claude';
+    const impact = `This signs ${providerName} out locally and removes its managed account home when applicable. Existing scans and results are kept.`;
     if (!window.confirm(`Remove ${label}?\n\n${impact}`)) return;
     const key = `${provider.id}:${account.id}`;
     const previous = data;
@@ -168,8 +172,8 @@ export default function Accounts() {
         <div>
           <div style={{ fontSize: 27, fontWeight: 600, letterSpacing: '-0.02em' }}>Accounts</div>
           <div style={{ color: 'var(--text-2)', marginTop: 7, maxWidth: 680, lineHeight: 1.5 }}>
-            See which model providers are ready. Sign in to Codex or Claude with their official login flows, or add an
-            OpenRouter API key. Secret values are never returned by the API.
+            See which model providers are ready. Sign in to Codex, Claude, or xAI with their official login flows, or
+            add an OpenRouter or xAI API key. Secret values are never returned by the API.
           </div>
         </div>
         {data && (
@@ -196,6 +200,9 @@ export default function Accounts() {
                 key={provider.id}
                 provider={provider}
                 onEdit={() => setEditing(provider)}
+                onEditKey={
+                  provider.management === 'login' && provider.canManageKey ? () => setEditingKey(provider) : null
+                }
                 onRemove={() => remove(provider)}
                 onRemoveAccount={(account) => removeLoginAccount(provider, account)}
                 onStartWeeklyUsage={startWeeklyUsage}
@@ -214,8 +221,15 @@ export default function Accounts() {
       {editing?.management === 'login' && (
         <LoginDialog provider={editing} onClose={() => setEditing(null)} onComplete={() => load(true)} />
       )}
-      {editing?.management === 'api_key' && (
-        <CredentialDialog provider={editing} onClose={() => setEditing(null)} onSave={save} />
+      {(editing?.management === 'api_key' || editingKey) && (
+        <CredentialDialog
+          provider={editingKey || editing}
+          onClose={() => {
+            setEditing(null);
+            setEditingKey(null);
+          }}
+          onSave={save}
+        />
       )}
     </div>
   );
@@ -233,6 +247,7 @@ function Summary({ label, value, color = 'var(--text)' }) {
 function ProviderCard({
   provider,
   onEdit,
+  onEditKey,
   onRemove,
   onRemoveAccount,
   onStartWeeklyUsage,
@@ -246,7 +261,7 @@ function ProviderCard({
   const accountPages = usePagination(provider.accounts || [], { pageSize: 5, resetKey: provider.id });
   const ready = provider.configured && provider.active > 0;
   const signInRequired =
-    ['codex', 'claude'].includes(provider.id) && provider.accounts.some((account) => account.statusKind === 'expired');
+    LOGIN_PROVIDERS.has(provider.id) && provider.accounts.some((account) => account.statusKind === 'expired');
   const status = loading
     ? 'Loading'
     : loadError
@@ -335,6 +350,11 @@ function ProviderCard({
 
       <div className="account-provider-actions">
         <Button onClick={onEdit}>{providerActionLabel(provider)}</Button>
+        {onEditKey && (
+          <Button variant="ghost" onClick={onEditKey}>
+            {provider.source === 'managed_api_key' || provider.canRemove ? 'Add or replace key' : 'Add API key'}
+          </Button>
+        )}
         {provider.canRemove && (
           <Button variant="ghost" onClick={onRemove}>
             Remove key
@@ -351,9 +371,19 @@ function ProviderCard({
 }
 
 export function providerActionLabel(provider) {
-  if (provider.management !== 'login') return provider.configured ? 'Add or replace key' : 'Add OpenRouter key';
-  const signInRequired = provider.accounts.some((account) => account.statusKind === 'expired');
+  if (provider.management !== 'login') {
+    if (provider.configured) return 'Add or replace key';
+    const credential = `${provider.credentialLabel || ''}`.trim();
+    if (credential) {
+      const name = credential.replace(/\s+api\s+key$/i, '').trim();
+      if (name) return `Add ${name} key`;
+    }
+    const label = `${provider.label || ''}`.trim();
+    return label ? `Add ${label} key` : 'Add API key';
+  }
+  const signInRequired = (provider.accounts || []).some((account) => account.statusKind === 'expired');
   if (provider.id === 'codex') return signInRequired ? 'Sign in to Codex again' : 'Add Codex account';
+  if (provider.id === 'xai') return signInRequired ? 'Sign in to xAI again' : 'Add Grok account';
   if (signInRequired) return 'Sign in to Claude again';
   return 'Add Claude account';
 }
@@ -366,7 +396,7 @@ export function updatePendingAccounts(current, accountId, pending) {
 }
 
 export function providerReloginAccountId(provider) {
-  if (!['codex', 'claude'].includes(provider.id)) return null;
+  if (!LOGIN_PROVIDERS.has(provider.id)) return null;
   return provider.accounts.find((account) => account.statusKind === 'expired')?.id || null;
 }
 
@@ -427,7 +457,7 @@ export function removeProviderFromOverview(overview, providerId) {
 }
 
 function ProviderMark({ provider }) {
-  const label = provider === 'codex' ? 'CX' : provider === 'claude' ? 'CL' : 'OR';
+  const label = provider === 'codex' ? 'CX' : provider === 'claude' ? 'CL' : provider === 'xai' ? 'XA' : 'OR';
   return <span className={`mono account-provider-mark account-provider-mark-${provider}`}>{label}</span>;
 }
 
@@ -442,7 +472,7 @@ function AccountDetail({
   resettingUsage,
 }) {
   const weeklyUsage = providerId === 'codex' ? codexWeeklyUsage(account) : null;
-  const signInRequired = ['codex', 'claude'].includes(providerId) && account.statusKind === 'expired';
+  const signInRequired = LOGIN_PROVIDERS.has(providerId) && account.statusKind === 'expired';
   const showRateLimits = providerId !== 'claude' || account.active;
 
   return (
@@ -519,7 +549,7 @@ export function CodexSignInRequired() {
 }
 
 export function ProviderSignInRequired({ providerId, message }) {
-  const provider = providerId === 'claude' ? 'Claude' : 'Codex';
+  const provider = providerId === 'claude' ? 'Claude' : providerId === 'xai' ? 'xAI' : 'Codex';
   return (
     <div className="account-auth-required" role="alert">
       <span className="account-auth-required-mark" aria-hidden="true">
@@ -877,7 +907,9 @@ function LoginDialog({ provider, onClose, onComplete }) {
                 ? `Sign in to ${provider.label} again`
                 : provider.id === 'codex'
                   ? 'Add Codex account'
-                  : 'Add Claude account'}
+                  : provider.id === 'xai'
+                    ? 'Add Grok account'
+                    : 'Add Claude account'}
             </div>
           </div>
           <button className="account-dialog-close" type="button" aria-label="Close" onClick={cancel}>
@@ -891,6 +923,11 @@ function LoginDialog({ provider, onClose, onComplete }) {
               <>
                 Codex will create a one-time device code. Open the sign-in page, enter the code, and authenticate the
                 ChatGPT account you want open·kritt to use.
+              </>
+            ) : provider.id === 'xai' ? (
+              <>
+                Grok will create a one-time device code. Open the xAI sign-in page, enter the code, and authenticate the
+                account you want open·kritt to use for Grok Build.
               </>
             ) : (
               <>

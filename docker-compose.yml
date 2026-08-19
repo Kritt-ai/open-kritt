@@ -36,6 +36,7 @@ services:
       OPEN_KRITT_OPENAI_API_KEY_CONFIGURED: '${OPENAI_API_KEY:+1}'
       OPEN_KRITT_ANTHROPIC_API_KEY_CONFIGURED: '${ANTHROPIC_API_KEY:+1}'
       OPEN_KRITT_OPENROUTER_API_KEY_CONFIGURED: '${OPENROUTER_API_KEY:+1}'
+      OPEN_KRITT_XAI_API_KEY_CONFIGURED: '${XAI_API_KEY:+1}'
       OPEN_KRITT_CODEX_LOGIN_CONFIGURED: '${CODEX_LOGIN_CONFIGURED:+1}'
       OPEN_KRITT_PROVIDER_CREDENTIALS_PATH: /credentials/providers.json
       OPEN_KRITT_CODEX_HOME_DIR: /provider-homes/codex
@@ -45,6 +46,10 @@ services:
       OPEN_KRITT_CLAUDE_HOME: /provider-homes/claude
       OPEN_KRITT_CLAUDE_ACCOUNTS_DIR: /provider-homes/claude-accounts
       OPEN_KRITT_CLAUDE_RUNTIME_ACCOUNTS_DIR: /claude-accounts
+      OPEN_KRITT_GROK_HOME_DIR: /provider-homes/grok
+      OPEN_KRITT_GROK_ACCOUNTS_DIR: /provider-homes/grok-accounts
+      OPEN_KRITT_GROK_RUNTIME_ACCOUNTS_DIR: /grok-accounts
+      OPEN_KRITT_GROK_INITIAL_HOME: ${ENGINE_GROK_HOME:-/root/.grok}
       OPEN_KRITT_ENGINE_RUNTIME_CONFIG_PATH: /engine-data/engine-runtime.env
       OPEN_KRITT_ENV_FILE_PATH: /project-config/.env
       EXECUTOR_VIEW_URL: http://executor-view:8090
@@ -64,11 +69,13 @@ services:
       # OpenRouter API key saved from the frontend. Its value is never returned.
       - ${ENGINE_CREDENTIALS_HOST:-./.data/engine/credentials}:/credentials:z
       # Provider login homes are writable here only so Accounts can run the
-      # official Codex/Claude login commands. The engine keeps its own mounts.
+      # official Codex/Claude/Grok login commands. The engine keeps its own mounts.
       - ${ENGINE_CODEX_HOME_HOST:-./.data/codex}:/provider-homes/codex:z
       - ${ENGINE_CODEX_ACCOUNTS_HOST:-./.data/codex-accounts}:/provider-homes/codex-accounts:z
       - ${ENGINE_CLAUDE_HOME_HOST:-${ENGINE_CLAUDE_HOME:-./.data/claude}}:/provider-homes/claude
       - ${ENGINE_CLAUDE_ACCOUNTS_HOST:-./.data/claude-accounts}:/provider-homes/claude-accounts
+      - ${ENGINE_GROK_HOME_HOST:-./.data/grok}:/provider-homes/grok:z
+      - ${ENGINE_GROK_ACCOUNTS_HOST:-./.data/grok-accounts}:/provider-homes/grok-accounts:z
       - ${ENGINE_DATA_DIR_HOST:-./.data/engine}:/engine-data
       # Accounts mirrors durable provider/account configuration back to the
       # project environment file while secrets remain absent from API responses.
@@ -120,6 +127,7 @@ services:
       ENGINE_CODEX_UPDATE_INTERVAL_SECONDS: ${ENGINE_CODEX_UPDATE_INTERVAL_SECONDS:-86400}
       ENGINE_CODEX_UPDATE_TIMEOUT_SECONDS: ${ENGINE_CODEX_UPDATE_TIMEOUT_SECONDS:-120}
       ENGINE_CODEX_HOME: ${ENGINE_CODEX_HOME:-/root/.codex}
+      ENGINE_GROK_HOME: ${ENGINE_GROK_HOME:-/root/.grok}
       OPEN_KRITT_PROVIDER_CREDENTIALS_PATH: /credentials/providers.json
       ENGINE_CLAUDE_DOCKER_RUNNER: ${ENGINE_CLAUDE_DOCKER_RUNNER:-1}
       ENGINE_SCAN_RUNNER_IMAGE: ${ENGINE_SCAN_RUNNER_IMAGE:-open-kritt-engine:local}
@@ -130,6 +138,7 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      XAI_API_KEY: ${XAI_API_KEY:-}
       CURSOR_API_KEY: ${CURSOR_API_KEY:-}
       CURSOR_AUTH_TOKEN: ${CURSOR_AUTH_TOKEN:-}
       CURSOR_AGENT_BIN: ${CURSOR_AGENT_BIN:-}
@@ -156,6 +165,8 @@ services:
       - ${ENGINE_CODEX_HOME_SOURCE_HOST:-./.data/codex-home-source}:/run/open-kritt-secrets/codex-home-source:ro,z
       - ${ENGINE_CLAUDE_HOME_HOST:-${ENGINE_CLAUDE_HOME:-./.data/claude}}:/root/.claude
       - ${ENGINE_CLAUDE_ACCOUNTS_HOST:-./.data/claude-accounts}:/run/open-kritt-secrets/claude-accounts:z
+      - ${ENGINE_GROK_HOME_HOST:-./.data/grok}:/root/.grok:z
+      - ${ENGINE_GROK_ACCOUNTS_HOST:-./.data/grok-accounts}:/run/open-kritt-secrets/grok-accounts:z
       - ${EXECUTOR_VIEW_AUTH_HOST:-./.data/engine/executor-auth}:/executor-auth:ro
       - /var/run/docker.sock:/var/run/docker.sock
       # Local repositories are copied into scan-specific snapshots; the host source
@@ -183,11 +194,14 @@ services:
       EXECUTOR_VIEW_CODEX_HOME: ${ENGINE_CODEX_HOME:-/root/.codex}
       EXECUTOR_VIEW_CLAUDE_HOME: /root/.claude
       EXECUTOR_VIEW_CLAUDE_ACCOUNTS_ROOT: /claude-accounts
+      EXECUTOR_VIEW_GROK_HOME: ${ENGINE_GROK_HOME:-/root/.grok}
+      EXECUTOR_VIEW_GROK_ACCOUNTS_ROOT: /grok-accounts
       EXECUTOR_VIEW_ENGINE_DATA_DIR: /data
       EXECUTOR_VIEW_ENGINE_RUNTIME_CONFIG_PATH: ${ENGINE_RUNTIME_CONFIG_PATH:-/data/engine-runtime.env}
       OPEN_KRITT_PROVIDER_CREDENTIALS_PATH: /credentials/providers.json
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      XAI_API_KEY: ${XAI_API_KEY:-}
       CODEX_MODEL_PROVIDER: ${CODEX_MODEL_PROVIDER:-}
     depends_on:
       db:
@@ -201,6 +215,8 @@ services:
       - ${ENGINE_CODEX_HOME_SOURCE_HOST:-./.data/codex-home-source}:/codex-home-source:ro,z
       - ${ENGINE_CLAUDE_HOME_HOST:-${ENGINE_CLAUDE_HOME:-./.data/claude}}:/root/.claude:ro
       - ${ENGINE_CLAUDE_ACCOUNTS_HOST:-./.data/claude-accounts}:/claude-accounts:ro,z
+      - ${ENGINE_GROK_HOME_HOST:-./.data/grok}:/root/.grok:ro,z
+      - ${ENGINE_GROK_ACCOUNTS_HOST:-./.data/grok-accounts}:/grok-accounts:ro,z
       - ${EXECUTOR_VIEW_AUTH_HOST:-./.data/engine/executor-auth}:/executor-auth
     healthcheck:
       test:

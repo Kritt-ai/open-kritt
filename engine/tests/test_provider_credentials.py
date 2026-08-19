@@ -110,12 +110,15 @@ def test_job_environment_only_includes_selected_provider_and_harness_credentials
         "OPENAI_API_KEY": "openai-secret",
         "ANTHROPIC_API_KEY": "anthropic-secret",
         "OPENROUTER_API_KEY": "openrouter-secret",
+        "XAI_API_KEY": "xai-secret",
         "CURSOR_API_KEY": "cursor-secret",
+        "GROK_BIN": "/usr/local/bin/grok",
     }
 
     codex = job_environment("codex", "codex", source)
     openrouter_claude = job_environment("openrouter", "claude-code", source)
     openrouter_cursor = job_environment("openrouter", "cursor", source)
+    xai_grok = job_environment("xai", "grok-build", source)
 
     assert codex == {"PATH": "/bin", "OPENAI_API_KEY": "openai-secret", "CODEX_API_KEY": "openai-secret"}
     assert openrouter_claude == {"PATH": "/bin", "OPENROUTER_API_KEY": "openrouter-secret"}
@@ -124,6 +127,11 @@ def test_job_environment_only_includes_selected_provider_and_harness_credentials
         "OPENROUTER_API_KEY": "openrouter-secret",
         "CURSOR_API_KEY": "cursor-secret",
     }
-    for env in (codex, openrouter_claude, openrouter_cursor):
+    assert xai_grok == {
+        "PATH": "/bin",
+        "XAI_API_KEY": "xai-secret",
+        "GROK_BIN": "/usr/local/bin/grok",
+    }
+    for env in (codex, openrouter_claude, openrouter_cursor, xai_grok):
         assert "DATABASE_URL" not in env
         assert "GITHUB_TOKEN" not in env
