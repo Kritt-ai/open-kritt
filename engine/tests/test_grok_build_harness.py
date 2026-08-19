@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -97,6 +98,10 @@ def test_grok_build_tool_free_command_and_structured_output(monkeypatch, tmp_pat
         captured["prompt"] = prompt
         captured["cwd"] = cwd
         captured["env"] = env
+        prompt_path = Path(cmd[cmd.index("--prompt-file") + 1])
+        captured["prompt_path"] = prompt_path
+        captured["prompt_text"] = prompt_path.read_text(encoding="utf-8")
+        captured["prompt_mode"] = prompt_path.stat().st_mode & 0o777
         return SimpleNamespace(
             stdout=json.dumps(
                 {
@@ -155,9 +160,13 @@ def test_grok_build_tool_free_command_and_structured_output(monkeypatch, tmp_pat
     assert provided_env["GROK_TELEMETRY_ENABLED"] == "true"
     # Prompt is delivered via file, not process stdin.
     assert captured["prompt"] == ""
+    assert captured["prompt_path"].parent == Path(provided_env["HOME"])
+    assert captured["prompt_text"] == "prompt body"
+    assert captured["prompt_mode"] == 0o600
+    assert not captured["prompt_path"].exists()
 
 
-def test_grok_build_docker_runner_remaps_grok_home(monkeypatch, tmp_path):
+def test_grok_build_snapshot_runner_remaps_grok_home_and_runtime_prompt(monkeypatch, tmp_path):
     data_dir = tmp_path / "engine-data"
     host_data_dir = tmp_path / "host-engine-data"
     repo_dir = data_dir / "jobs" / "metadata-9" / "workspace"
@@ -185,6 +194,9 @@ def test_grok_build_docker_runner_remaps_grok_home(monkeypatch, tmp_path):
 
     def fake_run_process(cmd, prompt, cwd, timeout, env=None):
         captured["cmd"] = cmd
+        prompt_files = list(home_dir.glob(".open-kritt-grok-prompt.*.txt"))
+        captured["prompt_files"] = prompt_files
+        captured["prompt_text"] = prompt_files[0].read_text(encoding="utf-8") if prompt_files else None
         return SimpleNamespace(
             stdout=json.dumps({"structuredOutput": marked({"stub": True, "stub_explanation": "ok", "results": []})}),
             stderr="",
@@ -204,9 +216,19 @@ def test_grok_build_docker_runner_remaps_grok_home(monkeypatch, tmp_path):
             "PATH": "/usr/local/bin",
         },
         allow_tools=True,
+        runner_image="workspace-snapshot",
     )
 
     cmd = captured["cmd"]
+    prompt_arg = cmd[cmd.index("--prompt-file") + 1]
+    assert prompt_arg.startswith("/home/runner/.open-kritt-grok-prompt.")
+    assert not prompt_arg.startswith("/workspace/")
+    assert captured["prompt_text"] == "prompt"
+    assert len(captured["prompt_files"]) == 1
+    assert not captured["prompt_files"][0].exists()
+    assert "workspace-snapshot" in cmd
+    workspace_mount = f"src={host_data_dir / 'jobs' / 'metadata-9' / 'workspace'},dst=/workspace"
+    assert not any(workspace_mount in part for part in cmd)
     grok_home_flags = [part for part in cmd if part == "GROK_HOME" or part.startswith("GROK_HOME=")]
     assert grok_home_flags == ["GROK_HOME=/home/runner/.grok"]
     for key, value in harnesses.GROK_BUILD_RUNTIME_ENV.items():

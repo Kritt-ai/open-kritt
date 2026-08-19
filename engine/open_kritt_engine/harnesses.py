@@ -2033,11 +2033,17 @@ class GrokBuildHarness:
         model_name = (model or DEFAULT_GROK_BUILD_MODEL).strip() or DEFAULT_GROK_BUILD_MODEL
         workspace = Path(repo_dir)
         workspace.mkdir(parents=True, exist_ok=True)
-        # Unique filenames avoid collisions when tool-free generation shares a work dir.
+        # Snapshot runners do not bind-mount the host workspace, but their
+        # per-job home is always mounted. Keep the prompt there so Grok can
+        # read a file created after the workspace image was committed.
+        prompt_dir = Path(actual_env.get("HOME") or workspace)
+        prompt_dir.mkdir(parents=True, exist_ok=True)
+        # Unique filenames avoid collisions when tool-free generation shares a home.
         # --json-schema requires inline JSON (file paths are rejected by the CLI).
         suffix = f"{os.getpid()}.{time.time_ns()}"
-        prompt_path = workspace / f".open-kritt-grok-prompt.{suffix}.txt"
+        prompt_path = prompt_dir / f".open-kritt-grok-prompt.{suffix}.txt"
         prompt_path.write_text(prompt, encoding="utf-8")
+        prompt_path.chmod(0o600)
         schema_json = json.dumps(_grok_json_schema(schema))
         try:
             cmd = [
