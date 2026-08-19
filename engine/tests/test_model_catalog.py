@@ -12,6 +12,7 @@ from open_kritt_engine import model_catalog
 from open_kritt_engine.model_catalog import (
     ModelCatalogRefresher,
     codex_is_configured,
+    fetch_abliteration_models,
     fetch_anthropic_models,
     fetch_codex_models,
     fetch_openrouter_models,
@@ -369,6 +370,57 @@ def test_fetch_openrouter_models_caps_the_sanitized_catalog(monkeypatch):
     assert default_model == "z-ai/glm-5.2"
 
 
+def test_fetch_abliteration_models_uses_account_catalog(monkeypatch):
+    requests = []
+
+    def fake_urlopen(request, timeout):
+        requests.append((request, timeout))
+        entries = {
+            "object": "list",
+            "data": [
+                {"id": "abliterated-model"},
+                {"id": "abliterated-model-large", "name": " Abliterated Model Large "},
+                {"id": "vendor/experimental-model"},
+                {"id": "abliterated-model"},
+                "not-a-model",
+            ],
+        }
+        return io.BytesIO(json.dumps(entries).encode("utf-8"))
+
+    monkeypatch.setattr(model_catalog, "urlopen", fake_urlopen)
+    models, default_model = fetch_abliteration_models("ablit-test-key", 2)
+
+    assert [model["id"] for model in models] == [
+        "abliterated-model",
+        "abliterated-model-large",
+        "vendor/experimental-model",
+    ]
+    assert models[0]["isDefault"] is True
+    assert models[0]["thinkingEfforts"] == ["low", "medium", "high"]
+    assert models[1]["label"] == "Abliterated Model Large"
+    assert models[1]["thinkingEfforts"] == ["low", "medium", "high"]
+    assert models[2]["thinkingEfforts"] == ["default"]
+    assert default_model == "abliterated-model"
+    request, timeout = requests[0]
+    assert request.full_url == "https://api.abliteration.ai/v1/models"
+    assert request.get_header("Authorization") == "Bearer ablit-test-key"
+    assert timeout == 2
+
+
+def test_fetch_abliteration_models_rejects_invalid_responses(monkeypatch):
+    monkeypatch.setattr(model_catalog, "urlopen", lambda *_args, **_kwargs: io.BytesIO(b"not-json"))
+    with pytest.raises(model_catalog.ModelCatalogError, match="Could not read the Abliteration model catalog"):
+        fetch_abliteration_models("ablit-test-key", 2)
+
+    monkeypatch.setattr(
+        model_catalog,
+        "urlopen",
+        lambda *_args, **_kwargs: io.BytesIO(json.dumps({"data": []}).encode("utf-8")),
+    )
+    with pytest.raises(model_catalog.ModelCatalogError, match="Abliteration model catalog was empty"):
+        fetch_abliteration_models("ablit-test-key", 2)
+
+
 def test_fetch_openrouter_models_rejects_oversized_or_invalid_responses(monkeypatch):
     monkeypatch.setattr(model_catalog, "MAX_HTTP_CATALOG_BYTES", 32)
     monkeypatch.setattr(
@@ -412,6 +464,25 @@ def test_refresher_persists_only_configured_provider_catalogs():
     ]
     assert db.errors == []
     assert [conn.commits for conn in db.connections] == [1, 1, 1]
+
+
+def test_refresher_persists_abliteration_catalog():
+    db = FakeDatabase()
+    abliteration_models = [
+        {"id": "abliterated-model", "label": "abliterated-model", "thinkingEfforts": ["medium"], "isDefault": True}
+    ]
+    refresher = ModelCatalogRefresher(
+        db,
+        env={"ABLIT_KEY": "ablit-key"},
+        fetch_abliteration=lambda: (abliteration_models, "abliterated-model"),
+    )
+
+    assert refresher.refresh() == {"abliteration": True}
+    assert db.catalogs == [
+        {"provider": "abliteration", "models": abliteration_models, "default_model": "abliterated-model"},
+    ]
+    assert db.errors == []
+    assert [conn.commits for conn in db.connections] == [1]
 
 
 def test_refresher_preserves_existing_catalog_on_provider_failure():

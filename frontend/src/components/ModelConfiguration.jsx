@@ -21,6 +21,7 @@ const PROVIDER_LABELS = {
   codex: 'Codex',
   claude: 'Claude',
   openrouter: 'OpenRouter',
+  abliteration: 'Abliteration',
 };
 
 export function modelConfigurationForCatalog(current, providers, catalog) {

@@ -8,6 +8,7 @@ import { usePagination } from '../lib/usePagination.js';
 
 const PROVIDER_LINKS = {
   openrouter: 'https://openrouter.ai/settings/keys',
+  abliteration: 'https://abliteration.ai',
 };
 
 const WEEKLY_WINDOW_MINUTES = 7 * 24 * 60;
@@ -101,7 +102,7 @@ export default function Accounts() {
   };
 
   const remove = async (provider) => {
-    if (!window.confirm('Remove the OpenRouter API key from open·kritt?')) return;
+    if (!window.confirm(`Remove the ${provider.label} API key from open·kritt?`)) return;
     const previous = data;
     setData(removeProviderFromOverview(data, provider.id));
     try {
@@ -169,7 +170,7 @@ export default function Accounts() {
           <div style={{ fontSize: 27, fontWeight: 600, letterSpacing: '-0.02em' }}>Accounts</div>
           <div style={{ color: 'var(--text-2)', marginTop: 7, maxWidth: 680, lineHeight: 1.5 }}>
             See which model providers are ready. Sign in to Codex or Claude with their official login flows, or add an
-            OpenRouter API key. Secret values are never returned by the API.
+            OpenRouter or Abliteration API key. Secret values are never returned by the API.
           </div>
         </div>
         {data && (
@@ -351,7 +352,7 @@ function ProviderCard({
 }
 
 export function providerActionLabel(provider) {
-  if (provider.management !== 'login') return provider.configured ? 'Add or replace key' : 'Add OpenRouter key';
+  if (provider.management !== 'login') return provider.configured ? 'Add or replace key' : `Add ${provider.label} key`;
   const signInRequired = provider.accounts.some((account) => account.statusKind === 'expired');
   if (provider.id === 'codex') return signInRequired ? 'Sign in to Codex again' : 'Add Codex account';
   if (signInRequired) return 'Sign in to Claude again';
@@ -427,7 +428,8 @@ export function removeProviderFromOverview(overview, providerId) {
 }
 
 function ProviderMark({ provider }) {
-  const label = provider === 'codex' ? 'CX' : provider === 'claude' ? 'CL' : 'OR';
+  const labels = { codex: 'CX', claude: 'CL', openrouter: 'OR', abliteration: 'AB' };
+  const label = labels[provider] || 'OR';
   return <span className={`mono account-provider-mark account-provider-mark-${provider}`}>{label}</span>;
 }
 

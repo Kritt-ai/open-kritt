@@ -174,6 +174,7 @@ TOOL_FREE_CODEX_DISABLED_FEATURES = (
 OPENROUTER_CLAUDE_BASE_URL = "https://openrouter.ai/api"
 OPENROUTER_CURSOR_BASE_URL = "https://openrouter.ai/api/v1/cursor"
 OPENROUTER_CODEX_BASE_URL = "https://openrouter.ai/api/v1"
+ABLITERATION_CODEX_BASE_URL = "https://api.abliteration.ai/v1"
 OPENROUTER_MODEL_ALIASES = {
     "glm-5.2": "z-ai/glm-5.2",
     "grok-4.5": "x-ai/grok-4.5",
@@ -183,7 +184,7 @@ CLAUDE_MODEL_ALIASES = {
     "opus-4.8": "claude-opus-4-8",
 }
 DEFAULT_MODEL_PROVIDER = "openrouter"
-MODEL_PROVIDERS = {"codex", "claude", "openrouter"}
+MODEL_PROVIDERS = {"codex", "claude", "openrouter", "abliteration"}
 CLAUDE_WORKSPACE_SYSTEM_PROMPT = (
     "Use only files under the current working directory and dependency paths listed in WORKSPACE.json. "
     "Do not search from filesystem root (/), /data, /root, /home, or other global paths. "
@@ -846,6 +847,7 @@ def _scan_docker_command(
         "CODEX_API_KEY",
         "OPENAI_API_KEY",
         "OPENROUTER_API_KEY",
+        "ABLIT_KEY",
         "ANTHROPIC_BASE_URL",
         "ANTHROPIC_AUTH_TOKEN",
         "ANTHROPIC_API_KEY",
@@ -938,6 +940,8 @@ def codex_cli_model_provider(
         return None
     if selected == "openrouter":
         return (configured or "openrouter") if allow_tools else "openrouter"
+    if selected == "abliteration":
+        return (configured or "abliteration") if allow_tools else "abliteration"
     return selected or configured
 
 
@@ -1420,6 +1424,13 @@ def codex_exec_command(
         command.extend(["-c", f'model_providers.openrouter.base_url="{OPENROUTER_CODEX_BASE_URL}"'])
         command.extend(["-c", 'model_providers.openrouter.env_key="OPENROUTER_API_KEY"'])
         command.extend(["-c", 'model_providers.openrouter.wire_api="responses"'])
+    if not allow_tools and cli_model_provider == "abliteration":
+        # Same isolated-generation recreation for Abliteration's
+        # OpenAI-compatible endpoint.
+        command.extend(["-c", 'model_providers.abliteration.name="Abliteration"'])
+        command.extend(["-c", f'model_providers.abliteration.base_url="{ABLITERATION_CODEX_BASE_URL}"'])
+        command.extend(["-c", 'model_providers.abliteration.env_key="ABLIT_KEY"'])
+        command.extend(["-c", 'model_providers.abliteration.wire_api="responses"'])
     if cli_model_provider:
         command.extend(["-c", f"model_provider={json.dumps(cli_model_provider)}"])
     if thinking_effort and thinking_effort != "default":

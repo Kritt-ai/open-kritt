@@ -25,6 +25,21 @@ def test_environment_key_bootstraps_managed_store_once(tmp_path):
     assert disabled == set()
 
 
+def test_abliteration_key_bootstraps_managed_store(tmp_path):
+    credential_path = tmp_path / "providers.json"
+
+    credentials, disabled = bootstrap_managed_provider_credentials({"ABLIT_KEY": "ablit-key"}, str(credential_path))
+    assert credentials == {"abliteration": "ablit-key"}
+    assert disabled == set()
+
+    env = provider_environment(
+        {
+            "OPEN_KRITT_PROVIDER_CREDENTIALS_PATH": str(credential_path),
+        }
+    )
+    assert env["ABLIT_KEY"] == "ablit-key"
+
+
 def test_disabled_environment_key_is_not_bootstrapped_again(tmp_path):
     credential_path = tmp_path / "providers.json"
     credential_path.write_text(
@@ -116,6 +131,7 @@ def test_job_environment_only_includes_selected_provider_and_harness_credentials
     codex = job_environment("codex", "codex", source)
     openrouter_claude = job_environment("openrouter", "claude-code", source)
     openrouter_cursor = job_environment("openrouter", "cursor", source)
+    abliteration = job_environment("abliteration", "codex", {**source, "ABLIT_KEY": "ablit-secret"})
 
     assert codex == {"PATH": "/bin", "OPENAI_API_KEY": "openai-secret", "CODEX_API_KEY": "openai-secret"}
     assert openrouter_claude == {"PATH": "/bin", "OPENROUTER_API_KEY": "openrouter-secret"}
@@ -124,6 +140,7 @@ def test_job_environment_only_includes_selected_provider_and_harness_credentials
         "OPENROUTER_API_KEY": "openrouter-secret",
         "CURSOR_API_KEY": "cursor-secret",
     }
-    for env in (codex, openrouter_claude, openrouter_cursor):
+    assert abliteration == {"PATH": "/bin", "ABLIT_KEY": "ablit-secret"}
+    for env in (codex, openrouter_claude, openrouter_cursor, abliteration):
         assert "DATABASE_URL" not in env
         assert "GITHUB_TOKEN" not in env
