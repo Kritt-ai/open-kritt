@@ -43,6 +43,8 @@ services:
       OPEN_KRITT_CODEX_RUNTIME_ACCOUNTS_DIR: /codex-accounts
       OPEN_KRITT_CODEX_INITIAL_HOME: ${ENGINE_CODEX_HOME:-/root/.codex}
       OPEN_KRITT_CLAUDE_HOME: /provider-homes/claude
+      OPEN_KRITT_CLAUDE_ACCOUNTS_DIR: /provider-homes/claude-accounts
+      OPEN_KRITT_CLAUDE_RUNTIME_ACCOUNTS_DIR: /claude-accounts
       OPEN_KRITT_ENGINE_RUNTIME_CONFIG_PATH: /engine-data/engine-runtime.env
       OPEN_KRITT_ENV_FILE_PATH: /project-config/.env
       EXECUTOR_VIEW_URL: http://executor-view:8090
@@ -65,7 +67,8 @@ services:
       # official Codex/Claude login commands. The engine keeps its own mounts.
       - ${ENGINE_CODEX_HOME_HOST:-./.data/codex}:/provider-homes/codex:z
       - ${ENGINE_CODEX_ACCOUNTS_HOST:-./.data/codex-accounts}:/provider-homes/codex-accounts:z
-      - ${ENGINE_CLAUDE_HOME:-./.data/claude}:/provider-homes/claude
+      - ${ENGINE_CLAUDE_HOME_HOST:-${ENGINE_CLAUDE_HOME:-./.data/claude}}:/provider-homes/claude
+      - ${ENGINE_CLAUDE_ACCOUNTS_HOST:-./.data/claude-accounts}:/provider-homes/claude-accounts
       - ${ENGINE_DATA_DIR_HOST:-./.data/engine}:/engine-data
       # Accounts mirrors durable provider/account configuration back to the
       # project environment file while secrets remain absent from API responses.
@@ -79,23 +82,37 @@ services:
     build:
       context: ./engine
       dockerfile: Dockerfile
-    image: ${ENGINE_SCAN_RUNNER_IMAGE:-open-kritt-engine:local}
+    image: ${ENGINE_IMAGE:-open-kritt-engine:local}
     container_name: open-kritt-engine
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql://open_kritt:open_kritt_password@db:5432/open_kritt?schema=public}
       ENGINE_DATA_DIR: ${ENGINE_DATA_DIR:-/data}
       ENGINE_MIN_FREE_STORAGE_GB: ${ENGINE_MIN_FREE_STORAGE_GB:-20}
+      ENGINE_IGNORE_LOW_STORAGE: ${ENGINE_IGNORE_LOW_STORAGE:-false}
+      ENGINE_AUTO_PRUNE_DOCKER_BUILD_CACHE: ${ENGINE_AUTO_PRUNE_DOCKER_BUILD_CACHE:-true}
+      ENGINE_AUTO_PRUNE_UNUSED_DOCKER_IMAGES: ${ENGINE_AUTO_PRUNE_UNUSED_DOCKER_IMAGES:-true}
+      ENGINE_DOCKER_BUILD_CACHE_KEEP_GB: ${ENGINE_DOCKER_BUILD_CACHE_KEEP_GB:-0}
+      ENGINE_DOCKER_BUILD_CACHE_PRUNE_INTERVAL_SECONDS: ${ENGINE_DOCKER_BUILD_CACHE_PRUNE_INTERVAL_SECONDS:-300}
       ENGINE_RUNTIME_CONFIG_PATH: ${ENGINE_RUNTIME_CONFIG_PATH:-/data/engine-runtime.env}
       ENGINE_CHECKOUT_CACHE_DIR: ${ENGINE_CHECKOUT_CACHE_DIR:-/checkout-cache}
       ENGINE_CHECKOUT_CACHE_PERSIST_DIR: ${ENGINE_CHECKOUT_CACHE_PERSIST_DIR:-/data/checkout-cache-persist}
-      ENGINE_SCAN_CACHE_RETENTION_DAYS: ${ENGINE_SCAN_CACHE_RETENTION_DAYS:-7}
+      ENGINE_SCAN_CACHE_RETENTION_DAYS: ${ENGINE_SCAN_CACHE_RETENTION_DAYS:-0}
       ENGINE_POLL_SECONDS: ${ENGINE_POLL_SECONDS:-5}
       ENGINE_WORKER_COUNT: ${ENGINE_WORKER_COUNT:-2}
       ENGINE_MAX_CONCURRENT_SCANS: ${ENGINE_MAX_CONCURRENT_SCANS:-1}
       ENGINE_MAX_WORKERS_PER_SCAN: ${ENGINE_MAX_WORKERS_PER_SCAN:-0}
+      ENGINE_WORKERS_PER_ACCOUNT: ${ENGINE_WORKERS_PER_ACCOUNT:-15}
       ENGINE_AUTOSCALE_SCAN_WORKERS_ON_PROVIDER_CAPACITY: ${ENGINE_AUTOSCALE_SCAN_WORKERS_ON_PROVIDER_CAPACITY:-true}
+      ENGINE_CODEX_MAX_SUBAGENTS_PER_SESSION: ${ENGINE_CODEX_MAX_SUBAGENTS_PER_SESSION:-5}
+      ENGINE_MEMORY_RESERVE_GB: ${ENGINE_MEMORY_RESERVE_GB:-2}
+      ENGINE_SCAN_RUNNER_MEMORY_MB: ${ENGINE_SCAN_RUNNER_MEMORY_MB:-1536}
+      ENGINE_SCAN_RUNNER_MEMORY_RESERVATION_MB: ${ENGINE_SCAN_RUNNER_MEMORY_RESERVATION_MB:-${ENGINE_SCAN_RUNNER_MEMORY_MB:-1536}}
+      EXECUTOR_VIEW_URL: http://executor-view:8090
+      EXECUTOR_VIEW_INTERNAL_TOKEN_FILE: /executor-auth/internal-token
       ENGINE_WORKSPACE_SETUP_CONCURRENCY: ${ENGINE_WORKSPACE_SETUP_CONCURRENCY:-2}
+      ENGINE_POST_PROCESS_WORKSPACE_MODE: ${ENGINE_POST_PROCESS_WORKSPACE_MODE:-copy}
       ENGINE_RETRY_COUNT: ${ENGINE_RETRY_COUNT:-2}
+      ENGINE_CYBER_SAFETY_RETRY_COUNT: ${ENGINE_CYBER_SAFETY_RETRY_COUNT:-0}
       ENGINE_HARNESS_TIMEOUT_SECONDS: ${ENGINE_HARNESS_TIMEOUT_SECONDS:-7200}
       ENGINE_MODEL_CATALOG_REFRESH_SECONDS: ${ENGINE_MODEL_CATALOG_REFRESH_SECONDS:-300}
       ENGINE_MODEL_CATALOG_TIMEOUT_SECONDS: ${ENGINE_MODEL_CATALOG_TIMEOUT_SECONDS:-10}
@@ -123,6 +140,9 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      executor-view:
+        condition: service_healthy
+    restart: unless-stopped
     volumes:
       - ./engine:/app
       - ${ENGINE_DATA_DIR_HOST:-./.data/engine}:/data
@@ -134,13 +154,14 @@ services:
       # Codex logins created by Accounts and ./kritt setup share this root.
       - ${ENGINE_CODEX_ACCOUNTS_HOST:-./.data/codex-accounts}:/run/open-kritt-secrets/codex-accounts:z
       - ${ENGINE_CODEX_HOME_SOURCE_HOST:-./.data/codex-home-source}:/run/open-kritt-secrets/codex-home-source:ro,z
-      - ${ENGINE_CLAUDE_HOME:-./.data/claude}:/root/.claude
+      - ${ENGINE_CLAUDE_HOME_HOST:-${ENGINE_CLAUDE_HOME:-./.data/claude}}:/root/.claude
+      - ${ENGINE_CLAUDE_ACCOUNTS_HOST:-./.data/claude-accounts}:/run/open-kritt-secrets/claude-accounts:z
+      - ${EXECUTOR_VIEW_AUTH_HOST:-./.data/engine/executor-auth}:/executor-auth:ro
       - /var/run/docker.sock:/var/run/docker.sock
       # Local repositories are copied into scan-specific snapshots; the host source
       # never needs to be modified by the engine.
       - ${LOCAL_REPOS_PATH:-./local_repos}:/run/open-kritt-secrets/local-repos:ro
-    tmpfs:
-      - /checkout-cache
+      - engine-checkout-cache:/checkout-cache
 
   executor-view:
     build:
@@ -161,6 +182,7 @@ services:
       EXECUTOR_VIEW_SECURE_COOKIE: ${EXECUTOR_VIEW_SECURE_COOKIE:-false}
       EXECUTOR_VIEW_CODEX_HOME: ${ENGINE_CODEX_HOME:-/root/.codex}
       EXECUTOR_VIEW_CLAUDE_HOME: /root/.claude
+      EXECUTOR_VIEW_CLAUDE_ACCOUNTS_ROOT: /claude-accounts
       EXECUTOR_VIEW_ENGINE_DATA_DIR: /data
       EXECUTOR_VIEW_ENGINE_RUNTIME_CONFIG_PATH: ${ENGINE_RUNTIME_CONFIG_PATH:-/data/engine-runtime.env}
       OPEN_KRITT_PROVIDER_CREDENTIALS_PATH: /credentials/providers.json
@@ -177,7 +199,8 @@ services:
       - ${ENGINE_CODEX_HOME_HOST:-./.data/codex}:/root/.codex:ro,z
       - ${ENGINE_CODEX_ACCOUNTS_HOST:-./.data/codex-accounts}:/codex-accounts:ro,z
       - ${ENGINE_CODEX_HOME_SOURCE_HOST:-./.data/codex-home-source}:/codex-home-source:ro,z
-      - ${ENGINE_CLAUDE_HOME:-./.data/claude}:/root/.claude:ro
+      - ${ENGINE_CLAUDE_HOME_HOST:-${ENGINE_CLAUDE_HOME:-./.data/claude}}:/root/.claude:ro
+      - ${ENGINE_CLAUDE_ACCOUNTS_HOST:-./.data/claude-accounts}:/claude-accounts:ro,z
       - ${EXECUTOR_VIEW_AUTH_HOST:-./.data/engine/executor-auth}:/executor-auth
     healthcheck:
       test:
@@ -211,3 +234,6 @@ services:
     volumes:
       - ${POSTGRES_DATA_DIR:-./.data/postgres}:/var/lib/postgresql/data
       - ./database/init:/docker-entrypoint-initdb.d:ro
+
+volumes:
+  engine-checkout-cache:

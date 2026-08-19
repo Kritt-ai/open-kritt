@@ -26,6 +26,11 @@ Depth 1 → runs 20 times, once per entrypoint
 This is the "one at a time" mode you see on a step in the builder - ideal for focused,
 per-target analysis.
 
+Sibling steps still broadcast by default: every result from every sibling in the previous
+depth starts every sibling in the next depth. For one-to-one sibling routing, use
+[bind routing](/workflows/depth-and-siblings#bind-sibling-transitions). Bind remains
+one-at-a-time and cannot be combined with **all at once**.
+
 ## All at once (consume all)
 
 Switch a step to **all at once** (consume-all) and it runs a **single** time, receiving the

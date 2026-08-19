@@ -8,6 +8,14 @@ export function rateLimitPresentation(reasoning) {
       accountRelated: false,
     };
   }
+  if (reasoning?.limit_kind === 'subagent_limited') {
+    return {
+      label: 'Subagent limit',
+      message:
+        'Codex reached a separate premium limit while starting a subagent; the account usage quota was not exhausted.',
+      accountRelated: false,
+    };
+  }
   if (reasoning?.limit_kind === 'account_quota_limited') {
     return {
       label: 'Quota exhausted',
@@ -35,14 +43,17 @@ export function providerCapacityAutoscalePresentation(reasoning) {
   )
     return null;
   const reductions = Number.isInteger(events) && events > 0 ? events : Math.max(0, initialCap - workerCap);
+  const subagentLimited = reasoning?.limit_kind === 'subagent_limited';
+  const label = subagentLimited ? 'Subagent-limit autoscale' : 'Provider-capacity autoscale';
+  const cause = subagentLimited ? 'subagent-limit' : 'capacity';
   return {
     initialCap,
     workerCap,
     reductions,
-    compact: `Provider-capacity autoscale: ${initialCap} → ${workerCap} worker${workerCap === 1 ? '' : 's'}`,
-    message: `Provider-capacity autoscaling reduced this scan from ${initialCap} to ${workerCap} worker${
+    compact: `${label}: ${initialCap} → ${workerCap} worker${workerCap === 1 ? '' : 's'}`,
+    message: `${label} reduced this scan from ${initialCap} to ${workerCap} worker${
       workerCap === 1 ? '' : 's'
-    } after ${reductions} capacity ${reductions === 1 ? 'event' : 'events'}. Future capacity errors lower it one worker at a time.`,
+    } after ${reductions} ${cause} ${reductions === 1 ? 'event' : 'events'}. Future ${cause} errors lower it one worker at a time.`,
   };
 }
 

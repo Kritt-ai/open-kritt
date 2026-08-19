@@ -64,6 +64,9 @@ export default function Overview() {
                   <div style={{ fontWeight: 500, fontSize: 13.5 }}>{s.repoDisplay || s.repoFull}</div>
                   <div className="mono" style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 2 }}>
                     {s.workflowName} · {s.model}
+                    {Object.keys(s.modelOverrides || {}).length
+                      ? ` · ${Object.keys(s.modelOverrides).length} depth overrides`
+                      : ''}
                   </div>
                 </div>
                 <StatusBadge status={s.status} reasoning={s.reasoning} />

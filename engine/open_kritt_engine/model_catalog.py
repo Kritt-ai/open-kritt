@@ -41,6 +41,7 @@ MODEL_NOTES = {
 }
 CLAUDE_MODEL_THINKING_EFFORTS = {
     "claude-fable-5": ("low", "medium", "high", "xhigh", "max"),
+    "claude-opus-5": ("low", "medium", "high", "xhigh", "max"),
     "claude-opus-4-8": ("low", "medium", "high", "xhigh", "max"),
     "claude-opus-4-7": ("low", "medium", "high", "xhigh", "max"),
     "claude-opus-4-6": ("low", "medium", "high", "max"),

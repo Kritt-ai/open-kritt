@@ -1,0 +1,142 @@
+---
+title: 'Headless CLI'
+description: 'Create and monitor scans on servers without a graphical interface.'
+---
+
+`./kritt-headless` operates open·kritt from a terminal-only host such as an Ubuntu EC2
+instance. It is a client of the running backend: configure and start the Docker stack
+first, then use the headless CLI from another shell.
+
+```bash
+# First shell, tmux window, or service manager
+./kritt start
+
+# Another shell in the repository
+./kritt-headless
+```
+
+The command requires Node.js 20 or newer, but does not require `npm install`.
+
+The default interactive mode is a full-screen terminal interface. Use the Up and Down
+Arrow keys to move, Enter to choose, Esc to go back, and Space to toggle items in a
+multi-select list. Scan states are color coded, long lists keep the current selection in
+view, and scan details can be scrolled with the Arrow keys. `NO_COLOR=1` disables color.
+The individual commands below remain plain-text and script-friendly.
+
+<Warning>
+  The bundled backend has no application authentication and binds to `127.0.0.1` by default. Keep it private. Run the
+  CLI on the same host, or use an authenticated private tunnel; do not expose the backend port directly to the internet.
+</Warning>
+
+## What the headless CLI supports
+
+- Import portable workflows, post-scripts, agent skills, and severity rankers.
+- Create scans, including remote/local targets, dependencies, configuration, required
+  `extra.*` values, model choices and per-depth overrides, skills, rankers, job limits,
+  and concurrent/queued launch policy.
+- List and inspect scans, including state, progress, active workflow depth and execution
+  phase, active model workers, retry counts, and failure reasons.
+- Pause, stop, and resume scans using the same lifecycle API as the web UI.
+- View and update every non-secret engine runtime setting exposed on **Settings**.
+- Export terminal scan findings to a ZIP file.
+
+Finding contents are intentionally not printed. Export a completed scan—or a stopped or
+failed scan that already has findings—and inspect the ZIP on a suitable workstation.
+
+## Portable resource workflow
+
+The headless CLI does not contain editors for workflows, post-scripts, skills, or
+rankers. Create and review those resources in a graphical open·kritt installation, select
+**Export** on its card, and copy the JSON file to the remote host. Then import it:
+
+```bash
+./kritt-headless import workflow ./audit.workflow.json
+./kritt-headless import post-script ./report.post-script.json
+./kritt-headless import skill ./solidity.agent-skill.json
+./kritt-headless import ranker ./impact.severity-ranker.json
+```
+
+Omit the path in a terminal to be prompted for it. Files are capped at 2 MB and pass
+through the same server-side validators as resources created in the UI. Every import
+creates a new resource; it does not overwrite one with a matching name.
+
+<Warning>
+  Review imported prompts and skill instructions before running them. They control what repository and scan context an
+  agent sends to the configured model provider.
+</Warning>
+
+## Create a scan
+
+Run the guided flow:
+
+```bash
+./kritt-headless scan create
+```
+
+The workflow and post-scripts are selected first because their prompts determine which
+`extra.*` values are mandatory. Prefix an extra value, configuration value, or custom
+ranker value with `@` to read it from a local file—for example,
+`@./scan-inputs/program.md`. The backend remains authoritative and rejects unavailable
+models, incompatible provider/harness combinations, missing resources, invalid targets,
+or missing prompt inputs.
+
+If a scan is already active, choose whether to queue the new scan or start it in the
+concurrent pool. The command prints the new scan ID and initial state.
+
+## Monitor and manage scans
+
+Use the interactive menu, or use individual commands:
+
+```bash
+./kritt-headless scan list
+./kritt-headless scan list running
+./kritt-headless scan show 42
+./kritt-headless scan pause 42
+./kritt-headless scan resume 42
+./kritt-headless scan stop 42
+```
+
+`scan show` reports current workflow/post-processing workers, their execution phase and
+workflow depth, progress, and recent normalized error messages. It never requests the
+vulnerability-list endpoint.
+
+## Export results
+
+The default destination is the root of the open·kritt repository:
+
+```bash
+./kritt-headless scan export 42
+./kritt-headless scan export 42 /srv/exports
+./kritt-headless scan export 42 /srv/exports/audit.zip
+```
+
+Existing files are not overwritten. Add `--force` only when replacing the exact
+destination is intentional. The backend permits complete exports for completed scans and
+clearly marked partial exports for stopped or failed scans that have findings.
+
+## Runtime settings
+
+Open the interactive settings editor, list settings, or change one explicitly:
+
+```bash
+./kritt-headless settings show
+./kritt-headless settings set workerCount 4
+./kritt-headless settings set ignoreLowStorage false
+```
+
+Values use the current backend's advertised type and range. Settings marked as requiring
+engine recreation still need the recreation described in [Settings](/getting-started/settings).
+Provider credentials remain under `./kritt setup` and **Accounts**; the settings API and
+headless CLI never return their values.
+
+## API address
+
+The client reads `BACKEND_PORT` from the repository `.env` and otherwise defaults to
+`http://127.0.0.1:3002/api`. Override it for a private tunnel or another local binding:
+
+```bash
+OPEN_KRITT_API_URL=http://127.0.0.1:4300 ./kritt-headless health
+./kritt-headless --api-url http://127.0.0.1:4300 scan list
+```
+
+Run `./kritt-headless help` for the complete command summary.

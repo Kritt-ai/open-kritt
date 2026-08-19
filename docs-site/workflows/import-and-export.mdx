@@ -14,12 +14,22 @@ On the **Workflows** page, select **Export** on a workflow card. You can also op
 workflow and select **Export JSON**. The downloaded file uses the versioned
 `open-kritt-workflow` format.
 
+Version 2 files include portable step IDs and any one-to-one bind routing. The IDs are
+local to the file and are not workflow or database IDs from the exporting installation.
+Version 1 files remain importable.
+
 ## Import a workflow
 
 Select **Import JSON** on the **Workflows** page, or choose **Import JSON file** from the
 new-workflow dialog. After you choose a file, open·kritt validates it with the same rules
 as the workflow builder and creates a new workflow. The imported workflow opens when the
 import completes.
+
+On a headless installation, copy the exported file to the server and run:
+
+```bash
+./kritt-headless import workflow ./example.workflow.json
+```
 
 The importer accepts both versioned workflow files and bare workflow JSON containing
 either `levels` or the flat `steps` returned by the workflow API. Files must be 2 MB or
@@ -35,7 +45,7 @@ smaller.
 ```json
 {
   "kind": "open-kritt-workflow",
-  "version": 1,
+  "version": 2,
   "workflow": {
     "name": "example-workflow",
     "description": "A reusable analysis workflow.",
@@ -44,6 +54,7 @@ smaller.
         "depth": 0,
         "multiOutput": true,
         "consumesAll": false,
+        "bindPrevious": false,
         "outputFormat": {
           "explanation": "string",
           "file_path": "string",
@@ -56,6 +67,7 @@ smaller.
         },
         "steps": [
           {
+            "clientId": "step-1",
             "name": "Analyze vulnerabilities",
             "content": "Analyze {{repo_full}} for concrete vulnerabilities."
           }
@@ -69,6 +81,8 @@ smaller.
 The deepest level must still provide the required terminal finding fields described in
 [What are steps?](/workflows/steps). Server-side validation rejects unsupported schemas,
 missing depths, invalid prompt references, and incomplete terminal output formats.
+Bound workflows are also rejected unless each adjacent transition has equal step counts
+and a complete one-to-one source map.
 
 ## Delete an unused workflow
 

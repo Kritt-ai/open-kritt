@@ -251,10 +251,12 @@ def _refresh_credential(
         raise _reconnect_error("Claude could not refresh its OAuth credential.") from exc
 
     if result.returncode != 0:
-        _restore_credential(original, original_stat)
         rate_limit = _refresh_rate_limit(result, account_home=str(home))
         if rate_limit is not None:
+            if not _preserve_rotated_credential(home, original, original_stat):
+                _restore_credential(original, original_stat)
             raise rate_limit
+        _restore_credential(original, original_stat)
         raise _reconnect_error("Claude could not refresh its OAuth credential.")
 
     try:
@@ -272,6 +274,20 @@ def _refresh_credential(
     _secure_canonical_credential(refreshed.path, original_stat)
     _remove_alternate_credentials(home, keep=refreshed.path.name)
     return _read_credential(home) or refreshed
+
+
+def _preserve_rotated_credential(home: Path, original: _Credential, original_stat: os.stat_result) -> bool:
+    """Keep a credential the CLI rotated before a quota-limited prompt failed."""
+
+    try:
+        refreshed = _read_credential(home)
+    except ClaudeCredentialError:
+        return False
+    if refreshed is None or refreshed.expires_at_ms <= original.expires_at_ms:
+        return False
+    _secure_canonical_credential(refreshed.path, original_stat)
+    _remove_alternate_credentials(home, keep=refreshed.path.name)
+    return True
 
 
 def _refresh_rate_limit(result: subprocess.CompletedProcess[str], *, account_home: str):

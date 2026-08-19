@@ -11,7 +11,7 @@ import {
   isValidKey,
   parseTemplateRefs,
 } from './keys.js';
-import { availableKeysForDepth, workflowDeleteState } from './workflow.js';
+import { availableKeysForDepth, groupByDepth, workflowDeleteState } from './workflow.js';
 
 describe('availableKeysForDepth', () => {
   it('clears individual upstream keys at a consumes-all boundary', () => {
@@ -42,6 +42,16 @@ describe('availableKeysForDepth', () => {
     expect(available.has('flow')).toBe(false);
     expect(available.has('impact')).toBe(false);
   });
+});
+
+it('groupByDepth identifies an incoming bound transition from destination steps', () => {
+  const levels = groupByDepth([
+    { id: '1', depth: 0, boundSourceStepId: null },
+    { id: '2', depth: 1, boundSourceStepId: '1' },
+  ]);
+
+  expect(levels[0].bindPrevious).toBe(false);
+  expect(levels[1].bindPrevious).toBe(true);
 });
 
 describe('workflowDeleteState', () => {

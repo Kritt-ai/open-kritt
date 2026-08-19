@@ -43,7 +43,7 @@ def fake_cache_git_head(path):
 
 @pytest.fixture(autouse=True)
 def isolate_unit_tests_from_external_runners(monkeypatch):
-    monkeypatch.setattr(harnesses, "_scan_docker_command", lambda cmd, _repo_dir, _env: cmd)
+    monkeypatch.setattr(harnesses, "_scan_docker_command", lambda cmd, _repo_dir, _env, **_kwargs: cmd)
     monkeypatch.setattr(workspace_module, "resolve_scan_checkout_revisions", lambda value, **_kwargs: value)
 
 
@@ -128,6 +128,31 @@ def test_scan_runner_startup_rejects_missing_runner_image(monkeypatch, tmp_path)
         harnesses.validate_scan_runner_configuration()
 
     assert exc_info.value.code == "configuration_error"
+
+
+def test_snapshot_scan_runner_uses_image_workspace_without_host_workspace_mount(monkeypatch, tmp_path):
+    data_dir = tmp_path / "engine-data"
+    host_data_dir = tmp_path / "host-engine-data"
+    repo_dir = data_dir / "jobs" / "metadata-777" / "workspace"
+    home_dir = data_dir / "jobs" / "metadata-777" / "home"
+    repo_dir.mkdir(parents=True)
+    home_dir.mkdir(parents=True)
+    monkeypatch.setenv("ENGINE_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("ENGINE_DOCKER_DATA_DIR_HOST", str(host_data_dir))
+    monkeypatch.setattr(harnesses.shutil, "which", lambda name: "docker" if name == "docker" else None)
+
+    command = REAL_SCAN_DOCKER_COMMAND(
+        ["codex", "exec", "-"],
+        str(repo_dir),
+        {"HOME": str(home_dir)},
+        runner_image="open-kritt-workspace-snapshot:test",
+    )
+
+    mounts = [command[index + 1] for index, value in enumerate(command) if value == "--mount"]
+    assert f"type=bind,src={host_data_dir / 'jobs' / 'metadata-777' / 'home'},dst=/home/runner" in mounts
+    assert not any("dst=/workspace" in mount for mount in mounts)
+    assert "open-kritt-workspace-snapshot:test" in command
+    assert command[command.index("open-kritt-workspace-snapshot:test") + 1 :][:2] == ["codex", "exec"]
 
 
 def test_prewarm_rebuilds_previous_marker_version_instead_of_promoting_it(monkeypatch, tmp_path):
@@ -263,7 +288,8 @@ def test_agent_cli_builds_use_exact_package_versions():
 
     assert "npm@12.0.1" in dockerfiles["engine"]
     for name in ("engine", "backend"):
-        assert "@openai/codex@0.144.6" in dockerfiles[name]
+        assert "@openai/codex@0.145.0" in dockerfiles[name]
+        assert "@openai/codex@0.145.0 \\\n    && codex --version" in dockerfiles[name]
         assert "@anthropic-ai/claude-code@2.1.215" in dockerfiles[name]
     assert "@anthropic-ai/claude-code@2.1.215" in dockerfiles["claude-runner"]
 

@@ -107,9 +107,9 @@ def test_patched_since_fetches_remote_history_once_and_attaches_it_to_each_works
     fetches = []
     original_fetch = prompting_module._git_fetch_status
 
-    def counted_fetch(repo_dir, refspec, *, timeout):
+    def counted_fetch(repo_dir, refspec, *, timeout, github_token=None):
         fetches.append((repo_dir, refspec))
-        return original_fetch(repo_dir, refspec, timeout=timeout)
+        return original_fetch(repo_dir, refspec, timeout=timeout, github_token=github_token)
 
     monkeypatch.setattr(prompting_module, "_git_fetch_status", counted_fetch)
 
@@ -161,6 +161,10 @@ def test_patched_since_prompt_requires_newer_comparison_and_exact_fix_commit():
     assert "found_at_commit" in prompt
     assert "_chip_patched" in prompt
     assert "needs_manual_review" in prompt
+    assert "On every run, independently check the live main branch" in prompt
+    assert "`repository.workspace_path`" in prompt
+    assert "`origin/main`" in prompt
+    assert "never translate unavailable history" in prompt
     assert "4a7dfc2" in prompt
     assert "bd9ee631" in prompt
     assert "{{patched_since_history}}" not in prompt
@@ -245,6 +249,7 @@ def test_patched_since_compares_dependency_path_with_dependency_default_branch(t
     assert context["status"] == "available"
     assert context["repository"]["repo"] == "stacks-sbtc/sbtc"
     assert context["repository"]["role"] == "dependency"
+    assert context["repository"]["workspace_path"] == "/workspace/sbtc"
     assert context["finding_path"]["repo_relative"] == "signer/src/contracts.rs"
     assert context["target_commit"] == vulnerable_commit
     assert context["default_branch"]["commit"] == fixed_commit
@@ -268,3 +273,58 @@ def test_patched_since_without_newer_refs_requires_manual_review_context(tmp_pat
     assert context["newer_descendants"] == []
     assert all(item["status"] == "unavailable" for item in context["fetch_results"])
     assert "requires manual review" in context["reason"]
+
+
+def test_patched_since_passes_github_token_to_authenticated_fetch(monkeypatch, tmp_path):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    _git(checkout, "init", "--initial-branch=main")
+    (checkout / "validation.rs").write_text("still vulnerable\n", encoding="utf-8")
+    target = _commit(checkout, "target")
+    _git(checkout, "remote", "add", "origin", "https://github.com/example/private.git")
+    calls = []
+
+    def fake_fetch(repo_dir, refspec, *, github_token=None, timeout):
+        calls.append((repo_dir, refspec, github_token, timeout))
+        return False, "test failure"
+
+    monkeypatch.setattr(prompting_module, "fetch_remote_ref", fake_fetch)
+
+    context = json.loads(
+        patched_since_history_context(
+            str(checkout),
+            _scan(target),
+            github_token="secret-token",
+            fetch_timeout=17,
+        )
+    )
+
+    assert context["status"] == "unavailable"
+    assert calls == [
+        (
+            str(checkout),
+            "+HEAD:refs/remotes/open-kritt-patched-since/default",
+            "secret-token",
+            17,
+        )
+    ]
+
+
+def test_patched_since_does_not_cache_transient_fetch_failure(monkeypatch, tmp_path):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    _git(checkout, "init", "--initial-branch=main")
+    (checkout / "validation.rs").write_text("still vulnerable\n", encoding="utf-8")
+    target = _commit(checkout, "target")
+    calls = []
+
+    def unavailable_fetch(*_args, **_kwargs):
+        calls.append(True)
+        return False, "temporary network failure"
+
+    monkeypatch.setattr(prompting_module, "fetch_remote_ref", unavailable_fetch)
+
+    patched_since_history_context(str(checkout), _scan(target))
+    patched_since_history_context(str(checkout), _scan(target))
+
+    assert len(calls) == 2

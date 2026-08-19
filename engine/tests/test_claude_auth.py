@@ -245,6 +245,36 @@ def test_rate_limited_refresh_is_retryable_without_exposing_provider_output(tmp_
     assert not (target / ".credentials.json").exists()
 
 
+def test_rate_limited_probe_preserves_credential_rotated_before_failure(tmp_path):
+    now = 1_800_000_000.0
+    source = tmp_path / "source"
+    target = tmp_path / "job"
+    source_path = _write_credential(source, access_token="old", expires_at_ms=int((now + 60) * 1000))
+
+    def rate_limited_refresh(_command, **_options):
+        _write_credential(source, access_token="new", expires_at_ms=int((now + 10_000) * 1000))
+        return SimpleNamespace(
+            returncode=1,
+            stdout="You've hit your session limit",
+            stderr="",
+        )
+
+    with pytest.raises(ClaudeCredentialRateLimited) as exc_info:
+        prepare_claude_job_credentials(
+            source,
+            target,
+            harness_timeout_seconds=3600,
+            now=lambda: now,
+            run_process=rate_limited_refresh,
+        )
+
+    assert exc_info.value.limit_kind == "account_quota_limited"
+    payload = json.loads(source_path.read_text(encoding="utf-8"))
+    assert payload["claudeAiOauth"]["accessToken"] == "new"
+    assert stat.S_IMODE(source_path.stat().st_mode) == 0o600
+    assert not (target / ".credentials.json").exists()
+
+
 def test_claude_credential_symlink_is_rejected_without_launching_cli(tmp_path):
     source = tmp_path / "source"
     source.mkdir()

@@ -126,6 +126,8 @@ the open·kritt CLI.
 
 After startup, open [http://localhost:5173](http://localhost:5173). The backend health
 endpoint is available at [http://localhost:3002/api/health](http://localhost:3002/api/health).
+On a machine without a browser, keep the stack running and use
+[`./kritt-headless`](/getting-started/headless-cli) from another shell.
 
 ## Configure model access
 
@@ -162,6 +164,8 @@ credential, how it is billed, which harness it enables, and how to verify it.
 | `./kritt setup` | Create `.env` when needed and configure model access or the optional GitHub token. |
 | `./kritt start` | Check setup, then run `docker compose up --build`. Ctrl+C stops the attached stack. |
 | `./kritt help` | Show command guidance. Use `./kritt help setup` or `./kritt help start` for a specific command. |
+| `./kritt-headless` | Operate a running stack without the web UI: import resources, create and inspect scans, configure settings, and export results. |
+| `./kritt-headless help` | Show headless interactive and command-mode usage. |
 
 ## Manual Docker setup
 

@@ -15,8 +15,11 @@ and whether that value is live or needs an engine container recreation.
 | Concurrent scan pool | Live | Maximum number of immediately started scans admitted at once. Queued scans wait until the active pool is empty. |
 | Workers per scan | Live | Hard cap on worker slots used by one scan. Set it to `0` for automatic fair sharing. |
 | Autoscale on provider capacity | Live | Reduces a scan's future worker cap after the provider reports server-capacity throttling. It does not change account quota limits. |
+| Minimum free storage | Live | Pauses new scan containers below the configured host free-space floor. |
+| Ignore low-storage safeguard | Live | Starts new scan containers regardless of free disk space while preserving the configured threshold for later use. |
 | Workspace setup concurrency | Engine recreation | Limits simultaneous checkout and isolated workspace preparation. |
 | Model-call retries | Live | Additional attempts for retryable workflow-step and post-script model calls. |
+| Cyber-block retries | Live | Opt-in additional attempts after a provider blocks a request under its cybersecurity safety policy. `0` keeps the fail-fast default. |
 | Model-call timeout | Live | Maximum duration of each future harness invocation. |
 
 Live changes affect future work; already-running model calls keep the values they
@@ -31,8 +34,10 @@ the project `.env` file so a future `docker compose up` recreation keeps them.
 
 <Warning>
   Raising worker or setup concurrency can exhaust provider rate limits, Docker
-  networking, CPU, memory, or disk capacity. The UI asks for confirmation before
-  pausing work or raising worker slots above the conservative recommendation.
+  networking, CPU, memory, or disk capacity. Ignoring the low-storage safeguard can
+  fill the host disk and cause scans or other services to fail. The UI asks for
+  confirmation before enabling this override, pausing work, or raising worker slots
+  above the conservative recommendation.
 </Warning>
 
 ## Scheduling behavior
@@ -49,8 +54,13 @@ Model-call retries do not automatically resume a scan after it reaches the faile
 state. A failed scan still uses the manual **Resume** action. Temporary provider limits
 use the separate `rate_limited` state and retry automatically.
 
+Cyber-block retries are independent of ordinary model-call retries. A value of `3`
+allows three retries after the first blocked call, for up to four total attempts.
+Because policy decisions are often deterministic, leave this at `0` unless repeated
+attempts are appropriate for your provider account and workload.
+
 ## Secrets
 
-Settings returns only an explicit allowlist of numeric runtime values. Provider API
+Settings returns only an explicit allowlist of non-secret runtime values. Provider API
 keys and login credentials are managed separately under **Accounts** and are never
 included in the settings response.

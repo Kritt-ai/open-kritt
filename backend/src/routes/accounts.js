@@ -25,6 +25,11 @@ export function createAccountsRouter({
 } = {}) {
   const router = Router();
 
+  router.use((req, res, next) => {
+    res.set('Cache-Control', 'no-store');
+    next();
+  });
+
   router.get('/', async (req, res, next) => {
     try {
       const refresh = ['1', 'true', 'yes'].includes(String(req.query.refresh || '').toLowerCase());

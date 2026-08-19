@@ -32,18 +32,115 @@ function findSqlDir() {
   return null;
 }
 
-// Split a SQL file into individual statements. The init files use plain
-// statements (no functions / dollar-quoting), so splitting on top-level ';'
-// after stripping line comments is sufficient.
+// Split a SQL file into individual statements without treating semicolons or
+// comment markers inside quoted values as SQL syntax.
 function splitStatements(sql) {
-  const noComments = sql
-    .split('\n')
-    .map((line) => line.replace(/--.*$/, ''))
-    .join('\n');
-  return noComments
-    .split(';')
-    .map((s) => s.trim())
-    .filter(Boolean);
+  const statements = [];
+  let statement = '';
+  let state = 'normal';
+  let dollarTag = '';
+
+  for (let i = 0; i < sql.length; i += 1) {
+    const char = sql[i];
+    const next = sql[i + 1];
+
+    if (state === 'line-comment') {
+      if (char === '\n') {
+        statement += char;
+        state = 'normal';
+      }
+      continue;
+    }
+
+    if (state === 'block-comment') {
+      if (char === '*' && next === '/') {
+        i += 1;
+        state = 'normal';
+      }
+      continue;
+    }
+
+    if (state === 'single-quote') {
+      statement += char;
+      if (char === "'" && next === "'") {
+        statement += next;
+        i += 1;
+      } else if (char === "'") {
+        state = 'normal';
+      }
+      continue;
+    }
+
+    if (state === 'double-quote') {
+      statement += char;
+      if (char === '"' && next === '"') {
+        statement += next;
+        i += 1;
+      } else if (char === '"') {
+        state = 'normal';
+      }
+      continue;
+    }
+
+    if (state === 'dollar-quote') {
+      if (sql.startsWith(dollarTag, i)) {
+        statement += dollarTag;
+        i += dollarTag.length - 1;
+        state = 'normal';
+      } else {
+        statement += char;
+      }
+      continue;
+    }
+
+    if (char === '-' && next === '-') {
+      i += 1;
+      state = 'line-comment';
+      continue;
+    }
+
+    if (char === '/' && next === '*') {
+      i += 1;
+      state = 'block-comment';
+      continue;
+    }
+
+    if (char === "'") {
+      statement += char;
+      state = 'single-quote';
+      continue;
+    }
+
+    if (char === '"') {
+      statement += char;
+      state = 'double-quote';
+      continue;
+    }
+
+    if (char === '$') {
+      const match = sql.slice(i).match(/^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/);
+      if (match) {
+        dollarTag = match[0];
+        statement += dollarTag;
+        i += dollarTag.length - 1;
+        state = 'dollar-quote';
+        continue;
+      }
+    }
+
+    if (char === ';') {
+      const trimmed = statement.trim();
+      if (trimmed) statements.push(trimmed);
+      statement = '';
+      continue;
+    }
+
+    statement += char;
+  }
+
+  const trimmed = statement.trim();
+  if (trimmed) statements.push(trimmed);
+  return statements;
 }
 
 async function main() {

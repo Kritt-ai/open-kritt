@@ -18,12 +18,21 @@ import { configuredModelCatalog, configuredModelProviders } from '../lib/modelPr
 import { createLatestFieldMutationQueue } from '../lib/latestMutation.js';
 import { duplicateScanPath } from '../lib/scanDuplication.js';
 import { useUnsavedChangesPrompt } from '../lib/useUnsavedChangesPrompt.js';
+import WorkflowModelConfiguration, {
+  workflowModelConfigurationForCatalog,
+  workflowModelConfigurationIsValid,
+} from '../components/WorkflowModelConfiguration.jsx';
 import ModelConfiguration, {
   modelConfigurationForCatalog,
   modelConfigurationIsValid,
 } from '../components/ModelConfiguration.jsx';
+import { modelOverridesDraft, modelOverridesEqual, reconcileModelOverrides } from '../lib/modelOverrides.js';
 import { usePagination } from '../lib/usePagination.js';
 import Pagination from '../components/Pagination.jsx';
+import { saveBrowserDownload } from '../lib/download.js';
+import { extractExtraKeys } from '../lib/keys.js';
+
+const SUPPLEMENTAL_POST_SCRIPT_SCAN_STATUSES = new Set(['paused', 'completed', 'stopped', 'failed']);
 
 export function scanActions(status) {
   const active = ['prewarming_cache', 'running', 'post_processing'].includes(status);
@@ -35,6 +44,64 @@ export function scanActions(status) {
     ),
     canDelete: isScanDeletable(status),
     stopLabel: ['queued', 'pending'].includes(status) ? 'Cancel' : status === 'rate_limited' ? 'Stop retrying' : 'Stop',
+  };
+}
+
+export function scanFindingExportAvailability(scan) {
+  if (!['completed', 'stopped', 'failed'].includes(scan?.status)) {
+    return {
+      ready: false,
+      message: 'Available after the scan completes, stops, or fails.',
+    };
+  }
+  if (!Number(scan?.findings)) return { ready: false, message: 'This scan has no findings to export.' };
+  if (scan.status !== 'completed') {
+    return {
+      ready: true,
+      message: `Download a partial export from this ${scan.status} scan. Some findings or post-processing artifacts may be missing.`,
+    };
+  }
+  return {
+    ready: true,
+    message: 'Download a share-safe index and untrusted finding, report, PoC, and post-processing content.',
+  };
+}
+
+export function supplementalPostScriptAvailability(scan, findings = []) {
+  if (!SUPPLEMENTAL_POST_SCRIPT_SCAN_STATUSES.has(scan?.status)) {
+    return { ready: false, message: 'Pause or stop the scan before adding post-processing.' };
+  }
+  if (!Array.isArray(findings) || findings.length === 0) {
+    return { ready: false, message: 'At least one finding is required.' };
+  }
+  return { ready: true, message: 'Run a post-script on selected findings without resuming the scan.' };
+}
+
+export function supplementalFindingRunSummary(finding, runs = []) {
+  const runIds = new Set(
+    (finding?.enrichments || [])
+      .map((enrichment) => enrichment?.supplementalRunId)
+      .filter(Boolean)
+      .map(String)
+  );
+  let active = 0;
+  let failed = 0;
+  for (const run of runs || []) {
+    const target = (run?.targets || []).find((item) => String(item.vulnerabilityId) === String(finding?.id));
+    if (!target) continue;
+    runIds.add(String(run.id));
+    if (['pending', 'running'].includes(target.status)) active += 1;
+    if (target.status === 'failed') failed += 1;
+  }
+  return { count: runIds.size, active, failed };
+}
+
+export function supplementalRunModelConfiguration(scan = {}, run = null) {
+  return {
+    model: run?.model || scan.postProcessingModel || scan.model || '',
+    model_provider: run?.modelProvider || scan.postProcessingModelProvider || scan.modelProvider || 'openrouter',
+    harness: run?.harness || scan.postProcessingHarness || scan.harness || '',
+    thinking_effort: run?.thinkingEffort || scan.postProcessingThinkingEffort || scan.thinkingEffort || 'medium',
   };
 }
 
@@ -59,9 +126,20 @@ export default function ScanDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
   const [busy, setBusy] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [actionError, setActionError] = useState(null);
   const [extrasOpen, setExtrasOpen] = useState(false);
   const [reviewError, setReviewError] = useState(null);
+  const [supplementalMode, setSupplementalMode] = useState(false);
+  const [selectedFindingIds, setSelectedFindingIds] = useState(() => new Set());
+  const [supplementalPostScriptId, setSupplementalPostScriptId] = useState('');
+  const [supplementalExtra, setSupplementalExtra] = useState({});
+  const [supplementalModel, setSupplementalModel] = useState(null);
+  const [supplementalSubmitting, setSupplementalSubmitting] = useState(false);
+  const [supplementalError, setSupplementalError] = useState(null);
+  const [supplementalRetry, setSupplementalRetry] = useState(null);
+  const [supplementalRetrySubmitting, setSupplementalRetrySubmitting] = useState(false);
+  const [supplementalRetryError, setSupplementalRetryError] = useState(null);
   const reviewMutations = useRef(createLatestFieldMutationQueue());
   const { data: scan, loading, error, reload } = useFetch(() => api.scan(id), [id], { pollMs: 1000 });
   const {
@@ -89,6 +167,18 @@ export default function ScanDetail() {
     [],
     { pollMs: 5000 }
   );
+  const {
+    data: availablePostScripts,
+    loading: availablePostScriptsLoading,
+    error: availablePostScriptsError,
+    reload: reloadAvailablePostScripts,
+  } = useFetch(() => api.postScripts(), [], {});
+  const {
+    data: supplementalRuns,
+    error: supplementalRunsError,
+    reload: reloadSupplementalRuns,
+    setData: setSupplementalRuns,
+  } = useFetch(() => api.supplementalPostScriptRuns(id), [id], { pollMs: 1000 });
 
   useEffect(() => {
     reviewMutations.current.dispose();
@@ -96,6 +186,17 @@ export default function ScanDetail() {
     reviewMutations.current = queue;
     setReviewError(null);
     return () => queue.dispose();
+  }, [id]);
+
+  useEffect(() => {
+    setSupplementalMode(false);
+    setSelectedFindingIds(new Set());
+    setSupplementalPostScriptId('');
+    setSupplementalExtra({});
+    setSupplementalModel(null);
+    setSupplementalError(null);
+    setSupplementalRetry(null);
+    setSupplementalRetryError(null);
   }, [id]);
 
   const findingPages = usePagination(vulns || [], { pageSize: 20, resetKey: id });
@@ -131,6 +232,19 @@ export default function ScanDetail() {
     } catch (deleteError) {
       setActionError(deleteError);
       setBusy(false);
+    }
+  };
+
+  const exportFindings = async () => {
+    if (exporting) return;
+    setExporting(true);
+    setActionError(null);
+    try {
+      saveBrowserDownload(await api.exportScanFindings(id));
+    } catch (exportError) {
+      setActionError(exportError);
+    } finally {
+      setExporting(false);
     }
   };
 
@@ -193,6 +307,7 @@ export default function ScanDetail() {
   const list = vulns || [];
   const extraEntries = scan.extra && typeof scan.extra === 'object' ? Object.entries(scan.extra) : [];
   const actions = scanActions(scan.status);
+  const exportAvailability = scanFindingExportAvailability(scan);
   const agentSkills =
     Array.isArray(scan.agentSkills) && scan.agentSkills.length
       ? scan.agentSkills
@@ -206,6 +321,146 @@ export default function ScanDetail() {
   const rateLimit = rateLimitPresentation(scan.reasoning);
   const providerAutoscale = providerCapacityAutoscalePresentation(scan.reasoning);
   const storageWarning = storageWarningPresentation(scan.reasoning);
+  const supplementalAvailability = supplementalPostScriptAvailability(scan, list);
+  const selectedPostScript = (availablePostScripts || []).find(
+    (postScript) => String(postScript.id) === supplementalPostScriptId
+  );
+  const supplementalExtraKeys = extractExtraKeys(selectedPostScript?.content || '');
+  const selectedCount = selectedFindingIds.size;
+  const allFindingsSelected = list.length > 0 && selectedCount === list.length;
+  const activeSupplementalRuns = (supplementalRuns || []).filter((run) => ['queued', 'running'].includes(run.status));
+
+  const beginSupplementalRun = () => {
+    const defaults = supplementalRunModelConfiguration(scan);
+    setSupplementalMode(true);
+    setSelectedFindingIds(new Set());
+    setSupplementalPostScriptId('');
+    setSupplementalExtra({});
+    setSupplementalModel(
+      modelReferences
+        ? modelConfigurationForCatalog(defaults, modelReferences.providers, modelReferences.catalog)
+        : defaults
+    );
+    setSupplementalError(null);
+    setSupplementalRetry(null);
+    setSupplementalRetryError(null);
+  };
+  const cancelSupplementalRun = () => {
+    setSupplementalMode(false);
+    setSelectedFindingIds(new Set());
+    setSupplementalPostScriptId('');
+    setSupplementalExtra({});
+    setSupplementalModel(null);
+    setSupplementalError(null);
+  };
+  const toggleFindingSelection = (vulnerabilityId) => {
+    setSelectedFindingIds((current) => {
+      const next = new Set(current);
+      if (next.has(vulnerabilityId)) next.delete(vulnerabilityId);
+      else next.add(vulnerabilityId);
+      return next;
+    });
+  };
+  const toggleAllFindingSelection = () => {
+    setSelectedFindingIds(allFindingsSelected ? new Set() : new Set(list.map((finding) => finding.id)));
+  };
+  const chooseSupplementalPostScript = (postScriptId) => {
+    setSupplementalPostScriptId(postScriptId);
+    const postScript = (availablePostScripts || []).find((item) => String(item.id) === postScriptId);
+    const nextExtra = {};
+    for (const key of extractExtraKeys(postScript?.content || '')) {
+      nextExtra[key] = scan.extra?.[key] === undefined ? '' : formatExtraValue(scan.extra[key]);
+    }
+    setSupplementalExtra(nextExtra);
+    setSupplementalError(null);
+  };
+  const submitSupplementalRun = async () => {
+    if (!selectedCount) {
+      setSupplementalError(new Error('Select at least one finding.'));
+      return;
+    }
+    if (!selectedPostScript) {
+      setSupplementalError(new Error('Choose a post-script.'));
+      return;
+    }
+    const missingKey = supplementalExtraKeys.find((key) => !String(supplementalExtra[key] ?? '').trim());
+    if (missingKey) {
+      setSupplementalError(new Error(`extra.${missingKey} is required.`));
+      return;
+    }
+    if (
+      !supplementalModel ||
+      !modelReferences ||
+      !modelConfigurationIsValid(supplementalModel, modelReferences.providers, modelReferences.catalog)
+    ) {
+      setSupplementalError(new Error('Choose an available model, compatible harness, and supported thinking effort.'));
+      return;
+    }
+    setSupplementalSubmitting(true);
+    setSupplementalError(null);
+    try {
+      await api.createSupplementalPostScriptRun(id, {
+        postScriptId: selectedPostScript.id,
+        vulnerabilityIds: [...selectedFindingIds],
+        extra: Object.fromEntries(supplementalExtraKeys.map((key) => [key, supplementalExtra[key]])),
+        model: supplementalModel.model,
+        model_provider: supplementalModel.model_provider,
+        harness: supplementalModel.harness,
+        thinking_effort: supplementalModel.thinking_effort,
+      });
+      cancelSupplementalRun();
+      reloadSupplementalRuns();
+      reloadVulns();
+    } catch (submitError) {
+      setSupplementalError(submitError);
+    } finally {
+      setSupplementalSubmitting(false);
+    }
+  };
+  const beginSupplementalRetry = (run) => {
+    const defaults = supplementalRunModelConfiguration(scan, run);
+    cancelSupplementalRun();
+    setSupplementalRetry({
+      runId: run.id,
+      model: modelReferences
+        ? modelConfigurationForCatalog(defaults, modelReferences.providers, modelReferences.catalog)
+        : defaults,
+    });
+    setSupplementalRetryError(null);
+  };
+  const submitSupplementalRetry = async () => {
+    if (!supplementalRetry) return;
+    if (
+      !modelReferences ||
+      !modelConfigurationIsValid(supplementalRetry.model, modelReferences.providers, modelReferences.catalog)
+    ) {
+      setSupplementalRetryError(
+        new Error('Choose an available model, compatible harness, and supported thinking effort.')
+      );
+      return;
+    }
+    setSupplementalRetrySubmitting(true);
+    setSupplementalRetryError(null);
+    try {
+      const createdRun = await api.retrySupplementalPostScriptRun(id, supplementalRetry.runId, {
+        model: supplementalRetry.model.model,
+        model_provider: supplementalRetry.model.model_provider,
+        harness: supplementalRetry.model.harness,
+        thinking_effort: supplementalRetry.model.thinking_effort,
+      });
+      setSupplementalRuns((current) => [
+        createdRun,
+        ...(current || []).filter((run) => String(run.id) !== String(createdRun.id)),
+      ]);
+      setSupplementalRetry(null);
+      reloadSupplementalRuns();
+      reloadVulns();
+    } catch (retryError) {
+      setSupplementalRetryError(retryError);
+    } finally {
+      setSupplementalRetrySubmitting(false);
+    }
+  };
 
   return (
     <div
@@ -225,10 +480,12 @@ export default function ScanDetail() {
         }}
       >
         <div
+          className="scan-detail-heading"
           style={{
             display: 'flex',
             alignItems: 'flex-start',
             justifyContent: 'space-between',
+            gap: 16,
           }}
         >
           <div>
@@ -253,11 +510,23 @@ export default function ScanDetail() {
             <div className="mono" style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 7 }}>
               {scan.workflowName} · {scan.modelProvider ? `${scan.modelProvider} · ` : ''}
               {scan.model} · {scan.harness}
-              {scan.thinkingEffort ? ` · ${scan.thinkingEffort}` : ''} ·{' '}
-              {scan.repoKind === 'local' ? 'local snapshot' : `@${scan.commitShort}`}
+              {scan.thinkingEffort ? ` · ${scan.thinkingEffort}` : ''}
+              {Object.keys(scan.modelOverrides || {}).length
+                ? ` · ${Object.keys(scan.modelOverrides).length} depth overrides`
+                : ''}{' '}
+              · {scan.repoKind === 'local' ? 'local snapshot' : `@${scan.commitShort}`}
             </div>
           </div>
-          <div style={{ display: 'flex', gap: 8 }}>
+          <div className="scan-detail-actions" style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            <Button
+              variant="subtle"
+              style={{ height: 32 }}
+              onClick={exportFindings}
+              disabled={!exportAvailability.ready || busy || exporting}
+              title={exportAvailability.message}
+            >
+              {exporting ? 'Exporting…' : 'Export findings'}
+            </Button>
             <Button
               variant="ghost"
               style={{ height: 32 }}
@@ -267,7 +536,17 @@ export default function ScanDetail() {
               Duplicate scan
             </Button>
             {actions.canDelete && (
-              <Button variant="danger" style={{ height: 32 }} onClick={() => !busy && deleteScan()} disabled={busy}>
+              <Button
+                variant="danger"
+                style={{ height: 32 }}
+                onClick={() => !busy && !exporting && deleteScan()}
+                disabled={busy || exporting || activeSupplementalRuns.length > 0}
+                title={
+                  activeSupplementalRuns.length
+                    ? 'Wait for supplemental post-script work to finish before deleting this scan.'
+                    : undefined
+                }
+              >
                 Delete
               </Button>
             )}
@@ -286,7 +565,12 @@ export default function ScanDetail() {
                 variant="primary"
                 style={{ height: 32 }}
                 onClick={() => !busy && setStatus('pending')}
-                title="Continue from completed steps and retry failed work"
+                disabled={busy || activeSupplementalRuns.length > 0}
+                title={
+                  activeSupplementalRuns.length
+                    ? 'Wait for supplemental post-script work to finish before resuming.'
+                    : 'Continue from completed steps and retry failed work'
+                }
               >
                 {busy ? '…' : 'Resume'}
               </Button>
@@ -568,6 +852,48 @@ export default function ScanDetail() {
           Ranked by the scan's severity ranker and enriched by post-scripts. Click a finding for the full trace.
         </div>
 
+        <SupplementalPostScriptControls
+          availability={supplementalAvailability}
+          mode={supplementalMode}
+          onBegin={beginSupplementalRun}
+          onCancel={cancelSupplementalRun}
+          selectedCount={selectedCount}
+          totalCount={list.length}
+          allSelected={allFindingsSelected}
+          onToggleAll={toggleAllFindingSelection}
+          postScripts={availablePostScripts || []}
+          postScriptsLoading={availablePostScriptsLoading}
+          postScriptsError={availablePostScriptsError}
+          onRetryPostScripts={reloadAvailablePostScripts}
+          selectedPostScriptId={supplementalPostScriptId}
+          onSelectPostScript={chooseSupplementalPostScript}
+          requiredExtraKeys={supplementalExtraKeys}
+          extra={supplementalExtra}
+          onExtraChange={(key, value) => setSupplementalExtra((current) => ({ ...current, [key]: value }))}
+          model={supplementalModel}
+          onModelChange={setSupplementalModel}
+          modelReferences={modelReferences}
+          modelReferencesLoading={modelReferencesLoading}
+          modelReferencesError={modelReferencesError}
+          submitting={supplementalSubmitting}
+          error={supplementalError}
+          onSubmit={submitSupplementalRun}
+          runs={supplementalRuns || []}
+          runsError={supplementalRunsError}
+          findings={list}
+          scanId={id}
+          retry={supplementalRetry}
+          onBeginRetry={beginSupplementalRetry}
+          onCancelRetry={() => {
+            setSupplementalRetry(null);
+            setSupplementalRetryError(null);
+          }}
+          onRetryModelChange={(model) => setSupplementalRetry((current) => (current ? { ...current, model } : null))}
+          onSubmitRetry={submitSupplementalRetry}
+          retrySubmitting={supplementalRetrySubmitting}
+          retryError={supplementalRetryError}
+        />
+
         {reviewError && (
           <div
             role="alert"
@@ -629,7 +955,21 @@ export default function ScanDetail() {
                   textTransform: 'uppercase',
                 }}
               >
-                Finding
+                {supplementalMode ? (
+                  <label
+                    style={{ position: 'relative', zIndex: 2, display: 'inline-flex', alignItems: 'center', gap: 8 }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={allFindingsSelected}
+                      onChange={toggleAllFindingSelection}
+                      aria-label="Select all findings"
+                    />
+                    Finding
+                  </label>
+                ) : (
+                  'Finding'
+                )}
               </span>
               <span
                 className="mono"
@@ -670,6 +1010,7 @@ export default function ScanDetail() {
               const interesting = v.interesting ?? null;
               const dot = interestingDot(interesting);
               const severity = findingSeverity(v);
+              const supplementalSummary = supplementalFindingRunSummary(v, supplementalRuns || []);
               return (
                 <div
                   key={v.id}
@@ -697,6 +1038,16 @@ export default function ScanDetail() {
                       minWidth: 0,
                     }}
                   >
+                    {supplementalMode && (
+                      <input
+                        type="checkbox"
+                        checked={selectedFindingIds.has(v.id)}
+                        onClick={(event) => event.stopPropagation()}
+                        onChange={() => toggleFindingSelection(v.id)}
+                        aria-label={`Select finding ${v.rank}`}
+                        style={{ position: 'relative', zIndex: 2, flex: 'none' }}
+                      />
+                    )}
                     <span
                       onClick={(e) => cycleInteresting(v, e)}
                       title={dot.title}
@@ -781,6 +1132,28 @@ export default function ScanDetail() {
                             ✎
                           </span>
                         )}
+                        {supplementalSummary.count > 0 && (
+                          <span
+                            className="mono"
+                            title={`${supplementalSummary.count} supplemental post-script run${
+                              supplementalSummary.count === 1 ? '' : 's'
+                            }${supplementalSummary.active ? ` · ${supplementalSummary.active} active` : ''}${
+                              supplementalSummary.failed ? ` · ${supplementalSummary.failed} failed` : ''
+                            }`}
+                            style={{
+                              flex: 'none',
+                              padding: '2px 6px',
+                              borderRadius: 5,
+                              color: supplementalSummary.failed ? 'var(--pend)' : 'var(--accent)',
+                              background: supplementalSummary.failed ? 'var(--pend-bg)' : 'var(--accent-subtle)',
+                              fontSize: 9.5,
+                              fontWeight: 650,
+                            }}
+                          >
+                            +post ×{supplementalSummary.count}
+                            {supplementalSummary.active ? ' · running' : ''}
+                          </span>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -836,6 +1209,376 @@ export default function ScanDetail() {
   );
 }
 
+export function SupplementalPostScriptControls({
+  availability,
+  mode,
+  onBegin,
+  onCancel,
+  selectedCount,
+  totalCount,
+  allSelected,
+  onToggleAll,
+  postScripts,
+  postScriptsLoading,
+  postScriptsError,
+  onRetryPostScripts,
+  selectedPostScriptId,
+  onSelectPostScript,
+  requiredExtraKeys,
+  extra,
+  onExtraChange,
+  model,
+  onModelChange,
+  modelReferences,
+  modelReferencesLoading,
+  modelReferencesError,
+  submitting,
+  error,
+  onSubmit,
+  runs,
+  runsError,
+  findings,
+  scanId,
+  retry,
+  onBeginRetry,
+  onCancelRetry,
+  onRetryModelChange,
+  onSubmitRetry,
+  retrySubmitting,
+  retryError,
+}) {
+  const visible = mode || availability.ready || runs.length > 0 || runsError;
+  if (!visible) return null;
+  const modelValid =
+    !!model &&
+    !!modelReferences &&
+    modelConfigurationIsValid(model, modelReferences.providers, modelReferences.catalog);
+  const retryModelValid =
+    !!retry?.model &&
+    !!modelReferences &&
+    modelConfigurationIsValid(retry.model, modelReferences.providers, modelReferences.catalog);
+  const findingsById = new Map((findings || []).map((finding) => [String(finding.id), finding]));
+  const retriedRunIds = new Set(
+    (runs || [])
+      .map((run) => run.retryOfRunId)
+      .filter(Boolean)
+      .map(String)
+  );
+
+  return (
+    <section
+      aria-label="Additional post-processing"
+      style={{
+        border: '1px solid var(--border)',
+        borderRadius: 11,
+        background: 'var(--surface)',
+        marginBottom: 16,
+        overflow: 'hidden',
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          flexWrap: 'wrap',
+          gap: 12,
+          padding: '13px 15px',
+        }}
+      >
+        <div>
+          <div style={{ fontSize: 13.5, fontWeight: 650 }}>Additional post-processing</div>
+          <div style={{ marginTop: 3, color: 'var(--text-3)', fontSize: 11.5 }}>
+            {mode
+              ? `${selectedCount} of ${totalCount} findings selected`
+              : 'Apply a post-script to selected findings without resuming the scan.'}
+          </div>
+        </div>
+        {!mode ? (
+          <Button variant="subtle" onClick={onBegin} disabled={!availability.ready} title={availability.message}>
+            Run post-script on findings
+          </Button>
+        ) : (
+          <div style={{ display: 'flex', gap: 8 }}>
+            <Button variant="ghost" onClick={onToggleAll} disabled={submitting}>
+              {allSelected ? 'Clear selection' : 'Select all'}
+            </Button>
+            <Button variant="ghost" onClick={onCancel} disabled={submitting}>
+              Cancel
+            </Button>
+          </div>
+        )}
+      </div>
+
+      {mode && (
+        <div style={{ borderTop: '1px solid var(--border-2)', padding: '15px' }}>
+          <label style={{ display: 'block', fontSize: 12, color: 'var(--text-2)' }}>
+            Post-script
+            <select
+              value={selectedPostScriptId}
+              onChange={(event) => onSelectPostScript(event.target.value)}
+              disabled={submitting || postScriptsLoading}
+              className="account-credential-input"
+              style={{ marginTop: 7 }}
+            >
+              <option value="">{postScriptsLoading ? 'Loading post-scripts…' : 'Choose a post-script'}</option>
+              {postScripts.map((postScript) => (
+                <option key={postScript.id} value={postScript.id}>
+                  {postScript.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          {postScriptsError && (
+            <div className="account-dialog-error" role="alert">
+              Could not load post-scripts. {postScriptsError.message}{' '}
+              <button
+                type="button"
+                onClick={onRetryPostScripts}
+                style={{ border: 0, padding: 0, color: 'inherit', background: 'transparent', cursor: 'pointer' }}
+              >
+                Try again
+              </button>
+            </div>
+          )}
+          <div
+            style={{
+              marginTop: 14,
+              padding: 13,
+              border: '1px solid var(--border)',
+              borderRadius: 9,
+              background: 'var(--surface-2)',
+            }}
+          >
+            <span className="mono" style={{ display: 'block', fontSize: 10.5, color: 'var(--text-3)' }}>
+              EXECUTION MODEL
+            </span>
+            <div style={{ margin: '5px 0 11px', color: 'var(--text-3)', fontSize: 11.5 }}>
+              Prefilled from this scan&apos;s post-processing settings. Changes apply only to this supplemental run.
+            </div>
+            {modelReferencesLoading || !modelReferences || !model ? (
+              <div style={{ color: modelReferencesError ? 'var(--fail)' : 'var(--text-3)', fontSize: 12 }}>
+                {modelReferencesError ? formatApiError(modelReferencesError) : 'Loading model choices…'}
+              </div>
+            ) : (
+              <ModelConfiguration
+                value={model}
+                onChange={onModelChange}
+                providers={modelReferences.providers}
+                catalog={modelReferences.catalog}
+                catalogError={modelReferences.catalogError}
+                disabled={submitting}
+                showAvailabilityHelp={false}
+              />
+            )}
+          </div>
+          {requiredExtraKeys.length > 0 && (
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+                gap: 12,
+                marginTop: 14,
+              }}
+            >
+              {requiredExtraKeys.map((key) => (
+                <label key={key} style={{ display: 'block', fontSize: 12, color: 'var(--text-2)' }}>
+                  <span className="mono">extra.{key}</span> <span style={{ color: 'var(--fail)' }}>*</span>
+                  <input
+                    value={extra[key] ?? ''}
+                    onChange={(event) => onExtraChange(key, event.target.value)}
+                    disabled={submitting}
+                    required
+                    className="account-credential-input"
+                    style={{ marginTop: 7 }}
+                    placeholder={`Value for extra.${key}`}
+                  />
+                </label>
+              ))}
+            </div>
+          )}
+          {error && (
+            <div className="account-dialog-error" role="alert">
+              {formatApiError(error)}
+            </div>
+          )}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 15 }}>
+            <Button
+              onClick={onSubmit}
+              disabled={submitting || selectedCount === 0 || !selectedPostScriptId || postScriptsLoading || !modelValid}
+            >
+              {submitting ? 'Queuing…' : `Queue for ${selectedCount} finding${selectedCount === 1 ? '' : 's'}`}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {(runs.length > 0 || runsError) && (
+        <div style={{ borderTop: '1px solid var(--border-2)', padding: '11px 15px 13px' }}>
+          <div className="mono" style={{ fontSize: 9.5, color: 'var(--text-3)', textTransform: 'uppercase' }}>
+            Supplemental run history
+          </div>
+          {runsError ? (
+            <div style={{ marginTop: 7, color: 'var(--fail)', fontSize: 11.5 }}>{runsError.message}</div>
+          ) : (
+            <div style={{ display: 'grid', gap: 7, marginTop: 8 }}>
+              {runs.map((run) => {
+                const progress = run.targetCount
+                  ? Math.round(((run.completedCount + run.failedCount) / run.targetCount) * 100)
+                  : 0;
+                const failedTargets = (run.targets || []).filter((target) => target.status === 'failed');
+                const retrying = String(retry?.runId) === String(run.id);
+                const wasRetried = retriedRunIds.has(String(run.id));
+                const statusColor =
+                  run.status === 'completed'
+                    ? 'var(--ok)'
+                    : run.status === 'completed_with_errors'
+                      ? 'var(--pend)'
+                      : 'var(--run)';
+                return (
+                  <div
+                    key={run.id}
+                    style={{
+                      minWidth: 0,
+                      padding: '10px 11px',
+                      border: '1px solid var(--border-2)',
+                      borderRadius: 8,
+                      background: 'var(--surface-2)',
+                      fontSize: 11.5,
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+                      <span className="mono" style={{ color: statusColor, width: 152, flex: 'none' }}>
+                        {run.status.replaceAll('_', ' ')}
+                      </span>
+                      <span style={{ minWidth: 0, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {run.postScriptName}
+                      </span>
+                      <span className="mono" style={{ color: 'var(--text-3)', flex: 'none' }}>
+                        {run.completedCount + run.failedCount}/{run.targetCount} · {progress}%
+                        {run.failedCount ? ` · ${run.failedCount} failed` : ''}
+                      </span>
+                    </div>
+                    <div className="mono" style={{ marginTop: 6, color: 'var(--text-3)', fontSize: 10.5 }}>
+                      {run.modelProvider && run.model
+                        ? `${run.modelProvider} · ${run.model} · ${run.harness || 'default harness'} · ${
+                            run.thinkingEffort || 'default effort'
+                          }`
+                        : 'Scan post-processing model'}
+                    </div>
+                    {failedTargets.length > 0 && (
+                      <>
+                        <details style={{ marginTop: 9 }}>
+                          <summary style={{ color: 'var(--fail)', cursor: 'pointer', fontWeight: 600 }}>
+                            View {failedTargets.length} error{failedTargets.length === 1 ? '' : 's'}
+                          </summary>
+                          <div
+                            style={{
+                              display: 'grid',
+                              gap: 8,
+                              maxHeight: 280,
+                              overflowY: 'auto',
+                              marginTop: 8,
+                            }}
+                          >
+                            {failedTargets.map((target) => {
+                              const finding = findingsById.get(String(target.vulnerabilityId));
+                              return (
+                                <div
+                                  key={target.id}
+                                  style={{ padding: '8px 9px', borderRadius: 7, background: 'var(--fail-bg)' }}
+                                >
+                                  <Link
+                                    to={`/scans/${scanId}/vulnerabilities/${target.vulnerabilityId}`}
+                                    style={{ color: 'var(--text)', fontWeight: 600 }}
+                                  >
+                                    {finding
+                                      ? `Finding #${finding.rank}: ${finding.summary}`
+                                      : `Finding ${target.vulnerabilityId}`}
+                                  </Link>
+                                  <div
+                                    className="mono"
+                                    style={{ marginTop: 5, color: 'var(--fail)', whiteSpace: 'pre-wrap' }}
+                                  >
+                                    {target.error || 'The worker did not record an error message.'}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </details>
+                        {!retrying && !wasRetried && (
+                          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 9 }}>
+                            <Button
+                              variant="ghost"
+                              onClick={() => onBeginRetry(run)}
+                              disabled={retrySubmitting || !availability.ready}
+                            >
+                              Re-run failed
+                            </Button>
+                          </div>
+                        )}
+                        {wasRetried && (
+                          <div style={{ marginTop: 9, color: 'var(--text-3)', textAlign: 'right' }}>
+                            Failed findings were re-run.
+                          </div>
+                        )}
+                      </>
+                    )}
+                    {retrying && (
+                      <div
+                        style={{
+                          marginTop: 10,
+                          padding: 11,
+                          border: '1px solid var(--border)',
+                          borderRadius: 8,
+                          background: 'var(--surface)',
+                        }}
+                      >
+                        <div style={{ marginBottom: 10, color: 'var(--text-2)', lineHeight: 1.5 }}>
+                          Re-run only the {failedTargets.length} failed finding
+                          {failedTargets.length === 1 ? '' : 's'}. The original script and extra values are reused; you
+                          can change the execution model below.
+                        </div>
+                        {modelReferences && retry?.model ? (
+                          <ModelConfiguration
+                            value={retry.model}
+                            onChange={onRetryModelChange}
+                            providers={modelReferences.providers}
+                            catalog={modelReferences.catalog}
+                            catalogError={modelReferences.catalogError}
+                            disabled={retrySubmitting}
+                            showAvailabilityHelp={false}
+                          />
+                        ) : (
+                          <div style={{ color: 'var(--fail)' }}>Model choices are not available.</div>
+                        )}
+                        {retryError && (
+                          <div className="account-dialog-error" role="alert">
+                            {formatApiError(retryError)}
+                          </div>
+                        )}
+                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 10 }}>
+                          <Button variant="ghost" onClick={onCancelRetry} disabled={retrySubmitting}>
+                            Cancel
+                          </Button>
+                          <Button onClick={onSubmitRetry} disabled={retrySubmitting || !retryModelValid}>
+                            {retrySubmitting ? 'Queuing…' : `Queue retry for ${failedTargets.length}`}
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function ScanRunSettings({
   scan,
   onSave,
@@ -853,21 +1596,30 @@ function ScanRunSettings({
   const activeDraft = mergeRunSettingsDraft(current, draft);
   const payload = draft ? runSettingsPayload(draft, current) : {};
   const dirty = Object.keys(payload).length > 0;
+  const workflowDepths = Array.isArray(scan.workflowDepths)
+    ? scan.workflowDepths
+    : Object.keys(current.model_overrides).map(Number);
   const jobLimit = activeDraft.job_limit.trim();
   const jobLimitValid = !jobLimit || (/^\d+$/.test(jobLimit) && Number(jobLimit) >= 1 && Number(jobLimit) <= 1_000_000);
   const valid =
-    jobLimitValid && !!references && modelConfigurationIsValid(activeDraft, references.providers, references.catalog);
+    jobLimitValid &&
+    !!references &&
+    workflowModelConfigurationIsValid(activeDraft, workflowDepths, references.providers, references.catalog);
   useUnsavedChangesPrompt(editing && (dirty || saving));
 
   const open = () => {
     const currentDraft = runSettingsDraft(scan);
+    const reconciledDraft = {
+      ...currentDraft,
+      model_overrides: reconcileModelOverrides(currentDraft.model_overrides, workflowDepths, currentDraft),
+    };
     setDraft(
       references
         ? mergeRunSettingsDraft(
-            currentDraft,
-            modelConfigurationForCatalog(currentDraft, references.providers, references.catalog)
+            reconciledDraft,
+            workflowModelConfigurationForCatalog(reconciledDraft, references.providers, references.catalog)
           )
-        : currentDraft
+        : reconciledDraft
     );
     setError(null);
     setEditing(true);
@@ -975,7 +1727,7 @@ function ScanRunSettings({
 
       {editing ? (
         <>
-          <ModelConfiguration
+          <WorkflowModelConfiguration
             value={activeDraft}
             onChange={(nextDraft) =>
               setDraft((currentDraft) => mergeRunSettingsDraft(currentDraft || current, nextDraft))
@@ -984,6 +1736,7 @@ function ScanRunSettings({
             catalog={references?.catalog || {}}
             catalogError={catalogError}
             disabled={saving}
+            depths={workflowDepths}
           />
           <label style={{ display: 'block', maxWidth: 280, marginTop: 13 }}>
             <span
@@ -1057,6 +1810,11 @@ function ScanRunSettings({
           <RuntimeSetting label="model_provider" value={current.model_provider || '—'} />
           <RuntimeSetting label="thinking_effort" value={current.thinking_effort || '—'} />
           <RuntimeSetting label="harness" value={current.harness} />
+          <RuntimeSetting label="post model" value={current.post_processing_model || '—'} />
+          <RuntimeSetting label="post provider" value={current.post_processing_model_provider || '—'} />
+          <RuntimeSetting label="post effort" value={current.post_processing_thinking_effort || '—'} />
+          <RuntimeSetting label="post harness" value={current.post_processing_harness || '—'} />
+          <RuntimeSetting label="depth overrides" value={Object.keys(current.model_overrides).length || 'none'} />
           <RuntimeSetting
             label="model jobs"
             value={`${scan.jobsStarted || 0} / ${scan.jobLimit == null ? 'unlimited' : scan.jobLimit}`}
@@ -1072,7 +1830,13 @@ export function runSettingsDraft(scan = {}) {
     model: scan.model || '',
     model_provider: scan.modelProvider || 'openrouter',
     thinking_effort: scan.thinkingEffort || 'medium',
+    post_processing_model_override: Boolean(scan.postProcessingModelOverride),
+    post_processing_model: scan.postProcessingModel || scan.model || '',
+    post_processing_model_provider: scan.postProcessingModelProvider || scan.modelProvider || 'openrouter',
+    post_processing_harness: scan.postProcessingHarness || scan.harness || 'codex',
+    post_processing_thinking_effort: scan.postProcessingThinkingEffort || scan.thinkingEffort || 'medium',
     harness: scan.harness || 'codex',
+    model_overrides: modelOverridesDraft(scan.modelOverrides),
     job_limit: scan.jobLimit == null ? '' : `${scan.jobLimit}`,
   };
 }
@@ -1084,18 +1848,49 @@ function runSettingsValue(value, fallback) {
 }
 
 export function mergeRunSettingsDraft(current = {}, patch = {}) {
+  const hasModelOverrides = Object.prototype.hasOwnProperty.call(patch || {}, 'model_overrides');
+  const hasPostProcessingModelOverride = Object.prototype.hasOwnProperty.call(
+    patch || {},
+    'post_processing_model_override'
+  );
   const base = {
     model: runSettingsValue(current?.model, ''),
     model_provider: runSettingsValue(current?.model_provider, 'openrouter'),
     thinking_effort: runSettingsValue(current?.thinking_effort, 'medium'),
+    post_processing_model_override: Boolean(current?.post_processing_model_override),
+    post_processing_model: runSettingsValue(current?.post_processing_model, current?.model || ''),
+    post_processing_model_provider: runSettingsValue(
+      current?.post_processing_model_provider,
+      current?.model_provider || 'openrouter'
+    ),
+    post_processing_harness: runSettingsValue(current?.post_processing_harness, current?.harness || 'codex'),
+    post_processing_thinking_effort: runSettingsValue(
+      current?.post_processing_thinking_effort,
+      current?.thinking_effort || 'medium'
+    ),
     harness: runSettingsValue(current?.harness, 'codex'),
+    model_overrides: modelOverridesDraft(current?.model_overrides),
     job_limit: runSettingsValue(current?.job_limit, ''),
   };
   return {
     model: runSettingsValue(patch?.model, base.model),
     model_provider: runSettingsValue(patch?.model_provider, base.model_provider),
     thinking_effort: runSettingsValue(patch?.thinking_effort, base.thinking_effort),
+    post_processing_model_override: hasPostProcessingModelOverride
+      ? Boolean(patch.post_processing_model_override)
+      : base.post_processing_model_override,
+    post_processing_model: runSettingsValue(patch?.post_processing_model, base.post_processing_model),
+    post_processing_model_provider: runSettingsValue(
+      patch?.post_processing_model_provider,
+      base.post_processing_model_provider
+    ),
+    post_processing_harness: runSettingsValue(patch?.post_processing_harness, base.post_processing_harness),
+    post_processing_thinking_effort: runSettingsValue(
+      patch?.post_processing_thinking_effort,
+      base.post_processing_thinking_effort
+    ),
     harness: runSettingsValue(patch?.harness, base.harness),
+    model_overrides: hasModelOverrides ? modelOverridesDraft(patch.model_overrides) : base.model_overrides,
     job_limit: runSettingsValue(patch?.job_limit, base.job_limit),
   };
 }
@@ -1111,7 +1906,26 @@ export function runSettingsPayload(draft, current) {
     payload.model_provider = normalizedDraft.model_provider;
   if (normalizedDraft.thinking_effort !== normalizedCurrent.thinking_effort)
     payload.thinking_effort = normalizedDraft.thinking_effort;
+  const postProcessingModelChanged =
+    normalizedDraft.post_processing_model !== normalizedCurrent.post_processing_model ||
+    normalizedDraft.post_processing_model_provider !== normalizedCurrent.post_processing_model_provider ||
+    normalizedDraft.post_processing_harness !== normalizedCurrent.post_processing_harness;
+  if (normalizedDraft.post_processing_model_override) {
+    if (!normalizedCurrent.post_processing_model_override || postProcessingModelChanged) {
+      payload.post_processing_model = normalizedDraft.post_processing_model.trim();
+      payload.post_processing_model_provider = normalizedDraft.post_processing_model_provider;
+      payload.post_processing_harness = normalizedDraft.post_processing_harness;
+    }
+  } else if (normalizedCurrent.post_processing_model_override) {
+    payload.post_processing_model = null;
+    payload.post_processing_model_provider = null;
+    payload.post_processing_harness = null;
+  }
+  if (normalizedDraft.post_processing_thinking_effort !== normalizedCurrent.post_processing_thinking_effort)
+    payload.post_processing_thinking_effort = normalizedDraft.post_processing_thinking_effort;
   if (normalizedDraft.harness !== normalizedCurrent.harness) payload.harness = normalizedDraft.harness;
+  if (!modelOverridesEqual(normalizedDraft.model_overrides, normalizedCurrent.model_overrides))
+    payload.model_overrides = normalizedDraft.model_overrides;
   if (normalizedDraft.job_limit !== normalizedCurrent.job_limit) payload.jobLimit = jobLimit ? Number(jobLimit) : null;
   return payload;
 }
@@ -1171,12 +1985,264 @@ function scanErrorTimestamp(error) {
   return null;
 }
 
+const EXTENDED_ACTIVE_JOB_MS = 45 * 60 * 1000;
+const ACTIVE_JOB_DEPTH_PALETTE_SIZE = 6;
+const ACTIVE_JOB_HARNESS_LABELS = Object.freeze({
+  codex: 'Codex CLI',
+  'claude-code': 'Claude Code',
+  droid: 'Factory Droid',
+});
+
+function activeJobHarnessLabel(value) {
+  const harness = `${value || ''}`.trim();
+  return ACTIVE_JOB_HARNESS_LABELS[harness] || harness || 'Not reported';
+}
+
+export function activeJobWorkflowDepth(job) {
+  if (job?.kind && job.kind !== 'step') return null;
+  if (job?.depth != null && job.depth !== '') {
+    const explicitDepth = Number(job.depth);
+    if (Number.isInteger(explicitDepth) && explicitDepth >= 0) return explicitDepth;
+  }
+  const titleMatch = `${job?.title || ''}`.match(/^\s*(\d+)\s*·/);
+  if (!titleMatch) return null;
+  const titleDepth = Number(titleMatch[1]);
+  return Number.isInteger(titleDepth) ? titleDepth : null;
+}
+
+function activeJobStage(job) {
+  const depth = activeJobWorkflowDepth(job);
+  if (depth != null) return { key: `depth-${depth}`, label: `D${depth}`, depth };
+  if (job?.kind && job.kind !== 'step') return { key: 'post', label: 'POST', depth: null };
+  return { key: 'work', label: 'WORK', depth: null };
+}
+
+function activeJobDepthStyle(stage) {
+  if (stage.depth == null) {
+    return { color: 'var(--text-2)', background: 'var(--surface)' };
+  }
+  const paletteIndex = stage.depth % ACTIVE_JOB_DEPTH_PALETTE_SIZE;
+  return {
+    color: `var(--depth-${paletteIndex})`,
+    background: `var(--depth-${paletteIndex}-bg)`,
+  };
+}
+
+export function activeJobDepthSummary(jobs = []) {
+  const counts = new Map();
+  for (const job of jobs) {
+    const stage = activeJobStage(job);
+    const current = counts.get(stage.key);
+    if (current) current.count += 1;
+    else counts.set(stage.key, { ...stage, count: 1 });
+  }
+  return [...counts.values()].sort((left, right) => {
+    if (left.depth != null && right.depth != null) return left.depth - right.depth;
+    if (left.depth != null) return -1;
+    if (right.depth != null) return 1;
+    return left.label.localeCompare(right.label);
+  });
+}
+
+export function formatActiveJobElapsed(value) {
+  const milliseconds = Number(value);
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) return null;
+  const seconds = Math.floor(milliseconds / 1000);
+  if (seconds < 1) return '<1s';
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return remainingMinutes ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
+}
+
+function ActiveJobCard({ job }) {
+  const elapsed = formatActiveJobElapsed(job.elapsedMs);
+  const extended = Number(job.elapsedMs) >= EXTENDED_ACTIVE_JOB_MS;
+  const stage = activeJobStage(job);
+  const depthStyle = activeJobDepthStyle(stage);
+  const model = `${job.model || ''}`.trim() || 'Not reported';
+  const harness = activeJobHarnessLabel(job.harness);
+
+  return (
+    <article
+      aria-label={`${stage.depth == null ? stage.label : `Workflow depth ${stage.depth}`} worker: ${job.title || job.source || 'Active worker'}`}
+      style={{
+        minWidth: 0,
+        border: `1px solid ${extended ? 'var(--pend)' : 'var(--border)'}`,
+        borderRadius: 9,
+        background: `linear-gradient(135deg, ${depthStyle.background} 0%, var(--surface-2) 48%)`,
+        padding: '10px 11px',
+      }}
+    >
+      <div
+        className="mono"
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 10,
+          fontSize: 10.5,
+        }}
+      >
+        <span
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 7,
+            minWidth: 0,
+            color: 'var(--run)',
+          }}
+        >
+          <span
+            title={stage.depth == null ? stage.label : `Workflow depth ${stage.depth}`}
+            style={{
+              flex: '0 0 auto',
+              border: `1px solid color-mix(in srgb, ${depthStyle.color} 32%, var(--border))`,
+              borderRadius: 5,
+              background: depthStyle.background,
+              color: depthStyle.color,
+              fontSize: 9.5,
+              fontWeight: 700,
+              letterSpacing: '0.04em',
+              lineHeight: 1,
+              padding: '4px 5px 3px',
+            }}
+          >
+            {stage.label}
+          </span>
+          <span
+            aria-hidden="true"
+            style={{
+              width: 6,
+              height: 6,
+              flex: '0 0 auto',
+              borderRadius: '50%',
+              background: 'var(--run)',
+            }}
+          />
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {job.phaseLabel || 'Running'}
+          </span>
+        </span>
+        <span
+          title={
+            extended
+              ? 'Extended run. This is informational and does not mean the worker is stuck or failed.'
+              : 'Current active harness duration'
+          }
+          style={{ flex: '0 0 auto', color: extended ? 'var(--pend)' : 'var(--text-2)' }}
+        >
+          {extended ? 'extended · ' : ''}
+          {elapsed || 'starting'}
+        </span>
+      </div>
+
+      <div
+        title={job.title}
+        style={{
+          color: 'var(--text)',
+          fontSize: 12.5,
+          fontWeight: 600,
+          lineHeight: 1.35,
+          marginTop: 8,
+          overflowWrap: 'anywhere',
+          whiteSpace: 'normal',
+        }}
+      >
+        {job.title || job.source || 'Active worker'}
+      </div>
+
+      <div
+        className="mono"
+        aria-label={`Model: ${model}; Harness: ${harness}`}
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'minmax(0, 1fr) auto',
+          alignItems: 'end',
+          gap: 10,
+          borderTop: '1px solid var(--border)',
+          marginTop: 9,
+          paddingTop: 8,
+        }}
+      >
+        <div style={{ minWidth: 0 }}>
+          <div
+            style={{
+              color: 'var(--text-3)',
+              fontSize: 8.5,
+              letterSpacing: '0.08em',
+              lineHeight: 1,
+              textTransform: 'uppercase',
+            }}
+          >
+            Model
+          </div>
+          <div
+            title={`Model: ${model}`}
+            style={{
+              color: 'var(--text)',
+              fontSize: 11.5,
+              fontWeight: 650,
+              lineHeight: 1.25,
+              marginTop: 5,
+              overflowWrap: 'anywhere',
+            }}
+          >
+            {model}
+          </div>
+        </div>
+        <div style={{ minWidth: 0, textAlign: 'right' }}>
+          <div
+            style={{
+              color: 'var(--text-3)',
+              fontSize: 8.5,
+              letterSpacing: '0.08em',
+              lineHeight: 1,
+              textTransform: 'uppercase',
+            }}
+          >
+            Harness
+          </div>
+          <span
+            title={`Harness: ${harness}`}
+            style={{
+              display: 'inline-block',
+              maxWidth: 120,
+              border: '1px solid var(--border-2)',
+              borderRadius: 999,
+              background: 'var(--surface)',
+              color: 'var(--text-2)',
+              fontSize: 9.5,
+              lineHeight: 1,
+              marginTop: 4,
+              overflow: 'hidden',
+              padding: '4px 6px',
+              textOverflow: 'ellipsis',
+              verticalAlign: 'bottom',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {harness}
+          </span>
+        </div>
+      </div>
+    </article>
+  );
+}
+
 export function ScanStatusPanel({ scan }) {
   const summary = scan.statusSummary || {};
   const rateLimited = scan.status === 'rate_limited';
   const completedLineages = summary.completedStepLineages ?? summary.stepCompletedAttempts ?? 0;
   const expectedLineages = summary.expectedStepLineages ?? summary.stepAttempts ?? 0;
   const activeJobs = summary.activeJobs || [];
+  const activeDepths = activeJobDepthSummary(activeJobs);
+  const longestActiveJobMs = activeJobs.reduce((longest, job) => {
+    const elapsed = Number(job?.elapsedMs);
+    return Number.isFinite(elapsed) ? Math.max(longest, elapsed) : longest;
+  }, 0);
   const recentErrors = summary.recentErrors || [];
   const currentFailedAttempts = summary.currentFailedAttempts ?? summary.failedAttempts ?? 0;
   const [expandedErrorIds, setExpandedErrorIds] = useState(() => new Set());
@@ -1265,36 +2331,77 @@ export function ScanStatusPanel({ scan }) {
       </div>
 
       {activeJobs.length > 0 && (
-        <div style={{ marginTop: 14, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-          {activeJobs.map((job) => (
-            <span
-              key={job.id}
-              className="mono"
-              style={{
-                display: 'inline-flex',
-                gap: 6,
-                alignItems: 'center',
-                maxWidth: '100%',
-                padding: '4px 8px',
-                borderRadius: 7,
-                background: 'var(--run-bg)',
-                color: 'var(--run)',
-                fontSize: 11.5,
-              }}
-            >
-              <span>{job.phaseLabel}</span>
-              <span
-                style={{
-                  color: 'var(--text-2)',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                {job.title}
-              </span>
+        <div style={{ marginTop: 16 }}>
+          <div
+            className="mono"
+            style={{
+              display: 'flex',
+              alignItems: 'baseline',
+              justifyContent: 'space-between',
+              flexWrap: 'wrap',
+              gap: 8,
+              marginBottom: 8,
+            }}
+          >
+            <span style={{ color: 'var(--text-2)', fontSize: 11.5 }}>Active workers</span>
+            <span style={{ color: 'var(--text-3)', fontSize: 10.5 }}>
+              {activeJobs.length} active
+              {longestActiveJobMs > 0 ? ` · longest ${formatActiveJobElapsed(longestActiveJobMs)}` : ''}
             </span>
-          ))}
+          </div>
+          <div
+            aria-label="Active workers by workflow depth"
+            className="mono"
+            style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 9 }}
+          >
+            {activeDepths.map((stage) => {
+              const depthStyle = activeJobDepthStyle(stage);
+              const description =
+                stage.depth == null
+                  ? `${stage.label}: ${stage.count} active worker${stage.count === 1 ? '' : 's'}`
+                  : `Depth ${stage.depth}: ${stage.count} active worker${stage.count === 1 ? '' : 's'}`;
+              return (
+                <span
+                  key={stage.key}
+                  title={description}
+                  aria-label={description}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 5,
+                    border: `1px solid color-mix(in srgb, ${depthStyle.color} 30%, var(--border))`,
+                    borderRadius: 999,
+                    background: depthStyle.background,
+                    color: depthStyle.color,
+                    fontSize: 10,
+                    lineHeight: 1,
+                    padding: '5px 7px',
+                  }}
+                >
+                  <span
+                    aria-hidden="true"
+                    style={{ width: 6, height: 6, borderRadius: '50%', background: depthStyle.color }}
+                  />
+                  <strong style={{ fontWeight: 700 }}>{stage.label}</strong>
+                  <span>{stage.count}</span>
+                </span>
+              );
+            })}
+          </div>
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fill, minmax(230px, 1fr))',
+              gap: 8,
+            }}
+          >
+            {activeJobs.map((job) => (
+              <ActiveJobCard key={job.id} job={job} />
+            ))}
+          </div>
+          <div className="mono" style={{ color: 'var(--text-3)', fontSize: 9.5, marginTop: 7 }}>
+            Live duration is informational. The engine reports failures separately below.
+          </div>
         </div>
       )}
 

@@ -26,9 +26,11 @@ const ANSI = {
   accent: '\x1B[38;5;203m',
   altScreen: '\x1B[?1049h',
   clear: '\x1B[2J',
+  danger: '\x1B[38;5;196m',
   dim: '\x1B[2m',
   hideCursor: '\x1B[?25l',
   home: '\x1B[H',
+  info: '\x1B[38;5;81m',
   reset: '\x1B[0m',
   restoreScreen: '\x1B[?1049l',
   success: '\x1B[38;5;78m',
@@ -62,6 +64,19 @@ function wrap(value, width) {
   const lines = [];
   let line = '';
   for (const word of words) {
+    if (word.length > width) {
+      if (line) {
+        lines.push(line);
+        line = '';
+      }
+      let remainder = word;
+      while (remainder.length > width) {
+        lines.push(remainder.slice(0, width));
+        remainder = remainder.slice(width);
+      }
+      line = remainder;
+      continue;
+    }
     if (!line) {
       line = word;
       continue;
@@ -126,27 +141,81 @@ export function renderMenuScreen({
   colorEnabled = false,
 }) {
   const innerWidth = Math.max(20, width - 4);
-  const lines = screenHeader({ title, subtitle, width, colorEnabled });
+  const header = screenHeader({ title, subtitle, width, colorEnabled });
 
-  for (const detail of details) {
+  const detailLines = details.map((detail) => {
     const text = typeof detail === 'string' ? detail : detail.text;
     const tone = typeof detail === 'string' ? null : detail.tone;
     const rendered = truncate(text, innerWidth);
-    lines.push(`  ${tone ? color(rendered, ANSI[tone], colorEnabled) : rendered}`);
-  }
-  if (details.length) lines.push('');
+    return `  ${tone ? color(rendered, ANSI[tone], colorEnabled) : rendered}`;
+  });
 
-  for (const [index, option] of options.entries()) {
+  const optionLines = options.map((option, index) => {
     const active = index === selected;
     const marker = active ? '›' : ' ';
     const description = option.description ? `  ${option.description}` : '';
     const text = truncate(`${marker} ${option.label}${description}`, innerWidth);
-    lines.push(`  ${active ? color(text, ANSI.accent, colorEnabled) : text}`);
+    const tone = active ? 'accent' : option.tone;
+    return `  ${tone ? color(text, ANSI[tone] || ANSI.reset, colorEnabled) : text}`;
+  });
+
+  const targetRows = Math.max(12, rows || 24);
+  const contentBudget = Math.max(1, targetRows - header.length - 2); // blank line + footer
+  let shownOptions = optionLines;
+  let shownDetails = [];
+
+  if (optionLines.length > contentBudget) {
+    const optionStart = Math.min(
+      Math.max(0, selected - Math.floor(contentBudget / 2)),
+      Math.max(0, optionLines.length - contentBudget)
+    );
+    shownOptions = optionLines.slice(optionStart, optionStart + contentBudget);
+  } else {
+    const detailBudget = Math.max(0, contentBudget - optionLines.length - (detailLines.length ? 1 : 0));
+    shownDetails = detailLines.slice(0, detailBudget);
   }
 
-  lines.push('');
-  lines.push(`  ${color(truncate(footer, innerWidth), ANSI.dim, colorEnabled)}`);
+  const position = optionLines.length > contentBudget ? `${selected + 1}/${optionLines.length}   ` : '';
+  const footerLine = `  ${color(truncate(`${position}${footer}`, innerWidth), ANSI.dim, colorEnabled)}`;
+
+  const lines = [...header, ...shownDetails];
+  if (shownDetails.length) lines.push('');
+  lines.push(...shownOptions, '', footerLine);
+
   return fillScreen(lines, { rows });
+}
+
+export function renderDocumentScreen({
+  title,
+  subtitle,
+  lines = [],
+  offset = 0,
+  footer = '↑↓ scroll   Enter or Esc back   Ctrl+C exit',
+  width = 80,
+  rows = 24,
+  colorEnabled = false,
+}) {
+  const innerWidth = Math.max(20, width - 4);
+  const header = screenHeader({ title, subtitle, width, colorEnabled });
+  const renderedLines = lines.flatMap((line) => {
+    const text = typeof line === 'string' ? line : line.text;
+    const tone = typeof line === 'string' ? null : line.tone;
+    return `${text ?? ''}`
+      .split('\n')
+      .flatMap((part) =>
+        wrap(part, innerWidth).map(
+          (wrapped) => `  ${tone ? color(wrapped, ANSI[tone] || ANSI.reset, colorEnabled) : wrapped}`
+        )
+      );
+  });
+  const targetRows = Math.max(12, rows || 24);
+  const contentBudget = Math.max(1, targetRows - header.length - 2);
+  const start = Math.min(Math.max(0, offset), Math.max(0, renderedLines.length - contentBudget));
+  const shown = renderedLines.slice(start, start + contentBudget);
+  const position =
+    renderedLines.length > contentBudget ? `   ${start + 1}–${start + shown.length}/${renderedLines.length}` : '';
+  const footerLine = `  ${color(truncate(`${footer}${position}`, innerWidth), ANSI.dim, colorEnabled)}`;
+  return fillScreen([...header, ...shown, '', footerLine], { rows });
 }
 
 export function renderInputScreen({
@@ -288,6 +357,62 @@ export class FullscreenTerminal {
     }
   }
 
+  async chooseMany(config) {
+    let selected = Math.min(Math.max(config.selected || 0, 0), Math.max(config.options.length - 1, 0));
+    const chosen = new Set(config.initialSelected || []);
+    let validationMessage = false;
+    const render = () => {
+      const options = config.options.map((option, index) => ({
+        ...option,
+        label: `${chosen.has(index) ? '[✓]' : '[ ]'} ${option.label}`,
+        tone: chosen.has(index) ? 'success' : option.tone,
+      }));
+      this.render(
+        renderMenuScreen({
+          ...config,
+          ...this.dimensions(),
+          colorEnabled: this.colorEnabled,
+          details: [
+            ...(config.details || []),
+            ...(validationMessage ? [{ text: 'Select at least one item to continue.', tone: 'warning' }] : []),
+          ],
+          footer: validationMessage
+            ? 'Select at least one   Space toggle   Esc cancel'
+            : 'Space toggle   ↑↓ navigate   Enter continue   Esc cancel',
+          options,
+          selected,
+        })
+      );
+    };
+    const onResize = () => render();
+    this.output.on?.('resize', onResize);
+
+    try {
+      while (true) {
+        render();
+        const intent = await this.nextIntent();
+        if (intent.type === 'cancel') throw new TerminalCancelledError();
+        if (intent.type === 'back') return 'back';
+        if (intent.type === 'up' || intent.type === 'down') {
+          selected = moveSelection(selected, intent.type, config.options.length);
+          continue;
+        }
+        if (intent.type === 'text' && intent.value === ' ') {
+          if (chosen.has(selected)) chosen.delete(selected);
+          else chosen.add(selected);
+          validationMessage = false;
+          continue;
+        }
+        if (intent.type === 'enter' && (!config.required || chosen.size)) {
+          return [...chosen].sort((a, b) => a - b);
+        }
+        if (intent.type === 'enter') validationMessage = true;
+      }
+    } finally {
+      this.output.off?.('resize', onResize);
+    }
+  }
+
   async readInput(config) {
     let value = config.initialValue || '';
     const render = () =>
@@ -314,10 +439,55 @@ export class FullscreenTerminal {
   }
 
   async notice(config) {
-    this.render(renderNoticeScreen({ ...config, ...this.dimensions(), colorEnabled: this.colorEnabled }));
-    const intent = await this.nextIntent();
-    if (intent.type === 'cancel') throw new TerminalCancelledError();
-    return intent;
+    const render = () =>
+      this.render(renderNoticeScreen({ ...config, ...this.dimensions(), colorEnabled: this.colorEnabled }));
+    const onResize = () => render();
+    this.output.on?.('resize', onResize);
+
+    try {
+      while (true) {
+        render();
+        const intent = await this.nextIntent();
+        if (intent.type === 'cancel') throw new TerminalCancelledError();
+        if (intent.type === 'enter' || intent.type === 'back') return intent;
+      }
+    } finally {
+      this.output.off?.('resize', onResize);
+    }
+  }
+
+  async document(config) {
+    let offset = 0;
+    const render = () =>
+      this.render(renderDocumentScreen({ ...config, ...this.dimensions(), colorEnabled: this.colorEnabled, offset }));
+    const onResize = () => render();
+    this.output.on?.('resize', onResize);
+
+    try {
+      while (true) {
+        render();
+        const intent = await this.nextIntent();
+        if (intent.type === 'cancel') throw new TerminalCancelledError();
+        if (intent.type === 'enter' || intent.type === 'back') return intent;
+        if (intent.type === 'up') offset = Math.max(0, offset - 1);
+        if (intent.type === 'down') {
+          const dimensions = this.dimensions();
+          const contentBudget = Math.max(1, Math.max(12, dimensions.rows || 24) - 8);
+          const lineCount = (config.lines || []).reduce((count, line) => {
+            const text = typeof line === 'string' ? line : line.text;
+            return (
+              count +
+              `${text ?? ''}`
+                .split('\n')
+                .reduce((total, part) => total + wrap(part, Math.max(20, dimensions.width - 4)).length, 0)
+            );
+          }, 0);
+          offset = Math.min(offset + 1, Math.max(0, lineCount - contentBudget));
+        }
+      }
+    } finally {
+      this.output.off?.('resize', onResize);
+    }
   }
 
   async confirm({ title, subtitle, message, confirmLabel }) {

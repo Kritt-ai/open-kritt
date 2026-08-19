@@ -7,8 +7,10 @@ import { test } from 'node:test';
 
 import {
   AccountLoginManager,
+  addClaudeRuntimeHome,
   addCodexRuntimeHome,
   parseLoginInstructions,
+  removeClaudeRuntimeHome,
   removeCodexRuntimeHome,
   stripTerminalFormatting,
 } from '../src/lib/accountLogins.js';
@@ -75,6 +77,22 @@ test('Codex runtime registry is seeded from .env when its live file is missing',
   const expected = '/codex-accounts/existing/.codex,/codex-accounts/new/.codex';
   assert.match(await readFile(runtimeConfigPath, 'utf8'), new RegExp(`^ENGINE_CODEX_HOME=${expected}$`, 'm'));
   assert.equal(parseEnvironmentText(await readFile(environmentFilePath, 'utf8')).ENGINE_CODEX_HOME, expected);
+});
+
+test('Claude login is added to the live runtime registry idempotently', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'open-kritt-claude-runtime-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const runtimeConfigPath = join(directory, 'engine-runtime.env');
+  await writeFile(runtimeConfigPath, 'ENGINE_WORKER_COUNT=4\nENGINE_CLAUDE_HOME=/root/.claude\n');
+
+  await addClaudeRuntimeHome('/claude-accounts/reviewer/.claude', { runtimeConfigPath });
+  await addClaudeRuntimeHome('/claude-accounts/reviewer/.claude', { runtimeConfigPath });
+  assert.equal(await removeClaudeRuntimeHome('/claude-accounts/missing/.claude', { runtimeConfigPath }), false);
+
+  const text = await readFile(runtimeConfigPath, 'utf8');
+  assert.match(text, /^ENGINE_WORKER_COUNT=4$/m);
+  assert.match(text, /^ENGINE_CLAUDE_HOME=\/root\/\.claude,\/claude-accounts\/reviewer\/\.claude$/m);
+  assert.equal((text.match(/\/claude-accounts\/reviewer\/\.claude/g) || []).length, 1);
 });
 
 test('failed .env persistence does not leave an orphaned Codex login', async (t) => {
@@ -361,7 +379,9 @@ test('Claude account removal signs out without deleting profile settings', async
   await mkdir(claudeHome, { recursive: true });
   await writeFile(join(claudeHome, '.credentials.json'), '{"claudeAiOauth":{"accessToken":"test"}}');
   await writeFile(join(claudeHome, '.claude.json'), '{"theme":"dark"}');
-  const manager = new AccountLoginManager({ claudeHome });
+  const runtimeConfigPath = join(directory, 'engine-runtime.env');
+  await writeFile(runtimeConfigPath, 'ENGINE_CLAUDE_HOME=/root/.claude\n');
+  const manager = new AccountLoginManager({ claudeHome, runtimeConfigPath });
 
   assert.deepEqual(await manager.removeAccount('claude', 'default'), {
     provider: 'claude',
@@ -370,6 +390,108 @@ test('Claude account removal signs out without deleting profile settings', async
   });
   await assert.rejects(stat(join(claudeHome, '.credentials.json')), { code: 'ENOENT' });
   assert.equal(await readFile(join(claudeHome, '.claude.json'), 'utf8'), '{"theme":"dark"}');
+  assert.match(await readFile(runtimeConfigPath, 'utf8'), /^ENGINE_CLAUDE_HOME=$/m);
+});
+
+test('adding a Claude account creates a distinct managed home and registers it for rotation', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'open-kritt-login-add-claude-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const claudeHome = join(directory, 'claude-primary');
+  const claudeAccountsRoot = join(directory, 'claude-accounts');
+  const runtimeConfigPath = join(directory, 'engine-runtime.env');
+  await mkdir(claudeHome, { recursive: true });
+  await writeFile(runtimeConfigPath, 'ENGINE_CLAUDE_HOME=/root/.claude\n');
+  let invocation;
+  const manager = new AccountLoginManager({
+    claudeHome,
+    claudeAccountsRoot,
+    claudeRuntimeAccountsRoot: '/runtime-claude-accounts',
+    runtimeConfigPath,
+    spawnProcess(command, args, options) {
+      invocation = { command, args, options };
+      const child = new EventEmitter();
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.stdin = {};
+      child.kill = () => {};
+      return child;
+    },
+  });
+
+  const publicSession = await manager.start('claude');
+  const session = manager.sessions.get(publicSession.id);
+  await writeFile(
+    join(session.claudeLoginHome, '.credentials.json'),
+    '{"claudeAiOauth":{"accessToken":"new","refreshToken":"refresh","expiresAt":9999999999999}}'
+  );
+  await writeFile(
+    join(session.claudeLoginHome, '.claude.json'),
+    JSON.stringify({
+      oauthAccount: {
+        accountUuid: 'claude-account-id',
+        emailAddress: 'reviewer@example.test',
+        displayName: 'Security Reviewer',
+      },
+      apiKey: 'must-not-be-copied',
+    })
+  );
+  await manager.finish(session, 0);
+
+  assert.equal(invocation.command, 'claude');
+  assert.deepEqual(invocation.args, ['auth', 'login', '--claudeai']);
+  assert.equal(invocation.options.env.CLAUDE_HOME, session.claudeLoginHome);
+  assert.equal(session.status, 'completed');
+  assert.equal(
+    JSON.parse(await readFile(join(session.claudeHome, '.credentials.json'), 'utf8')).claudeAiOauth.accessToken,
+    'new'
+  );
+  assert.deepEqual(JSON.parse(await readFile(join(session.claudeHome, '.open-kritt-account.json'), 'utf8')), {
+    provider: 'claude',
+    accountId: 'claude-account-id',
+    email: 'reviewer@example.test',
+    name: 'Security Reviewer',
+    organization: null,
+  });
+  assert.equal(
+    (await readFile(join(session.claudeHome, '.open-kritt-account.json'), 'utf8')).includes('must-not-be-copied'),
+    false
+  );
+  assert.match(
+    await readFile(runtimeConfigPath, 'utf8'),
+    new RegExp(`^ENGINE_CLAUDE_HOME=${session.claudeRuntimeHome}$`, 'm')
+  );
+  assert.equal((await readdir(claudeAccountsRoot)).length, 1);
+});
+
+test('managed Claude account removal deletes only the selected home and runtime entry', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'open-kritt-login-remove-managed-claude-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const accountsRoot = join(directory, 'claude-accounts');
+  const reviewerHome = join(accountsRoot, 'reviewer', '.claude');
+  const otherHome = join(accountsRoot, 'other', '.claude');
+  const runtimeConfigPath = join(directory, 'engine-runtime.env');
+  await mkdir(reviewerHome, { recursive: true });
+  await mkdir(otherHome, { recursive: true });
+  await writeFile(join(reviewerHome, '.credentials.json'), '{"claudeAiOauth":{"accessToken":"reviewer"}}');
+  await writeFile(join(otherHome, '.credentials.json'), '{"claudeAiOauth":{"accessToken":"other"}}');
+  await writeFile(
+    runtimeConfigPath,
+    'ENGINE_CLAUDE_HOME=/runtime-accounts/reviewer/.claude,/runtime-accounts/other/.claude\n'
+  );
+  const manager = new AccountLoginManager({
+    claudeAccountsRoot: accountsRoot,
+    claudeRuntimeAccountsRoot: '/runtime-accounts',
+    runtimeConfigPath,
+  });
+
+  assert.deepEqual(await manager.removeAccount('claude', 'reviewer'), {
+    provider: 'claude',
+    accountId: 'reviewer',
+    removed: true,
+  });
+  await assert.rejects(stat(join(accountsRoot, 'reviewer')), { code: 'ENOENT' });
+  assert.equal((await stat(otherHome)).isDirectory(), true);
+  assert.match(await readFile(runtimeConfigPath, 'utf8'), /^ENGINE_CLAUDE_HOME=\/runtime-accounts\/other\/\.claude$/m);
 });
 
 test('completed Claude login atomically promotes private OAuth credentials', async (t) => {

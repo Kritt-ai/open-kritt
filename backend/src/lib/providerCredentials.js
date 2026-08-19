@@ -21,7 +21,7 @@ export const PROVIDER_DEFINITIONS = {
     label: 'Claude',
     envKeys: ['ANTHROPIC_API_KEY'],
     credentialLabel: 'Claude login',
-    description: 'Claude subscription account authenticated through Claude Code.',
+    description: 'Claude subscription accounts authenticated through Claude Code.',
     management: 'login',
   },
   openrouter: {

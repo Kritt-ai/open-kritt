@@ -33,6 +33,20 @@ describe('rate-limited scans', () => {
       accountRelated: true,
       label: 'Quota exhausted',
     });
+    expect(statusMeta('rate_limited', { limit_kind: 'subagent_limited' }).label).toBe('Subagent limit');
+    expect(rateLimitPresentation({ limit_kind: 'subagent_limited' })).toMatchObject({
+      accountRelated: false,
+      label: 'Subagent limit',
+    });
+    expect(
+      providerCapacityAutoscalePresentation({
+        limit_kind: 'subagent_limited',
+        provider_capacity_autoscale_enabled: true,
+        provider_capacity_initial_worker_cap: 4,
+        provider_capacity_worker_cap: 3,
+        provider_capacity_autoscale_events: 1,
+      }).compact
+    ).toBe('Subagent-limit autoscale: 4 → 3 workers');
   });
 
   it('summarizes a scan-specific provider capacity reduction', () => {

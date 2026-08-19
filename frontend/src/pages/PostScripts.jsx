@@ -1,14 +1,17 @@
 import { useEffect, useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { useFetch } from '../lib/useFetch.js';
 import { usePageChrome } from '../context/ui.jsx';
-import { Spinner, ErrorState, EmptyState, Button } from '../components/ui.jsx';
+import { CardLinkOverlay, Spinner, ErrorState, EmptyState, Button } from '../components/ui.jsx';
 import { useModalDialog } from '../lib/useModalDialog.js';
 import { useNewestFirst, usePagination } from '../lib/usePagination.js';
+import { downloadResourceExport } from '../lib/resourceTransfer.js';
+import { useResourceImport } from '../lib/useResourceImport.js';
 import Pagination from '../components/Pagination.jsx';
 
 export default function PostScripts() {
+  const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const newDialogParam = params.get('new');
   const [dialogOpen, setDialogOpen] = useState(newDialogParam === '1');
@@ -27,13 +30,42 @@ export default function PostScripts() {
   const { data, loading, error, reload } = useFetch(() => api.postScripts(), []);
   const postScripts = useNewestFirst(data);
   const postScriptPages = usePagination(postScripts, { pageSize: 9 });
+  const resourceImport = useResourceImport({
+    resourceType: 'postScript',
+    label: 'Post-script',
+    create: api.createPostScript,
+    onImported: (postScript) => navigate(`/post-scripts/${postScript.id}`),
+  });
 
   return (
     <div style={{ padding: '30px 32px', maxWidth: 1180 }}>
-      <div style={{ fontSize: 27, fontWeight: 600, letterSpacing: '-0.02em' }}>Post-scripts</div>
-      <div style={{ fontSize: 14, color: 'var(--text-2)', margin: '3px 0 22px' }}>
-        Run after every finding to enrich, grade or cluster it. Reserved keys only.
+      <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 16 }}>
+        <div>
+          <div style={{ fontSize: 27, fontWeight: 600, letterSpacing: '-0.02em' }}>Post-scripts</div>
+          <div style={{ fontSize: 14, color: 'var(--text-2)', marginTop: 3 }}>
+            Run after every finding to enrich, grade or cluster it. Reserved keys only.
+          </div>
+        </div>
+        <Button variant="ghost" disabled={resourceImport.importing} onClick={resourceImport.chooseFile}>
+          {resourceImport.importing ? 'Importing…' : 'Import JSON'}
+        </Button>
       </div>
+      <input
+        ref={resourceImport.inputRef}
+        type="file"
+        accept=".json,application/json"
+        aria-label="Import post-script JSON"
+        onChange={resourceImport.importFile}
+        style={{ display: 'none' }}
+      />
+
+      {resourceImport.importError && (
+        <div role="alert" style={{ margin: '18px 0' }}>
+          <ErrorState error={{ message: resourceImport.importError }} />
+        </div>
+      )}
+
+      <div style={{ height: resourceImport.importError ? 4 : 22 }} />
 
       {dialogOpen && <NewPostScriptDialog onClose={closeDialog} />}
 
@@ -57,22 +89,35 @@ export default function PostScripts() {
             }}
           >
             {postScriptPages.pageItems.map((p) => (
-              <Link
+              <div
                 key={p.id}
-                to={`/post-scripts/${p.id}`}
                 style={{
+                  position: 'relative',
                   border: '1px solid var(--border)',
                   borderRadius: 12,
                   padding: 18,
                   background: 'var(--surface)',
                   boxShadow: 'var(--shadow)',
                   cursor: 'pointer',
-                  color: 'inherit',
-                  textDecoration: 'none',
                 }}
               >
-                <div className="mono" style={{ fontWeight: 600, fontSize: 14.5 }}>
-                  {p.name}
+                <CardLinkOverlay to={`/post-scripts/${p.id}`} label={`Open post-script ${p.name}`} />
+                <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
+                  <div className="mono" style={{ fontWeight: 600, fontSize: 14.5 }}>
+                    {p.name}
+                  </div>
+                  <Button
+                    variant="ghost"
+                    aria-label={`Export ${p.name}`}
+                    title="Export post-script as JSON"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      downloadResourceExport('postScript', p);
+                    }}
+                    style={{ position: 'relative', zIndex: 2, height: 27, padding: '0 9px', fontSize: 11.5 }}
+                  >
+                    Export
+                  </Button>
                 </div>
                 <div
                   style={{
@@ -112,7 +157,7 @@ export default function PostScripts() {
                     </span>
                   ))}
                 </div>
-              </Link>
+              </div>
             ))}
           </div>
           <Pagination {...postScriptPages} itemLabel="post-scripts" />

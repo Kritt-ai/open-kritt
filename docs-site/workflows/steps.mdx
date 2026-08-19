@@ -17,6 +17,7 @@ declaration of the structured output that prompt must produce. Steps are grouped
 | **Depth** | Which level the step sits at (0 = entry point). |
 | **Multi-output** | Whether the step may emit many results per input. |
 | **Consume all** | Whether the step receives the whole previous level as one batch. |
+| **Bound source** | Optional one-to-one route from a sibling in the immediately previous depth. |
 
 ## Output format
 
@@ -46,5 +47,9 @@ every finding is consistent and comparable. The required keys are:
 When a step completes, its JSON output is merged into the **context** used by the next
 depth. So a depth-1 step can reference any key a depth-0 step emitted, exactly as if it
 were a built-in variable.
+
+With bind routing enabled, the available keys stay the same, but execution is filtered:
+each destination runs only for results produced by its selected source sibling. See
+[Depth and siblings](/workflows/depth-and-siblings#bind-sibling-transitions).
 
 Next: the [prompt editor and prompt output](/workflows/prompt-editor).

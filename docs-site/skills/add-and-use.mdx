@@ -50,4 +50,16 @@ the agent applies them alongside the workflow's own instructions.
 The metadata fields (`source_url`, `license_spdx`, `attribution`) travel with the skill so
 you can keep proper credit when a skill is adapted from someone else's work.
 
+## Move a skill between installations
+
+Use **Export** on an agent-skill card and **Import JSON** on the skill list. The portable
+file preserves the slug, name, instructions, source URL, license, and attribution while
+omitting database IDs and timestamps. On a terminal-only server, import the copied file:
+
+```bash
+./kritt-headless import skill ./taint-analysis.agent-skill.json
+```
+
+An imported slug must still be unique in the destination installation.
+
 Next: [create a scan](/scans/create).

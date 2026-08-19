@@ -247,6 +247,7 @@ def test_fetch_anthropic_models_uses_the_account_model_list(monkeypatch):
                 {
                     "data": [
                         {"id": "claude-fable-5", "display_name": "Claude Fable 5"},
+                        {"id": "claude-opus-5", "display_name": "Claude Opus 5"},
                         {"id": "claude-opus-4-6", "display_name": "Claude Opus 4.6"},
                         {"id": "claude-haiku-4", "display_name": "Claude Haiku 4"},
                     ],
@@ -258,12 +259,18 @@ def test_fetch_anthropic_models_uses_the_account_model_list(monkeypatch):
     monkeypatch.setattr(model_catalog, "urlopen", fake_urlopen)
     models, default_model = fetch_anthropic_models("anthropic-test-key", 2)
 
-    assert [model["id"] for model in models] == ["claude-fable-5", "claude-opus-4-6", "claude-haiku-4"]
+    assert [model["id"] for model in models] == [
+        "claude-fable-5",
+        "claude-opus-5",
+        "claude-opus-4-6",
+        "claude-haiku-4",
+    ]
     assert models[0]["label"] == "Claude Fable 5"
     assert models[0]["note"] == "Cyber requests may route to Opus 4.8."
     assert models[0]["thinkingEfforts"] == ["low", "medium", "high", "xhigh", "max"]
-    assert models[1]["thinkingEfforts"] == ["low", "medium", "high", "max"]
-    assert models[2]["thinkingEfforts"] == ["default"]
+    assert models[1]["thinkingEfforts"] == ["low", "medium", "high", "xhigh", "max"]
+    assert models[2]["thinkingEfforts"] == ["low", "medium", "high", "max"]
+    assert models[3]["thinkingEfforts"] == ["default"]
     assert default_model == "claude-fable-5"
     request, timeout = requests[0]
     assert request.full_url == "https://api.anthropic.com/v1/models?limit=100"

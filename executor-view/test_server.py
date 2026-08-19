@@ -41,6 +41,12 @@ def codex_usage(primary=2, secondary=None):
         "manualResetCredits": {
             "availableCount": 3,
             "applicableAvailableCount": 0,
+            "credits": [
+                {
+                    "title": "Full reset",
+                    "expiresAt": "2026-08-12T18:07:27.165161Z",
+                }
+            ],
         },
         "primary": {
             "usedPercent": primary,
@@ -52,27 +58,80 @@ def codex_usage(primary=2, secondary=None):
     }
 
 
-def write_claude_credentials(home, access_token="unit-test-access-token"):
+def write_claude_credentials(
+    home,
+    access_token="unit-test-access-token",
+    refresh_token="unit-test-refresh-token",
+    expires_at=None,
+    refresh_token_expires_at=None,
+):
+    oauth = {
+        "accessToken": access_token,
+        "refreshToken": refresh_token,
+        "subscriptionType": "max",
+        "rateLimitTier": "default_claude_max_20x",
+    }
+    if expires_at is not None:
+        oauth["expiresAt"] = expires_at
+    if refresh_token_expires_at is not None:
+        oauth["refreshTokenExpiresAt"] = refresh_token_expires_at
     (home / ".credentials.json").write_text(
-        json.dumps(
-            {
-                "claudeAiOauth": {
-                    "accessToken": access_token,
-                    "refreshToken": "unit-test-refresh-token",
-                    "subscriptionType": "max",
-                    "rateLimitTier": "default_claude_max_20x",
-                }
-            }
-        ),
+        json.dumps({"claudeAiOauth": oauth}),
         encoding="utf-8",
     )
 
 
 class ExecutorViewSummaryTests(unittest.TestCase):
+    def setUp(self):
+        runtime_config = patch.object(server, "read_runtime_config", return_value={})
+        runtime_config.start()
+        self.addCleanup(runtime_config.stop)
+
     def test_executor_html_has_no_accounts_tab(self):
         self.assertNotIn('id="tab-accounts"', server.HTML)
         self.assertNotIn("renderAccounts", server.HTML)
         self.assertIn('id="queue"', server.HTML)
+
+    def test_executor_detail_orders_steps_jobs_and_post_progress(self):
+        workflow_steps = server.HTML.index(
+            '<div class="section-title">Workflow Steps</div>'
+        )
+        running_jobs = server.HTML.index("${runningJobsPanel(entry)}")
+        post_progress = server.HTML.index(
+            '<div class="section-title">Post-processing</div>'
+        )
+
+        self.assertLess(workflow_steps, running_jobs)
+        self.assertLess(running_jobs, post_progress)
+        self.assertNotIn("POST JOBS", server.HTML)
+
+    def test_pending_jobs_show_the_model_configuration_resolved_for_their_depth(self):
+        scan = {
+            "model": "gpt-5-codex",
+            "model_provider": "codex",
+            "harness": "codex",
+            "thinking_effort": "high",
+            "model_overrides": {
+                "1": {
+                    "model": "claude-sonnet",
+                    "model_provider": "claude",
+                    "harness": "claude-code",
+                    "thinking_effort": "medium",
+                }
+            },
+        }
+        job = server.job_from_state(
+            {"id": 7, "name": "Investigate", "depth": 1},
+            {"prev_id": 4, "prev_table": "workflows.step_results", "repeat_run": 1},
+            scan,
+        )
+
+        self.assertEqual(job["model"], "claude-sonnet")
+        self.assertEqual(job["modelProvider"], "claude")
+        self.assertEqual(job["harness"], "claude-code")
+        self.assertEqual(
+            server.scan_model_configuration(scan, 0)["model"], "gpt-5-codex"
+        )
 
     def test_public_bind_requires_auth_even_for_a_loopback_host_header(self):
         self.assertTrue(server.bind_address_is_loopback("localhost"))
@@ -293,6 +352,33 @@ class ExecutorViewSummaryTests(unittest.TestCase):
             self.assertEqual(server.current_codex_home_raw(), "")
             self.assertEqual(server.configured_codex_homes(), [])
 
+    def test_claude_homes_follow_live_runtime_changes_without_restart(self):
+        runtime = {"ENGINE_CLAUDE_HOME": "/root/.claude"}
+        with patch.object(
+            server, "read_runtime_config", side_effect=lambda: dict(runtime)
+        ):
+            self.assertEqual(
+                server.configured_claude_homes(),
+                [Path("/root/.claude")],
+            )
+
+            runtime["ENGINE_CLAUDE_HOME"] = (
+                "/root/.claude,/claude-accounts/reviewer/.claude"
+            )
+            self.assertEqual(
+                server.configured_claude_homes(),
+                [
+                    Path("/root/.claude"),
+                    Path("/claude-accounts/reviewer/.claude"),
+                ],
+            )
+
+            runtime["ENGINE_CLAUDE_HOME"] = "/claude-accounts/reviewer/.claude"
+            self.assertEqual(
+                server.configured_claude_homes(),
+                [Path("/claude-accounts/reviewer/.claude")],
+            )
+
     def test_scan_summary_reports_total_and_visible_window(self):
         summary = server.summarize_scan_counts(
             [
@@ -308,6 +394,49 @@ class ExecutorViewSummaryTests(unittest.TestCase):
         self.assertEqual(summary["displayedScans"], 50)
         self.assertEqual(summary["running"], 4)
         self.assertTrue(summary["truncated"])
+
+    def test_scan_page_params_match_frontend_pagination_contract(self):
+        page, page_size = server.scan_page_params({"page": ["3"], "pageSize": ["6"]})
+
+        self.assertEqual(page, 3)
+        self.assertEqual(page_size, 6)
+        self.assertEqual(
+            server.scan_page_metadata(58, page, page_size),
+            {
+                "page": 3,
+                "pageSize": 6,
+                "totalItems": 58,
+                "totalPages": 10,
+                "startIndex": 12,
+                "endIndex": 18,
+            },
+        )
+
+    def test_scan_page_metadata_clamps_a_page_after_the_scan_count_shrinks(self):
+        self.assertEqual(
+            server.scan_page_metadata(8, requested_page=4, page_size=6),
+            {
+                "page": 2,
+                "pageSize": 6,
+                "totalItems": 8,
+                "totalPages": 2,
+                "startIndex": 6,
+                "endIndex": 8,
+            },
+        )
+
+    def test_scan_page_params_reject_invalid_or_oversized_values(self):
+        invalid_queries = [
+            {"page": ["0"]},
+            {"page": ["nope"]},
+            {"pageSize": ["0"]},
+            {"pageSize": [str(server.SCAN_LIST_LIMIT + 1)]},
+        ]
+
+        for query in invalid_queries:
+            with self.subTest(query=query):
+                with self.assertRaises(server.ScanPaginationError):
+                    server.scan_page_params(query)
 
     def test_empty_post_work_does_not_look_complete(self):
         summary = server.summarize_post_processing(
@@ -402,6 +531,9 @@ class ExecutorViewSummaryTests(unittest.TestCase):
         class Response:
             status = 200
 
+            def __init__(self, payload):
+                self.payload = payload
+
             def __enter__(self):
                 return self
 
@@ -409,52 +541,93 @@ class ExecutorViewSummaryTests(unittest.TestCase):
                 return False
 
             def read(self, _limit):
-                return json.dumps(
+                return json.dumps(self.payload).encode()
+
+        usage_response = Response(
+            {
+                "email": "researcher@example.test",
+                "plan_type": "pro",
+                "rate_limit_reached_type": None,
+                "rate_limit": {
+                    "allowed": True,
+                    "primary_window": {
+                        "used_percent": 2,
+                        "limit_window_seconds": 604800,
+                        "reset_at": 1784637600,
+                    },
+                    "secondary_window": None,
+                },
+                "rate_limit_reset_credits": {
+                    "available_count": 3,
+                    "applicable_available_count": 1,
+                    "secret": "aggregate-secret-must-not-leak",
+                },
+            }
+        )
+        credits_response = Response(
+            {
+                "available_count": 3,
+                "credits": [
                     {
-                        "email": "researcher@example.test",
-                        "plan_type": "pro",
-                        "rate_limit_reached_type": None,
-                        "rate_limit": {
-                            "allowed": True,
-                            "primary_window": {
-                                "used_percent": 2,
-                                "limit_window_seconds": 604800,
-                                "reset_at": 1784637600,
-                            },
-                            "secondary_window": None,
-                        },
-                        "rate_limit_reset_credits": {
-                            "available_count": 3,
-                            "applicable_available_count": 1,
-                            "secret": "must-not-leak",
-                        },
-                    }
-                ).encode()
+                        "id": "credit-id-must-not-leak",
+                        "title": "Full reset",
+                        "expires_at": "2026-08-12T18:07:27.165161Z",
+                        "status": "available",
+                        "secret": "credit-secret-must-not-leak",
+                    },
+                    {
+                        "id": "used-credit-id-must-not-leak",
+                        "title": "Used reset",
+                        "expires_at": "2026-08-10T18:07:27Z",
+                        "status": "redeemed",
+                    },
+                ],
+            }
+        )
 
         with patch.object(
-            server.urlrequest, "urlopen", return_value=Response()
+            server.urlrequest,
+            "urlopen",
+            side_effect=[usage_response, credits_response],
         ) as urlopen:
             usage = server.fetch_codex_usage(
                 "unit-test-access-token", "unit-test-account-id"
             )
 
-        request = urlopen.call_args.args[0]
-        self.assertEqual(
-            request.get_header("Authorization"), "Bearer unit-test-access-token"
-        )
-        self.assertEqual(
-            request.get_header("Chatgpt-account-id"), "unit-test-account-id"
-        )
+        usage_request = urlopen.call_args_list[0].args[0]
+        credits_request = urlopen.call_args_list[1].args[0]
+        self.assertEqual(usage_request.full_url, server.CODEX_USAGE_URL)
+        self.assertEqual(credits_request.full_url, server.CODEX_RESET_CREDITS_URL)
+        for request in (usage_request, credits_request):
+            self.assertEqual(
+                request.get_header("Authorization"),
+                "Bearer unit-test-access-token",
+            )
+            self.assertEqual(
+                request.get_header("Chatgpt-account-id"),
+                "unit-test-account-id",
+            )
         self.assertEqual(usage["primary"]["usedPercent"], 2)
         self.assertEqual(usage["primary"]["windowMinutes"], 10080)
         self.assertEqual(usage["planType"], "pro")
         self.assertEqual(
             usage["manualResetCredits"],
-            {"availableCount": 3, "applicableAvailableCount": 1},
+            {
+                "availableCount": 3,
+                "applicableAvailableCount": 1,
+                "credits": [
+                    {
+                        "title": "Full reset",
+                        "expiresAt": server.parse_datetime(
+                            "2026-08-12T18:07:27.165161Z"
+                        ),
+                    }
+                ],
+            },
         )
-        self.assertNotIn(
-            "unit-test-access-token", json.dumps(usage, default=server.encode)
-        )
+        serialized = json.dumps(usage, default=server.encode)
+        self.assertNotIn("unit-test-access-token", serialized)
+        self.assertNotIn("must-not-leak", serialized)
 
     def test_forced_codex_usage_refresh_bypasses_a_fresh_cache_entry(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -617,11 +790,54 @@ class ExecutorViewSummaryTests(unittest.TestCase):
         self.assertEqual(account["rateLimits"]["source"], "Codex account usage API")
         self.assertEqual(
             account["rateLimits"]["manualResetCredits"],
-            {"availableCount": 3, "applicableAvailableCount": 0},
+            {
+                "availableCount": 3,
+                "applicableAvailableCount": 0,
+                "credits": [
+                    {
+                        "title": "Full reset",
+                        "expiresAt": server.parse_datetime(
+                            "2026-08-12T18:07:27.165161Z"
+                        ),
+                    }
+                ],
+            },
         )
         self.assertNotIn(
             "unit-test-access-token", json.dumps(account, default=server.encode)
         )
+
+    def test_codex_account_prefers_live_plan_after_an_upgrade(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory) / "account" / ".codex"
+            home.mkdir(parents=True)
+            (home / "auth.json").write_text(
+                json.dumps(
+                    {
+                        "tokens": {
+                            "access_token": "unit-test-access-token",
+                            "account_id": "unit-test-account-id",
+                            "id_token": (
+                                "eyJhbGciOiJub25lIn0."
+                                "eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOns"
+                                "iY2hhdGdwdF9wbGFuX3R5cGUiOiJwbHVzIn19."
+                            ),
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with (
+                patch.object(server, "latest_rate_limits", return_value={}),
+                patch.object(
+                    server,
+                    "codex_usage_for_account",
+                    return_value=codex_usage(),
+                ),
+            ):
+                account = server.codex_account(home, {}, force=True)
+
+        self.assertEqual(account["plan"], "pro")
 
     def test_codex_reset_does_not_call_consume_endpoint_without_eligible_window(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -671,6 +887,8 @@ class ExecutorViewSummaryTests(unittest.TestCase):
 
             self.assertEqual(account["active"], 0)
             self.assertEqual(account["accounts"][0]["id"], "default")
+            self.assertEqual(account["accounts"][0]["email"], "researcher@example.test")
+            self.assertEqual(account["accounts"][0]["label"], "researcher@example.test")
             self.assertFalse(account["accounts"][0]["canRemove"])
             self.assertEqual(
                 account["accounts"][0]["status"], "profile found; login required"
@@ -689,6 +907,51 @@ class ExecutorViewSummaryTests(unittest.TestCase):
             self.assertEqual(account["active"], 1)
             self.assertEqual(account["accounts"][0]["status"], "logged in")
             self.assertTrue(account["accounts"][0]["canRemove"])
+
+    def test_multiple_claude_homes_are_reported_as_distinct_removable_accounts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            accounts_root = Path(directory) / "claude-accounts"
+            reviewer = accounts_root / "reviewer" / ".claude"
+            researcher = accounts_root / "researcher" / ".claude"
+            reviewer.mkdir(parents=True)
+            researcher.mkdir(parents=True)
+            write_claude_credentials(reviewer, access_token="reviewer-token")
+            write_claude_credentials(researcher, access_token="researcher-token")
+            server.CLAUDE_USAGE_CACHE = {}
+            with (
+                patch.object(server, "CLAUDE_ACCOUNTS_ROOT", accounts_root),
+                patch.object(
+                    server,
+                    "configured_claude_homes",
+                    return_value=[reviewer, researcher],
+                ),
+                patch.object(server, "current_claude_home_raw", return_value="managed"),
+                patch.object(server, "configured_secret", return_value=""),
+                patch.object(
+                    server,
+                    "fetch_claude_usage",
+                    side_effect=lambda token: claude_usage(
+                        primary=10 if token == "reviewer-token" else 20
+                    ),
+                ),
+            ):
+                result = server.fetch_claude_accounts(force=True)
+
+        self.assertEqual(result["active"], 2)
+        self.assertEqual(result["total"], 2)
+        self.assertEqual(
+            [account["id"] for account in result["accounts"]],
+            ["reviewer", "researcher"],
+        )
+        self.assertTrue(all(account["canRemove"] for account in result["accounts"]))
+        self.assertEqual(
+            [
+                account["rateLimits"]["primary"]["usedPercent"]
+                for account in result["accounts"]
+            ],
+            [10, 20],
+        )
+        self.assertEqual(len(server.CLAUDE_USAGE_CACHE), 2)
 
     def test_claude_usage_is_normalized_without_exposing_oauth_tokens(self):
         class Response:
@@ -776,11 +1039,52 @@ class ExecutorViewSummaryTests(unittest.TestCase):
         self.assertEqual(result["limited"], 1)
         self.assertEqual(result["accounts"][0]["statusKind"], "limited")
 
+    def test_expired_claude_access_token_with_valid_refresh_requires_sign_in(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory) / ".claude"
+            home.mkdir()
+            now_ms = int(time.time() * 1000)
+            write_claude_credentials(
+                home,
+                expires_at=now_ms - 60_000,
+                refresh_token_expires_at=now_ms + 86_400_000,
+            )
+            server.CLAUDE_USAGE_CACHE = {
+                "expires_at": 0.0,
+                "credential": None,
+                "data": None,
+            }
+            with (
+                patch.object(server, "CLAUDE_HOME_RAW", str(home)),
+                patch.object(server, "configured_secret", return_value=""),
+                patch.object(
+                    server,
+                    "fetch_claude_usage",
+                    return_value={
+                        "checkedAt": "2026-07-14T15:00:00+00:00",
+                        "statusCode": 429,
+                        "error": "Claude usage returned HTTP 429",
+                    },
+                ),
+            ):
+                result = server.fetch_claude_accounts(force=True)
+
+        account = result["accounts"][0]
+        self.assertEqual(result["active"], 0)
+        self.assertEqual(result["limited"], 0)
+        self.assertEqual(account["status"], "sign-in required")
+        self.assertEqual(account["statusKind"], "expired")
+        self.assertEqual(
+            account["authError"],
+            "Claude's saved OAuth login has expired. "
+            "Sign in to Claude again to renew this account.",
+        )
+
     def test_claude_rejected_login_requires_sign_in_without_usage_limits(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory) / ".claude"
             home.mkdir()
-            write_claude_credentials(home)
+            write_claude_credentials(home, refresh_token="")
             server.CLAUDE_USAGE_CACHE = {
                 "expires_at": 0.0,
                 "credential": None,
@@ -824,6 +1128,67 @@ class ExecutorViewSummaryTests(unittest.TestCase):
             "Claude's saved OAuth login has expired. "
             "Sign in to Claude again to renew this account.",
         )
+
+    def test_rejected_claude_access_token_requires_sign_in_even_with_valid_refresh_token(
+        self,
+    ):
+        oauth = {
+            "expiresAt": 1_700_000_000_000,
+            "hasRefreshToken": True,
+            "refreshTokenExpiresAt": int((time.time() + 86_400) * 1000),
+        }
+        usage = {"statusCode": 401}
+
+        self.assertEqual(
+            server.claude_auth_error(oauth, usage),
+            "Claude rejected the saved login (HTTP 401). "
+            "Sign in to Claude again to renew this account.",
+        )
+
+    def test_rejected_claude_access_token_hides_cached_limit_and_requires_sign_in(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory) / ".claude"
+            home.mkdir()
+            now_ms = int(time.time() * 1000)
+            write_claude_credentials(
+                home,
+                expires_at=now_ms - 60_000,
+                refresh_token_expires_at=now_ms + 86_400_000,
+            )
+            server.CLAUDE_USAGE_CACHE = {
+                "expires_at": 0.0,
+                "credential": None,
+                "data": None,
+            }
+            with (
+                patch.object(server, "CLAUDE_HOME_RAW", str(home)),
+                patch.object(server, "configured_secret", return_value=""),
+                patch.object(
+                    server,
+                    "fetch_claude_usage",
+                    side_effect=[
+                        claude_usage(primary=100),
+                        {
+                            "checkedAt": "2026-07-14T15:01:00+00:00",
+                            "statusCode": 401,
+                            "error": "Claude usage returned HTTP 401",
+                        },
+                    ],
+                ),
+            ):
+                server.fetch_claude_accounts(force=True)
+                server.CLAUDE_USAGE_CACHE["expires_at"] = 0.0
+                result = server.fetch_claude_accounts(force=True)
+
+        account = result["accounts"][0]
+        self.assertEqual(result["active"], 0)
+        self.assertEqual(result["limited"], 0)
+        self.assertEqual(result["stale"], 0)
+        self.assertEqual(account["status"], "sign-in required")
+        self.assertEqual(account["statusKind"], "expired")
+        self.assertIsNone(account["rateLimits"])
 
     def test_claude_usage_failure_keeps_last_successful_limits_as_stale(self):
         with tempfile.TemporaryDirectory() as directory:

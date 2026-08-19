@@ -40,6 +40,11 @@ Open **Scans → New scan** and work down the form:
     The form defaults Codex to the Codex harness and Anthropic/OpenRouter to Claude Code. If
     no provider is listed, complete
     [AI provider setup](/ai-provider-setup/overview) and recreate the stack.
+    Keep **One model for all depths** for the normal path. Choose **Customize by depth**
+    when, for example, discovery should use a faster model and deeper investigation
+    should use a stronger one. Post-processing uses the scan model by default; choose
+    **Use different model** when final deduplication, ranking, and enrichment should run
+    with a separate model tuple.
   </Step>
   <Step title="Attach skills, post-scripts, and rankers">
     Select any agent skills, one or more post-scripts (the first is the primary), and one

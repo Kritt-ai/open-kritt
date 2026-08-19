@@ -70,3 +70,17 @@ its attacker model against `{{extra.bug_bounty_url}}`. Selecting it on a scan ma
 
 You can attach several post-scripts to one scan; each runs on every finding. Next: the
 [reserved post-scripts](/post-scripts/reserved-post-scripts).
+
+## Move a post-script between installations
+
+Select **Export** on a post-script card to download a versioned portable JSON file. Use
+**Import JSON** on the Post-scripts page to create a new copy in another graphical
+installation, or copy the file to a terminal-only server and run:
+
+```bash
+./kritt-headless import post-script ./report-creator.post-script.json
+```
+
+The file carries the name, description, prompt content, and output format, but no database
+ID, scan history, or timestamps. Imports are limited to 2 MB and use the normal
+post-script validation rules.

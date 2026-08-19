@@ -6,10 +6,12 @@ import test from 'node:test';
 
 import { parseEnv } from './kritt-lib.mjs';
 import {
+  FullscreenTerminal,
   TerminalCancelledError,
   isInteractiveTerminal,
   keyToIntent,
   moveSelection,
+  renderDocumentScreen,
   renderInputScreen,
   renderMenuScreen,
   runInteractiveCli,
@@ -130,6 +132,117 @@ test('screen renderers fill the requested terminal height and never reveal secre
   assert.equal(input.split('\n').length, 18);
   assert.doesNotMatch(input, new RegExp(secret));
   assert.match(input, /•+/);
+});
+
+test('long menus keep the selection and footer visible on a short terminal', () => {
+  const options = [
+    { id: 'codex-login', label: 'Codex login', description: 'recommended - sign in with a device code' },
+    { id: 'claude-login', label: 'Claude login', description: 'sign in with a Claude subscription' },
+    { id: 'CODEX_API_KEY', label: 'Codex API key', description: 'not set' },
+    { id: 'OPENAI_API_KEY', label: 'OpenAI API key', description: 'not set' },
+    { id: 'ANTHROPIC_API_KEY', label: 'Anthropic API key', description: 'not set' },
+    { id: 'OPENROUTER_API_KEY', label: 'OpenRouter API key', description: 'not set' },
+    { id: 'GITHUB_TOKEN', label: 'GitHub token', description: 'optional for private repositories' },
+    { id: 'back', label: 'Back', description: 'Return to the main menu' },
+  ];
+  const details = [
+    '○ Codex login not set (recommended)',
+    '○ Claude login not set',
+    '○ Codex API key not set',
+    '○ OpenAI API key not set',
+    '○ Anthropic API key not set',
+    '○ OpenRouter API key not set',
+    '○ GitHub token not set (optional)',
+  ];
+
+  const screen = renderMenuScreen({
+    title: 'Setup',
+    subtitle: 'Choose one option to configure model access',
+    details,
+    options,
+    selected: 1,
+    rows: 14,
+    width: 90,
+  });
+
+  assert.match(screen, /› Claude login/);
+  assert.match(screen, /↑↓ navigate/);
+  assert.match(screen, /2\/8/);
+  assert.doesNotMatch(screen, /GitHub token/);
+
+  const bottomScreen = renderMenuScreen({
+    title: 'Setup',
+    subtitle: 'Choose one option to configure model access',
+    details,
+    options,
+    selected: 7,
+    rows: 14,
+    width: 90,
+  });
+
+  assert.match(bottomScreen, /› Back/);
+  assert.match(bottomScreen, /GitHub token/);
+  assert.match(bottomScreen, /8\/8/);
+});
+
+test('document screens fill the terminal, scroll, and retain semantic color', () => {
+  const screen = renderDocumentScreen({
+    title: 'Scan #12',
+    subtitle: 'acme/service',
+    lines: [
+      { text: 'Scan 12 · failed', tone: 'danger' },
+      ...Array.from({ length: 15 }, (_, index) => `Detail ${index + 1}`),
+    ],
+    offset: 4,
+    rows: 14,
+    width: 70,
+    colorEnabled: true,
+  });
+
+  assert.equal(screen.split('\n').length, 14);
+  assert.match(screen, /Detail 4/);
+  assert.match(screen, /5–10\/16/);
+  assert.match(screen, /↑↓ scroll/);
+
+  const topScreen = renderDocumentScreen({
+    title: 'Scan #12',
+    subtitle: 'acme/service',
+    lines: [{ text: 'Scan 12 · failed', tone: 'danger' }],
+    colorEnabled: true,
+  });
+  assert.match(topScreen, /\x1B\[38;5;196mScan 12 · failed/);
+});
+
+test('multi-select uses Space to toggle and explains required selections', async () => {
+  const screens = [];
+  const intents = [
+    { type: 'enter' },
+    { type: 'text', value: ' ' },
+    { type: 'down' },
+    { type: 'text', value: ' ' },
+    { type: 'enter' },
+  ];
+  const output = {
+    rows: 18,
+    columns: 70,
+    on() {},
+    off() {},
+    write() {},
+  };
+  const terminal = new FullscreenTerminal({ io: { input: {}, output, error: output }, colorEnabled: false });
+  terminal.render = (screen) => screens.push(screen);
+  terminal.nextIntent = async () => intents.shift();
+
+  const selected = await terminal.chooseMany({
+    title: 'Post-scripts',
+    subtitle: 'Create scan',
+    options: [{ label: 'Report' }, { label: 'PoC' }],
+    required: true,
+  });
+
+  assert.deepEqual(selected, [0, 1]);
+  assert.ok(screens.some((screen) => screen.includes('Select at least one item')));
+  assert.ok(screens.some((screen) => screen.includes('[✓] Report')));
 });
 
 test('menu details can carry semantic color without changing their text', () => {

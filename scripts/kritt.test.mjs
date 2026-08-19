@@ -3,9 +3,11 @@ import { EventEmitter } from 'node:events';
 import { chmod, mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { PassThrough } from 'node:stream';
 import test from 'node:test';
 
 import {
+  createPrompter,
   ensureEnvFile,
   getSetupStatus,
   importCodexAuth,
@@ -272,6 +274,26 @@ test('setup migrates Codex accounts registered by the UI into .env', async (t) =
   assert.equal(after.codexLoginPresent, true);
 });
 
+test('status discovers Claude accounts registered by the UI through the live runtime registry', async (t) => {
+  const project = await createProject(t);
+  await ensureEnvFile(project);
+  const accountHome = join(project.rootDir, '.data', 'claude-accounts', 'ui-account', '.claude');
+  const runtimeConfigPath = join(project.rootDir, '.data', 'engine', 'engine-runtime.env');
+  await mkdir(accountHome, { recursive: true });
+  await mkdir(dirname(runtimeConfigPath), { recursive: true });
+  await writeFile(
+    join(accountHome, '.credentials.json'),
+    '{"claudeAiOauth":{"accessToken":"test","refreshToken":"refresh","expiresAt":9999999999999}}'
+  );
+  await writeFile(runtimeConfigPath, 'ENGINE_CLAUDE_HOME=/claude-accounts/ui-account/.claude\n');
+
+  const status = await getSetupStatus(project);
+
+  assert.equal(status.claudeLoginPresent, true);
+  assert.equal(status.providerPresent, true);
+  assert.deepEqual(status.claudeHomes, [accountHome]);
+});
+
 test('guided Claude login uses the shared home monitored by Accounts', async (t) => {
   const project = await createProject(t);
   const io = testIo();
@@ -446,10 +468,7 @@ test('guided Docker login copies a host-owned auth file from an isolated contain
   ]);
   assert.match(commands[1].args.at(-1), /open-kritt-codex-login-.*auth\.json$/);
   assert.equal(await readFile(targetPath, 'utf8'), '{"tokens":{"access_token":"test"}}');
-  assert.equal(
-    (await stat(join(project.rootDir, '.data', 'codex-accounts', 'cli', '.codex'))).mode & 0o777,
-    0o700
-  );
+  assert.equal((await stat(join(project.rootDir, '.data', 'codex-accounts', 'cli', '.codex'))).mode & 0o777, 0o700);
   assert.equal((await stat(targetPath)).mode & 0o777, 0o600);
   assert.equal((await getSetupStatus(project)).codexLoginPresent, true);
   assert.equal(parseEnv(await readFile(project.envFile, 'utf8')).CODEX_LOGIN_CONFIGURED, '1');
@@ -564,10 +583,28 @@ test('start blocks GitHub-only configuration and launches Compose with model acc
   assert.deepEqual(commands, [
     { command: 'docker', args: ['compose', 'up', '--build'], options: { cwd: project.rootDir, stdio: 'inherit' } },
   ]);
-  assert.equal(
-    (await stat(join(project.rootDir, '.data', 'codex-accounts', 'cli', '.codex'))).mode & 0o777,
-    0o700
+  assert.equal((await stat(join(project.rootDir, '.data', 'codex-accounts', 'cli', '.codex'))).mode & 0o777, 0o700);
+});
+
+test('Compose configures the engine service image independently from job images', async () => {
+  const compose = await readFile(new URL('../docker-compose.yml', import.meta.url), 'utf8');
+  const engineStart = compose.indexOf('\n  engine:\n');
+  const engineEnd = compose.indexOf('\n  executor-view:\n', engineStart);
+
+  assert.notEqual(engineStart, -1);
+  assert.notEqual(engineEnd, -1);
+
+  const engineService = compose.slice(engineStart, engineEnd);
+  assert.match(engineService, /^    image: \$\{ENGINE_IMAGE:-open-kritt-engine:local\}$/m);
+  assert.match(
+    engineService,
+    /^      ENGINE_SCAN_RUNNER_IMAGE: \$\{ENGINE_SCAN_RUNNER_IMAGE:-open-kritt-engine:local\}$/m
   );
+  assert.doesNotMatch(engineService, /^    image: \$\{ENGINE_SCAN_RUNNER_IMAGE:/m);
+
+  const environmentTemplate = await readFile(new URL('../.env.example', import.meta.url), 'utf8');
+  assert.match(environmentTemplate, /^ENGINE_IMAGE=open-kritt-engine:local$/m);
+  assert.match(environmentTemplate, /^ENGINE_SCAN_RUNNER_IMAGE=open-kritt-engine:local$/m);
 });
 
 test('start reports how to repair a Codex home parent left unwritable by Docker', async (t) => {
@@ -628,4 +665,54 @@ test('help is available for subcommands and unknown commands fail clearly', asyn
   const unknownIo = testIo();
   assert.equal(await runCli(['unknown'], { ...project, io: unknownIo }), 1);
   assert.match(unknownIo.error.text, /Unknown command/);
+});
+
+test('secret prompt declines visible input by default when raw mode is unavailable', async () => {
+  const input = new PassThrough();
+  const output = new BufferStream();
+  const prompter = createPrompter({ input, output, error: new BufferStream() });
+
+  const pending = prompter.secret('Enter OpenRouter API key (input is hidden): ');
+  input.end('no\n');
+
+  assert.equal(await pending, '');
+  assert.match(output.text, /cannot hide input/);
+  assert.match(output.text, /Continue with visible input\? \[y\/N\]/);
+  assert.doesNotMatch(output.text, /Enter OpenRouter API key/);
+});
+
+test('secret prompt requires consent before falling back to visible input', async () => {
+  const apiKey = 'sk-or-visible-fallback';
+  const input = new PassThrough();
+  const output = new BufferStream();
+  const prompter = createPrompter({ input, output, error: new BufferStream() });
+
+  const pending = prompter.secret('Enter OpenRouter API key (input is hidden): ');
+  input.write('yes\n');
+  await new Promise((resolve) => setImmediate(resolve));
+  input.end(`${apiKey}\n`);
+
+  assert.equal(await pending, apiKey);
+  assert.match(output.text, /Enter OpenRouter API key \(input will be visible\):/);
+  assert.doesNotMatch(output.text, /input is hidden/);
+  assert.doesNotMatch(output.text, new RegExp(apiKey));
+});
+
+test('secret prompt keeps using hidden raw-mode input when it is available', async () => {
+  const apiKey = 'sk-or-hidden-input';
+  const input = new EventEmitter();
+  const output = new BufferStream();
+  const rawModes = [];
+  input.isTTY = true;
+  input.resume = () => {};
+  input.setRawMode = (enabled) => rawModes.push(enabled);
+  const prompter = createPrompter({ input, output, error: new BufferStream() });
+
+  const pending = prompter.secret('Enter OpenRouter API key (input is hidden): ');
+  input.emit('data', Buffer.from(`${apiKey}\n`));
+
+  assert.equal(await pending, apiKey);
+  assert.deepEqual(rawModes, [true, false]);
+  assert.doesNotMatch(output.text, /visible as you type/);
+  assert.doesNotMatch(output.text, new RegExp(apiKey));
 });

@@ -33,6 +33,7 @@ router.get('/:id', async (req, res, next) => {
 // Persist a validated workflow (steps first, then the workflow row).
 async function createWorkflowSteps(tx, valid) {
   const stepIds = [];
+  const createdByClientId = new Map();
   for (const level of valid.levels) {
     const isLast = level.depth === valid.maxDepth;
     const outputFormatText = JSON.stringify(level.outputFormat);
@@ -45,11 +46,13 @@ async function createWorkflowSteps(tx, valid) {
           depth: level.depth,
           multiOutput: level.multiOutput,
           consumesAll: level.consumesAll,
+          boundSourceStepId: step.boundSourceStepId ? createdByClientId.get(step.boundSourceStepId) : null,
           isLastStep: isLast,
           outputTable: isLast ? VULNERABILITIES_TABLE : STEP_RESULTS_TABLE,
         },
       });
       stepIds.push(created.id);
+      createdByClientId.set(step.clientId, created.id);
     }
   }
   return stepIds;
@@ -62,6 +65,14 @@ async function persistWorkflow(valid) {
       data: { name: valid.name, description: valid.description, stepIds, extra: valid.extraKeys },
     });
   });
+}
+
+export function workflowInUseResponse(scanCount) {
+  return {
+    error: `Cannot edit: ${scanCount} scan(s) use this workflow. Duplicate it to make changes safely.`,
+    code: 'workflow_in_use',
+    scanCount,
+  };
 }
 
 export async function replaceWorkflowIfUnused(tx, id, valid) {
@@ -118,9 +129,7 @@ router.put('/:id', async (req, res, next) => {
     const result = await prisma.$transaction((tx) => replaceWorkflowIfUnused(tx, id, valid));
     if (result.kind === 'not-found') return res.status(404).json({ error: 'Workflow not found.' });
     if (result.kind === 'in-use') {
-      return res.status(409).json({
-        error: `Cannot edit: ${result.scanCount} scan(s) use this workflow. Duplicate it to make changes safely.`,
-      });
+      return res.status(409).json(workflowInUseResponse(result.scanCount));
     }
 
     res.json(await assembleWorkflow(result.workflow));

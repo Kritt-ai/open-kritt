@@ -27,12 +27,13 @@ export function workflowBuilderFromGeneration(result, nextId) {
       depth: level.depth,
       multiOutput: level.multiOutput === true,
       consumesAll: level.consumesAll === true,
+      bindPrevious: false,
       schema: objectToRows(level.outputFormat),
       steps: level.steps.map((step) => {
         if (typeof step?.name !== 'string' || typeof step?.content !== 'string') {
           throw new Error('The generated workflow has an invalid step.');
         }
-        return { id: nextId(), name: step.name, content: step.content };
+        return { id: nextId(), name: step.name, content: step.content, boundSourceStepId: null };
       }),
     };
   });

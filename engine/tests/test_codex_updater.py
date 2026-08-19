@@ -50,6 +50,31 @@ def test_codex_updater_keeps_existing_cli_when_npm_fails():
     ]
 
 
+def test_codex_updater_rejects_install_when_installed_cli_cannot_start():
+    calls = []
+    version_checks = iter(
+        [
+            _completed(["codex", "--version"], stdout="codex-cli 0.142.2\n"),
+            _completed(["codex", "--version"], returncode=1),
+        ]
+    )
+
+    def run_command(command, **kwargs):
+        calls.append(command)
+        if command[0] == "codex":
+            return next(version_checks)
+        return _completed(command)
+
+    result = CodexUpdater(run_command=run_command).update()
+
+    assert result == CodexUpdateResult(True, False, False, "0.142.2", None)
+    assert calls == [
+        ["codex", "--version"],
+        ["npm", "install", "--global", "--no-audit", "--no-fund", "@openai/codex@latest"],
+        ["codex", "--version"],
+    ]
+
+
 def test_codex_updater_treats_timeout_as_non_fatal():
     def run_command(command, **kwargs):
         if command[0] == "codex":

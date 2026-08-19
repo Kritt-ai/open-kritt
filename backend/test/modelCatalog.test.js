@@ -120,6 +120,12 @@ test('model catalog helpers sanitize cached models and report input readiness', 
               isDefault: false,
             },
             {
+              id: 'claude-opus-5',
+              label: 'Opus 5',
+              thinkingEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+              isDefault: false,
+            },
+            {
               id: 'claude-opus-4-8',
               label: 'Opus 4.8',
               thinkingEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
@@ -181,6 +187,7 @@ test('cached model lookup identifies exact catalog entries', () => {
   assert.equal(isCachedModel('codex', 'other-model', catalog), false);
   assert.equal(isCachedModel('claude', 'claude-sonnet-5', null), true);
   assert.equal(isCachedModel('claude', 'claude-fable-5', null), true);
+  assert.equal(isCachedModel('claude', 'claude-opus-5', null), true);
   assert.equal(isCachedModel('claude', 'claude-opus-4-8', null), true);
   assert.equal(isCachedModel('claude', 'claude-sonnet-4', null), false);
   assert.equal(isCachedModel('openrouter', 'any/provider-model', null), false);

@@ -9,7 +9,14 @@ import {
   parseEnvironmentText,
   updateEnvironmentFile,
 } from './environmentFile.js';
-import { CLAUDE_HOME, CODEX_ACCOUNTS_ROOT, CODEX_PRIMARY_HOME } from './providerLogins.js';
+import {
+  CLAUDE_ACCOUNTS_ROOT,
+  CLAUDE_HOME,
+  CLAUDE_RUNTIME_ACCOUNTS_ROOT,
+  CLAUDE_RUNTIME_PRIMARY_HOME,
+  CODEX_ACCOUNTS_ROOT,
+  CODEX_PRIMARY_HOME,
+} from './providerLogins.js';
 import { CLAUDE_CREDENTIAL_FILENAMES, promoteClaudeCredential, withClaudeCredentialLock } from './claudeCredentials.js';
 
 const LOGIN_PROVIDERS = new Set(['codex', 'claude']);
@@ -132,6 +139,50 @@ export async function removeCodexRuntimeHome(
   return true;
 }
 
+async function updateClaudeRuntimeHome(
+  home,
+  present,
+  { runtimeConfigPath = ENGINE_RUNTIME_CONFIG_PATH, initialHomes = [CLAUDE_RUNTIME_PRIMARY_HOME] } = {}
+) {
+  let nextHomes = [];
+  const state = await mutateEnvironmentFile(
+    (values) => {
+      const homes = splitConfiguredHomes(
+        Object.hasOwn(values, 'ENGINE_CLAUDE_HOME') ? values.ENGINE_CLAUDE_HOME : initialHomes.join(',')
+      );
+      const updatedHomes = present
+        ? homes.includes(home)
+          ? homes
+          : [...homes, home]
+        : homes.filter((candidate) => candidate !== home);
+      nextHomes = updatedHomes;
+      return updatedHomes.length === homes.length
+        ? null
+        : {
+            ENGINE_CLAUDE_HOME: updatedHomes.join(','),
+          };
+    },
+    { environmentFilePath: runtimeConfigPath }
+  );
+  return { changed: state?.changed || false, homes: nextHomes };
+}
+
+export async function addClaudeRuntimeHome(
+  home,
+  { runtimeConfigPath = ENGINE_RUNTIME_CONFIG_PATH, initialHomes } = {}
+) {
+  const state = await updateClaudeRuntimeHome(home, true, { runtimeConfigPath, initialHomes });
+  return state.homes;
+}
+
+export async function removeClaudeRuntimeHome(
+  home,
+  { runtimeConfigPath = ENGINE_RUNTIME_CONFIG_PATH, initialHomes } = {}
+) {
+  const state = await updateClaudeRuntimeHome(home, false, { runtimeConfigPath, initialHomes });
+  return state.changed;
+}
+
 async function usableJsonFile(path) {
   try {
     const file = await stat(path);
@@ -168,12 +219,34 @@ async function codexReloginTarget(accountId, { primaryHome, primaryRuntimeHome, 
   return { home, runtimeHome: join(runtimeAccountsRoot, accountId, '.codex') };
 }
 
-async function claudeReloginTarget(accountId, home) {
+async function claudeReloginTarget(accountId, { primaryHome, primaryRuntimeHome, accountsRoot, runtimeAccountsRoot }) {
   if (!accountId) return null;
-  if (accountId !== 'default') throw loginError('Claude account not found.', 404);
+  let home;
+  let runtimeHome;
+  if (accountId === 'default') {
+    home = primaryHome;
+    runtimeHome = primaryRuntimeHome;
+  } else {
+    if (typeof accountId !== 'string' || !ACCOUNT_ID_PATTERN.test(accountId)) {
+      throw loginError('Claude account not found.', 404);
+    }
+    const resolvedAccountsRoot = resolve(accountsRoot);
+    const accountDirectory = resolve(resolvedAccountsRoot, accountId);
+    if (dirname(accountDirectory) !== resolvedAccountsRoot) throw loginError('Claude account not found.', 404);
+    try {
+      const entry = await lstat(accountDirectory);
+      if (!entry.isDirectory() || entry.isSymbolicLink()) throw loginError('Claude account not found.', 404);
+    } catch (error) {
+      if (error?.statusCode) throw error;
+      if (error?.code === 'ENOENT') throw loginError('Claude account not found.', 404);
+      throw error;
+    }
+    home = join(accountDirectory, '.claude');
+    runtimeHome = join(runtimeAccountsRoot, accountId, '.claude');
+  }
   const configured = await Promise.all(CLAUDE_CREDENTIAL_FILENAMES.map((name) => usableJsonFile(join(home, name))));
   if (!configured.some(Boolean)) throw loginError('Claude account not found.', 404);
-  return { home };
+  return { home, runtimeHome };
 }
 
 function publicSession(session) {
@@ -211,6 +284,9 @@ export class AccountLoginManager {
     codexRuntimePrimaryHome = CODEX_RUNTIME_PRIMARY_HOME,
     codexRuntimeAccountsRoot = CODEX_RUNTIME_ACCOUNTS_ROOT,
     claudeHome = CLAUDE_HOME,
+    claudeAccountsRoot = CLAUDE_ACCOUNTS_ROOT,
+    claudeRuntimePrimaryHome = CLAUDE_RUNTIME_PRIMARY_HOME,
+    claudeRuntimeAccountsRoot = CLAUDE_RUNTIME_ACCOUNTS_ROOT,
     runtimeConfigPath = ENGINE_RUNTIME_CONFIG_PATH,
     environmentFilePath = PROJECT_ENV_FILE_PATH,
     timeoutMs = SESSION_TIMEOUT_MS,
@@ -221,6 +297,9 @@ export class AccountLoginManager {
     this.codexRuntimePrimaryHome = codexRuntimePrimaryHome;
     this.codexRuntimeAccountsRoot = codexRuntimeAccountsRoot;
     this.claudeHome = claudeHome;
+    this.claudeAccountsRoot = claudeAccountsRoot;
+    this.claudeRuntimePrimaryHome = claudeRuntimePrimaryHome;
+    this.claudeRuntimeAccountsRoot = claudeRuntimeAccountsRoot;
     this.runtimeConfigPath = runtimeConfigPath;
     this.environmentFilePath = environmentFilePath;
     this.timeoutMs = timeoutMs;
@@ -242,7 +321,12 @@ export class AccountLoginManager {
             accountsRoot: this.codexAccountsRoot,
             runtimeAccountsRoot: this.codexRuntimeAccountsRoot,
           })
-        : await claudeReloginTarget(accountId, this.claudeHome);
+        : await claudeReloginTarget(accountId, {
+            primaryHome: this.claudeHome,
+            primaryRuntimeHome: this.claudeRuntimePrimaryHome,
+            accountsRoot: this.claudeAccountsRoot,
+            runtimeAccountsRoot: this.claudeRuntimeAccountsRoot,
+          });
 
     const id = randomUUID();
     const createdAt = new Date();
@@ -278,7 +362,17 @@ export class AccountLoginManager {
       args = ['login', '--device-auth'];
       env.CODEX_HOME = session.codexHome;
     } else {
-      if (reloginTarget) session.replacesAccountId = accountId;
+      if (reloginTarget) {
+        session.claudeHome = reloginTarget.home;
+        session.claudeRuntimeHome = reloginTarget.runtimeHome;
+        session.replacesAccountId = accountId;
+      } else {
+        const folder = `account-${createdAt.toISOString().replace(/\D/g, '').slice(0, 14)}-${id.slice(0, 8)}`;
+        session.claudeDirectory = join(this.claudeAccountsRoot, folder);
+        session.claudeHome = join(session.claudeDirectory, '.claude');
+        session.claudeRuntimeHome = join(this.claudeRuntimeAccountsRoot, folder, '.claude');
+        await mkdir(session.claudeHome, { recursive: true, mode: 0o700 });
+      }
       session.claudeLoginHome = join(dirname(this.claudeHome), `.claude-login-${id}`);
       await mkdir(session.claudeLoginHome, { recursive: true, mode: 0o700 });
       command = 'claude';
@@ -295,6 +389,7 @@ export class AccountLoginManager {
     } catch (error) {
       session.status = 'failed';
       session.message = `Could not start ${provider} login: ${error.message}`;
+      if (session.claudeDirectory) void rm(session.claudeDirectory, { recursive: true, force: true });
       if (session.claudeLoginHome) void rm(session.claudeLoginHome, { recursive: true, force: true });
       throw loginError(session.message, 503);
     }
@@ -442,12 +537,25 @@ export class AccountLoginManager {
     if (activeForProvider) throw loginError(`Finish or cancel the ${provider} login before removing an account.`, 409);
 
     if (provider === 'claude') {
-      if (accountId !== 'default') throw loginError('Claude account not found.', 404);
-      const removed = await withClaudeCredentialLock(this.claudeHome, async () => {
+      const target = await claudeReloginTarget(accountId, {
+        primaryHome: this.claudeHome,
+        primaryRuntimeHome: this.claudeRuntimePrimaryHome,
+        accountsRoot: this.claudeAccountsRoot,
+        runtimeAccountsRoot: this.claudeRuntimeAccountsRoot,
+      });
+      const configured = await removeClaudeRuntimeHome(target.runtimeHome, {
+        runtimeConfigPath: this.runtimeConfigPath,
+      });
+      if (!configured) throw loginError('Claude account not found.', 404);
+      if (accountId !== 'default') {
+        await rm(dirname(target.home), { recursive: true });
+        return { provider, accountId, removed: true };
+      }
+      const removed = await withClaudeCredentialLock(target.home, async () => {
         let found = false;
         for (const name of CLAUDE_CREDENTIAL_FILENAMES) {
           try {
-            await rm(join(this.claudeHome, name));
+            await rm(join(target.home, name));
             found = true;
           } catch (error) {
             if (error?.code !== 'ENOENT') throw error;
@@ -501,6 +609,7 @@ export class AccountLoginManager {
     session.message = message;
     session.child = null;
     if (session.codexDirectory) void rm(session.codexDirectory, { recursive: true, force: true });
+    if (session.claudeDirectory) void rm(session.claudeDirectory, { recursive: true, force: true });
     if (session.claudeLoginHome) void rm(session.claudeLoginHome, { recursive: true, force: true });
   }
 
@@ -511,6 +620,7 @@ export class AccountLoginManager {
       clearTimeout(session.timeout);
       session.child = null;
       if (session.codexDirectory) await rm(session.codexDirectory, { recursive: true, force: true });
+      if (session.claudeDirectory) await rm(session.claudeDirectory, { recursive: true, force: true });
       if (session.claudeLoginHome) await rm(session.claudeLoginHome, { recursive: true, force: true });
       return;
     }
@@ -528,7 +638,7 @@ export class AccountLoginManager {
       const usable =
         session.provider === 'codex'
           ? await usableJsonFile(join(session.codexHome, 'auth.json'))
-          : await promoteClaudeCredential(session.claudeLoginHome, this.claudeHome);
+          : await promoteClaudeCredential(session.claudeLoginHome, session.claudeHome || this.claudeHome);
       if (!usable) throw new Error('The provider finished without saving usable login credentials.');
       if (session.provider === 'codex') {
         if (!(await usableJsonFile(join(this.codexPrimaryHome, 'auth.json')))) {
@@ -541,6 +651,18 @@ export class AccountLoginManager {
           runtimeConfigPath: this.runtimeConfigPath,
           environmentFilePath: this.environmentFilePath,
         });
+      } else if (session.claudeRuntimeHome) {
+        const primaryCredentials = await Promise.all(
+          CLAUDE_CREDENTIAL_FILENAMES.map((name) => usableJsonFile(join(this.claudeHome, name)))
+        );
+        if (!primaryCredentials.some(Boolean)) {
+          await removeClaudeRuntimeHome(this.claudeRuntimePrimaryHome, {
+            runtimeConfigPath: this.runtimeConfigPath,
+          });
+        }
+        await addClaudeRuntimeHome(session.claudeRuntimeHome, {
+          runtimeConfigPath: this.runtimeConfigPath,
+        });
       }
       session.status = 'completed';
       session.message = sessionMessage(session.provider, 'completed', {});
@@ -548,6 +670,7 @@ export class AccountLoginManager {
       session.status = 'failed';
       session.message = error.message;
       if (session.codexDirectory) await rm(session.codexDirectory, { recursive: true, force: true });
+      if (session.claudeDirectory) await rm(session.claudeDirectory, { recursive: true, force: true });
     } finally {
       if (session.claudeLoginHome) await rm(session.claudeLoginHome, { recursive: true, force: true });
       session.settled = true;

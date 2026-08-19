@@ -2,9 +2,17 @@ export const RUNTIME_SETTING_KEYS = [
   'workerCount',
   'maxConcurrentScans',
   'maxWorkersPerScan',
+  'workersPerAccount',
   'autoscaleScanWorkersOnProviderCapacity',
+  'codexMaxSubagentsPerSession',
+  'minFreeStorageGb',
+  'ignoreLowStorage',
+  'memoryReserveGb',
+  'scanRunnerMemoryMb',
+  'scanRunnerMemoryReservationMb',
   'workspaceSetupConcurrency',
   'retryCount',
+  'cyberSafetyRetryCount',
   'harnessTimeoutSeconds',
 ];
 
@@ -27,6 +35,15 @@ export function runtimeSettingsIssues(payload, draft) {
       continue;
     }
     const raw = `${draft?.[key] ?? ''}`.trim();
+    if (setting.type === 'number') {
+      const value = Number(raw);
+      if (!raw || !Number.isFinite(value)) {
+        issues[key] = 'Enter a number.';
+      } else if (value < setting.min || value > setting.max) {
+        issues[key] = `Enter a value from ${setting.min} to ${setting.max}.`;
+      }
+      continue;
+    }
     if (!/^-?\d+$/.test(raw)) {
       issues[key] = 'Enter a whole number.';
       continue;

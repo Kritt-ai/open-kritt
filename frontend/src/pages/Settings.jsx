@@ -25,10 +25,54 @@ const PRESENTATION = {
     unit: 'workers',
     description: 'Hard cap for one scan. Set 0 to divide worker slots automatically and fairly across active scans.',
   },
-  autoscaleScanWorkersOnProviderCapacity: {
-    label: 'Autoscale scan workers on provider capacity errors',
+  workersPerAccount: {
+    label: 'Workers per account',
+    unit: 'workers',
     description:
-      'When a provider reports temporary server-capacity throttling, lower only that scan’s future worker cap by one and retry. Account quota errors are not autoscaled.',
+      'Maximum concurrent root model calls assigned to the same provider account across scans. Codex subagents inside each session use their separate cap.',
+  },
+  autoscaleScanWorkersOnProviderCapacity: {
+    label: 'Autoscale scan workers on capacity errors',
+    description:
+      'When a provider reports temporary server-capacity throttling or Codex reaches its separate subagent limit, lower only that scan’s future worker cap by one and retry. Account quota errors are not autoscaled.',
+    enabledDescription: 'Capacity throttles reduce the affected scan by one worker.',
+    disabledDescription: 'Worker caps remain fixed.',
+  },
+  codexMaxSubagentsPerSession: {
+    label: 'Codex subagents per session',
+    unit: 'subagents',
+    description: 'Hard cap for concurrently running child agents inside each Codex scan session.',
+  },
+  minFreeStorageGb: {
+    label: 'Minimum free storage',
+    unit: 'GiB',
+    description:
+      'Pause new scan containers when free disk space falls below this level. Lowering it can keep scans moving, but increases the risk of filling the disk completely.',
+  },
+  ignoreLowStorage: {
+    label: 'Ignore low-storage safeguard',
+    description:
+      'Allow new scan containers to start regardless of available disk space. Use only when you accept the risk of exhausting the host disk.',
+    enabledDescription: 'The minimum free-storage threshold is not enforced.',
+    disabledDescription: 'New containers pause below the configured threshold.',
+  },
+  memoryReserveGb: {
+    label: 'Docker memory reserve',
+    unit: 'GiB',
+    description:
+      'Memory withheld from scan runners for the engine, database, API, and operating overhead. The worker ceiling is reduced automatically when the remaining budget cannot fit every runner.',
+  },
+  scanRunnerMemoryMb: {
+    label: 'Runner hard memory limit',
+    unit: 'MiB',
+    description:
+      'Docker hard limit for each tool-enabled model session. A runner that exceeds this limit is terminated; set 0 only to disable the hard cap.',
+  },
+  scanRunnerMemoryReservationMb: {
+    label: 'Runner memory reservation',
+    unit: 'MiB',
+    description:
+      'Soft memory reservation used for worker-capacity planning and live admission. It may be lower than the hard limit so idle runners share unused Docker memory.',
   },
   workspaceSetupConcurrency: {
     label: 'Workspace setup concurrency',
@@ -41,6 +85,12 @@ const PRESENTATION = {
     unit: 'retries',
     description:
       'Additional attempts for retryable workflow-step and post-script failures. This does not automatically resume a failed whole scan.',
+  },
+  cyberSafetyRetryCount: {
+    label: 'Cyber-block retries',
+    unit: 'retries',
+    description:
+      'Additional attempts made only when a provider blocks a request under its cybersecurity safety policy. Set 0 to fail after the first blocked attempt.',
   },
   harnessTimeoutSeconds: {
     label: 'Model-call timeout',
@@ -107,6 +157,13 @@ export default function Settings() {
       patch.workerCount > worker.recommendedMax &&
       !window.confirm(
         `Use ${patch.workerCount} engine workers? Values above ${worker.recommendedMax} can exhaust provider, Docker, network, CPU, or memory capacity.`
+      )
+    )
+      return;
+    if (
+      patch.ignoreLowStorage === true &&
+      !window.confirm(
+        'Ignore the low-storage safeguard? New scan containers may fill the host disk, causing scans or other services to fail.'
       )
     )
       return;
@@ -179,33 +236,7 @@ export default function Settings() {
               </div>
             </div>
 
-            <div className="settings-grid">
-              {Object.entries(PRESENTATION).map(([key, presentation]) =>
-                data.settings[key]?.type === 'boolean' ? (
-                  <BooleanRuntimeSetting
-                    key={key}
-                    name={key}
-                    presentation={presentation}
-                    setting={data.settings[key]}
-                    value={draft[key]}
-                    issue={issues[key]}
-                    disabled={saving}
-                    onChange={(value) => set(key, value)}
-                  />
-                ) : (
-                  <RuntimeSetting
-                    key={key}
-                    name={key}
-                    presentation={presentation}
-                    setting={data.settings[key]}
-                    value={draft[key]}
-                    issue={issues[key]}
-                    disabled={saving}
-                    onChange={(value) => set(key, value)}
-                  />
-                )
-              )}
-            </div>
+            <RuntimeSettingsFields data={data} draft={draft} issues={issues} saving={saving} onChange={set} />
           </section>
 
           <section className="settings-section">
@@ -237,6 +268,51 @@ export default function Settings() {
   );
 }
 
+export function RuntimeSettingsFields({ data, draft, issues, saving, onChange }) {
+  const entries = Object.entries(PRESENTATION);
+  const availableEntries = entries.filter(([key]) => data.settings?.[key]);
+  const missingLabels = entries.filter(([key]) => !data.settings?.[key]).map(([, presentation]) => presentation.label);
+
+  return (
+    <>
+      {missingLabels.length > 0 && (
+        <div className="settings-warning">
+          Some settings are unavailable from the running backend and have been hidden: {missingLabels.join(', ')}.
+          Restart the backend to load the current settings schema.
+        </div>
+      )}
+      <div className="settings-grid">
+        {availableEntries.map(([key, presentation]) =>
+          data.settings[key].type === 'boolean' ? (
+            <BooleanRuntimeSetting
+              key={key}
+              name={key}
+              presentation={presentation}
+              setting={data.settings[key]}
+              value={draft[key]}
+              issue={issues[key]}
+              disabled={saving}
+              onChange={(value) => onChange(key, value)}
+            />
+          ) : (
+            <RuntimeSetting
+              key={key}
+              name={key}
+              presentation={presentation}
+              setting={data.settings[key]}
+              value={draft[key]}
+              issue={issues[key]}
+              disabled={saving}
+              ignored={key === 'minFreeStorageGb' && draft.ignoreLowStorage}
+              onChange={(value) => onChange(key, value)}
+            />
+          )
+        )}
+      </div>
+    </>
+  );
+}
+
 function BooleanRuntimeSetting({ name, presentation, setting, value, issue, disabled, onChange }) {
   return (
     <article className="settings-card">
@@ -248,9 +324,7 @@ function BooleanRuntimeSetting({ name, presentation, setting, value, issue, disa
       <label className="settings-toggle-row" htmlFor={`setting-${name}`}>
         <span>
           <strong>{value ? 'Enabled' : 'Disabled'}</strong>
-          <small>
-            {value ? 'Capacity throttles reduce the affected scan by one worker.' : 'Worker caps remain fixed.'}
-          </small>
+          <small>{value ? presentation.enabledDescription : presentation.disabledDescription}</small>
         </span>
         <input
           id={`setting-${name}`}
@@ -268,16 +342,18 @@ function BooleanRuntimeSetting({ name, presentation, setting, value, issue, disa
       <div className="settings-card-meta">
         <span className="mono settings-env-key">{setting.envKey}</span>
         <span>{SOURCE_LABELS[setting.source] || setting.source}</span>
-        <span>Default enabled</span>
+        <span>Default {setting.defaultValue ? 'enabled' : 'disabled'}</span>
       </div>
     </article>
   );
 }
 
-function RuntimeSetting({ name, presentation, setting, value, issue, disabled, onChange }) {
-  const numericValue = /^-?\d+$/.test(`${value}`.trim()) ? Number(value) : null;
+function RuntimeSetting({ name, presentation, setting, value, issue, disabled, ignored, onChange }) {
+  const rawValue = `${value}`.trim();
+  const numericValue = rawValue && Number.isFinite(Number(rawValue)) ? Number(rawValue) : null;
   const aboveRecommendation = numericValue !== null && numericValue > setting.recommendedMax;
   const paused = name === 'workerCount' && numericValue === 0;
+  const cyberRetryEnabled = name === 'cyberSafetyRetryCount' && numericValue !== null && numericValue > 0;
   return (
     <article className="settings-card">
       <div className="settings-card-topline">
@@ -295,10 +371,10 @@ function RuntimeSetting({ name, presentation, setting, value, issue, disabled, o
         id={`setting-${name}`}
         className="mono settings-number-input"
         type="number"
-        inputMode="numeric"
+        inputMode={setting.type === 'number' ? 'decimal' : 'numeric'}
         min={setting.min}
         max={setting.max}
-        step="1"
+        step={setting.step || 1}
         value={value}
         disabled={disabled}
         aria-invalid={Boolean(issue) || !setting.valid}
@@ -308,11 +384,15 @@ function RuntimeSetting({ name, presentation, setting, value, issue, disabled, o
       {!setting.valid && !issue && (
         <div className="settings-field-error">The stored value was invalid; the safe default is shown.</div>
       )}
-      {(aboveRecommendation || paused) && !issue && (
+      {(aboveRecommendation || paused || ignored || cyberRetryEnabled) && !issue && (
         <div className="settings-field-warning">
-          {paused
-            ? 'New engine work will remain queued until worker slots are raised above zero.'
-            : `Above the conservative recommendation of ${setting.recommendedMax}; verify provider and host capacity.`}
+          {ignored
+            ? 'This threshold is preserved but not enforced while the low-storage safeguard is ignored.'
+            : paused
+              ? 'New engine work will remain queued until worker slots are raised above zero.'
+              : cyberRetryEnabled
+                ? `A blocked request may run up to ${numericValue + 1} total attempts. The provider may reject every attempt.`
+                : `Above the conservative recommendation of ${setting.recommendedMax}; verify provider and host capacity.`}
         </div>
       )}
       <div className="settings-card-meta">

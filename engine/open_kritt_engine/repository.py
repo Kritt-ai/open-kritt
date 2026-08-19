@@ -153,6 +153,38 @@ def resolve_remote_head(repo_full: str, github_token: str | None = None) -> str:
     return commit.lower()
 
 
+def fetch_remote_ref(
+    repo_dir: str,
+    refspec: str,
+    *,
+    github_token: str | None = None,
+    timeout: int = 120,
+) -> tuple[bool, str]:
+    """Fetch one remote ref using the checkout authentication policy."""
+
+    command = ["git", "fetch", "--quiet", "--prune", "--no-tags", "origin", refspec]
+    try:
+        with _github_auth_environment(github_token) as git_env:
+            actual_command = _authenticated_git_command(command, git_env)
+            result = subprocess.run(
+                actual_command,
+                cwd=repo_dir,
+                env=git_env,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=max(1, int(timeout)),
+            )
+    except subprocess.TimeoutExpired:
+        return False, f"fetch timed out after {max(1, int(timeout))} seconds"
+    except OSError as exc:
+        return False, str(exc)
+    if result.returncode == 0:
+        return True, ""
+    detail = _redact_git_secrets((result.stderr or result.stdout or "git fetch failed").strip(), git_env)
+    return False, detail[-2000:]
+
+
 def checkout_repo(repo_full: str, commit_sha: str, base_dir: str, github_token: str | None = None) -> tuple[str, str]:
     os.makedirs(base_dir, exist_ok=True)
     repo_dir = safe_repo_dir(base_dir, repo_full)

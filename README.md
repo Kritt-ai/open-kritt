@@ -9,8 +9,9 @@
 
 **Orchestrate AI agents to find real vulnerabilities in code.**
 
-An open-source, self-hosted security research platform that turns focused AI analysis
-into de-duplicated, ranked findings with configurable validation and enrichment.
+An open-source, self-hosted security and vulnerability research platform that turns
+focused AI analysis into de-duplicated, ranked findings with configurable validation and
+enrichment.
 
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/Kritt-ai/open-kritt?sort=semver)](https://github.com/Kritt-ai/open-kritt/releases)
@@ -19,9 +20,11 @@ into de-duplicated, ranked findings with configurable validation and enrichment.
 [Documentation](https://docs.kritt.ai) ·
 [Getting started](https://docs.kritt.ai/getting-started/installation-and-setup) ·
 [Contributing](CONTRIBUTING.md) ·
-[Research paper](https://kritt.ai/open-kritt-launch) ·
-[Discord community](https://t.co/WzXMUKWxcR) ·
-[Twitter](https://x.com/Kritt_AI)
+[Owners](OWNERSHIP.md) ·
+[Research paper](https://kritt.ai/open-kritt-launch)
+
+<a href="https://t.co/WzXMUKWxcR"><img alt="Join the open·kritt Discord community" src="https://img.shields.io/badge/Discord-5865F2?logo=discord&amp;logoColor=white" /></a>
+<a href="https://x.com/Kritt_AI"><img alt="Follow Kritt on X" src="https://img.shields.io/badge/X-000000?logo=x&amp;logoColor=white" /></a>
 
 </div>
 
@@ -44,6 +47,11 @@ over their prompts, workflows, model providers, and infrastructure.
   or Claude Code.
 - **Verify findings** — use post-scripts to validate issues, build proofs of concept, and
   produce reports.
+- **Export scan results** — package canonical findings, structured data, post-processing
+  output, reports, and proofs of concept in one ZIP archive with a share-safe manifest;
+  completed scans produce complete exports, while stopped or failed scans with findings
+  produce clearly marked partial exports. Attacker-influenced report and PoC source is
+  kept as plain text.
 - **Prioritize results** — apply custom severity rankers, a consistent finding schema,
   and automatic de-duplication.
 - **Bring your own model access** — use a Codex login or connect through OpenAI,
@@ -53,7 +61,7 @@ over their prompts, workflows, model providers, and infrastructure.
 > bug-bounty payouts** under the researcher name **Blockian**
 > ([Immunefi](https://immunefi.com/profile/Blockian/) ·
 > [HackenProof](https://hackenproof.com/hackers/Blockian) ·
-> [blockian.xyz](https://blockian.xyz) · [@ControlZ_1337](https://x.com/ControlZ_1337)).
+> [blockian.xyz](https://blockian.xyz) · [@Kritt_AI](https://x.com/Kritt_AI)).
 > open·kritt is the open-source distillation of the internal project behind that work.
 
 ## Getting started
@@ -71,6 +79,18 @@ cd open-kritt
 Open [http://localhost:5173](http://localhost:5173) once the stack is running. You only
 need one model-access option; `./kritt setup` guides you through the available logins and
 API keys. A `GITHUB_TOKEN` is optional and only needed for private GitHub repositories.
+
+On a server without a browser or desktop, leave the stack running and open another shell:
+
+```bash
+./kritt-headless
+```
+
+The headless CLI imports portable workflow, post-script, skill, and ranker JSON; creates
+scans with the same backend validation as the web form; displays scan status, stages, and
+failure reasons; edits non-secret runtime settings; and exports finding bundles. It does
+not display finding contents in the terminal. See the
+[headless CLI guide](docs-site/getting-started/headless-cli.mdx).
 
 The default ports bind to `127.0.0.1`, and the backend does not include application
 authentication. Keep the stack private.
@@ -97,18 +117,24 @@ npm run dev
 Open [http://localhost:3001](http://localhost:3001) to view the site.
 
 - [Product overview](docs-site/getting-started/welcome.mdx)
+- [Use open·kritt without a graphical interface](docs-site/getting-started/headless-cli.mdx)
 - [Run your first scan](docs-site/first-scan/workflow.mdx)
 - [Workflows and prompt steps](docs-site/workflows/steps.mdx)
 - [Security and threat model](docs/threat-model.md)
 
 ## Community and contributing
 
+open·kritt is jointly owned and maintained by
+[Harel Rom (`@harel-coffee`)](https://github.com/harel-coffee) and
+[Gabriel Balko (`@GabiCtrlZ`)](https://github.com/GabiCtrlZ). See
+[project ownership and copyright](OWNERSHIP.md) for details.
+
 Questions and ideas belong in [GitHub Discussions](https://github.com/Kritt-ai/open-kritt/discussions).
 Use [GitHub Issues](https://github.com/Kritt-ai/open-kritt/issues) for bugs and feature
 requests.
 
 Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) for the development
-setup, test commands, Conventional Commits, and DCO sign-off requirements.
+setup, test commands, and Conventional Commit requirements.
 
 Please report security vulnerabilities privately by following [SECURITY.md](SECURITY.md), not through a public issue.
 

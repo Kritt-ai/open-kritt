@@ -55,7 +55,15 @@ export function modelConfigurationIsValid(value, providers, catalog) {
   );
 }
 
-export default function ModelConfiguration({ value, onChange, providers, catalog, catalogError, disabled = false }) {
+export default function ModelConfiguration({
+  value,
+  onChange,
+  providers,
+  catalog,
+  catalogError,
+  disabled = false,
+  showAvailabilityHelp = true,
+}) {
   const providerConfigured = providers.includes(value.model_provider);
   const compatibleHarnesses = harnessesForModelProvider(value.model_provider);
   const selectableModels = modelsForModelProvider(catalog, value.model_provider);
@@ -254,7 +262,7 @@ export default function ModelConfiguration({ value, onChange, providers, catalog
           </>
         )}
       </div>
-      {(unavailableProviders.length > 0 || catalogMessage) && (
+      {showAvailabilityHelp && (unavailableProviders.length > 0 || catalogMessage) && (
         <div style={{ marginTop: 10, color: 'var(--text-2)', fontSize: 12.5, lineHeight: 1.5 }}>
           {unavailableProviders.length > 0 && (
             <div>

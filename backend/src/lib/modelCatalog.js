@@ -11,6 +11,12 @@ const CLAUDE_CODE_MODELS = [
     isDefault: false,
   },
   {
+    id: 'claude-opus-5',
+    label: 'Opus 5',
+    thinkingEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+    isDefault: false,
+  },
+  {
     id: 'claude-opus-4-8',
     label: 'Opus 4.8',
     thinkingEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],

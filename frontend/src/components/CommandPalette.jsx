@@ -56,7 +56,16 @@ export default function CommandPalette({ open, onClose }) {
           ...sc.map((s) => ({
             type: 'Scan',
             label: s.repoDisplay || s.repoFull,
-            sub: [s.workflowName, s.model, s.status].filter(Boolean).join(' · '),
+            sub: [
+              s.workflowName,
+              s.model,
+              Object.keys(s.modelOverrides || {}).length
+                ? `${Object.keys(s.modelOverrides).length} depth overrides`
+                : null,
+              s.status,
+            ]
+              .filter(Boolean)
+              .join(' · '),
             to: `/scans/${s.id}`,
           })),
           ...ps.map((p) => ({ type: 'Post-script', label: p.name, sub: p.description, to: `/post-scripts/${p.id}` })),

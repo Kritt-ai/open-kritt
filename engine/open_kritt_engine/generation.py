@@ -13,11 +13,12 @@ from typing import Any
 from jsonschema import Draft202012Validator
 
 from .codex_auth import preserve_codex_auth_metadata
-from .harnesses import HarnessError, harness_for, normalize_harness_name
+from .harnesses import HarnessError, harness_failure_retry_count, harness_for, normalize_harness_name
 from .prompting import append_schema_prompt
 from .provider_credentials import provider_environment
+from .runtime_config import runtime_int
 from .schema import EXTRACTOR_HELPER_FIELD
-from .workspace import codex_home_for_job
+from .workspace import codex_home_for_job, provider_account_lease
 
 BUILTIN_KEYS = (
     "repo_full",
@@ -746,6 +747,15 @@ class GenerationRunner:
             )
         return max(0, min(int(configured), GENERATION_RETRY_COUNT_CAP))
 
+    def _cyber_safety_retry_count(self) -> int:
+        return runtime_int(
+            "ENGINE_CYBER_SAFETY_RETRY_COUNT",
+            0,
+            data_dir=getattr(self.config, "data_dir", None),
+            minimum=0,
+            maximum=10,
+        )
+
     def generate(self, job: dict[str, Any]) -> GenerationRunResult:
         request = validate_generation_job(job)
         schema = generation_response_schema(request["kind"])
@@ -757,7 +767,9 @@ class GenerationRunner:
             codex_model_provider=getattr(self.config, "codex_model_provider", None),
             codex_cli_gate=self.codex_cli_gate,
         )
-        attempts = self._retry_count() + 1
+        retry_count = self._retry_count()
+        cyber_safety_retry_count = self._cyber_safety_retry_count()
+        attempts = retry_count + cyber_safety_retry_count + 1
         selected_codex_home = (
             codex_home_for_job(0, data_dir=getattr(self.config, "data_dir", None))
             if request["model_provider"] == "codex"
@@ -766,18 +778,24 @@ class GenerationRunner:
         env = generation_environment(request["model_provider"], codex_home=selected_codex_home)
         last_error: Exception | None = None
         feedback = ""
+        failure_counts = {"regular": 0, "cyber_safety_blocked": 0}
         for attempt in range(1, attempts + 1):
             try:
-                with preserve_codex_auth_metadata(env):
-                    result = harness.run(
-                        prompt=prompt + feedback,
-                        schema=schema,
-                        repo_dir=self._work_dir(),
-                        model=request["model"],
-                        thinking_effort=request["thinking_effort"],
-                        env=env,
-                        allow_tools=False,
-                    )
+                with provider_account_lease(
+                    request["model_provider"],
+                    selected_codex_home,
+                    data_dir=getattr(self.config, "data_dir", None),
+                ):
+                    with preserve_codex_auth_metadata(env):
+                        result = harness.run(
+                            prompt=prompt + feedback,
+                            schema=schema,
+                            repo_dir=self._work_dir(),
+                            model=request["model"],
+                            thinking_effort=request["thinking_effort"],
+                            env=env,
+                            allow_tools=False,
+                        )
                 artifact = validate_generation_payload(request["kind"], result.payload)
                 return GenerationRunResult(
                     artifact=artifact,
@@ -791,13 +809,25 @@ class GenerationRunner:
                     "\n\nYour previous JSON draft failed validation. Correct every issue below and return a new "
                     "complete JSON response that follows the original schema exactly:\n" + details
                 )
+                failure_counts["regular"] += 1
+                if failure_counts["regular"] > retry_count:
+                    break
             except HarnessError as exc:
                 exc.attempts = attempt
                 last_error = exc
-                if not exc.retryable:
+                failure_kind = "cyber_safety_blocked" if exc.code == "cyber_safety_blocked" else "regular"
+                failure_counts[failure_kind] += 1
+                if failure_counts[failure_kind] > harness_failure_retry_count(
+                    exc,
+                    retry_count,
+                    cyber_safety_retry_count,
+                ):
                     break
             except ValueError as exc:
                 last_error = exc
+                failure_counts["regular"] += 1
+                if failure_counts["regular"] > retry_count:
+                    break
         if last_error is not None:
             raise last_error
         raise RuntimeError("Generation did not produce a result.")

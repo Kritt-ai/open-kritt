@@ -293,10 +293,14 @@ function NewScanDialog({ onClose }) {
                       const scanId = `${scan.id}`;
                       const selected = selectedId === scanId;
                       const label = scan.repoDisplay || scan.repoFull || `Scan ${scan.id}`;
+                      const modelOverrideCount = Object.keys(scan.modelOverrides || {}).length;
                       const detail = [
                         `#${scan.id}`,
                         scan.workflowName,
                         scan.model,
+                        modelOverrideCount
+                          ? `${modelOverrideCount} depth override${modelOverrideCount === 1 ? '' : 's'}`
+                          : null,
                         scan.repoKind === 'local' ? 'local snapshot' : null,
                         scan.age ? `${scan.age} ago` : null,
                       ]
@@ -457,6 +461,7 @@ function ScanCard({ scan, to, onResume, onToggleError, onDelete, busy, errorExpa
   const failedLabel = currentFailedAttempts
     ? `Failed after ${currentFailedAttempts} failed attempt${currentFailedAttempts === 1 ? '' : 's'}`
     : 'Failed';
+  const modelOverrideCount = Object.keys(scan.modelOverrides || {}).length;
 
   return (
     <div
@@ -479,7 +484,10 @@ function ScanCard({ scan, to, onResume, onToggleError, onDelete, busy, errorExpa
         </div>
       </div>
       <div className="mono" style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 6 }}>
-        {scan.workflowName} · {scan.model} · {scan.repoKind === 'local' ? 'local snapshot' : scan.commitShort}
+        {scan.workflowName} · {scan.model}
+        {modelOverrideCount
+          ? ` · ${modelOverrideCount} depth override${modelOverrideCount === 1 ? '' : 's'}`
+          : ''} · {scan.repoKind === 'local' ? 'local snapshot' : scan.commitShort}
       </div>
 
       {providerAutoscale && (

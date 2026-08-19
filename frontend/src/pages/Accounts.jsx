@@ -27,8 +27,8 @@ export default function Accounts() {
   const [error, setError] = useState(null);
   const [editing, setEditing] = useState(null);
   const [removingAccount, setRemovingAccount] = useState(null);
-  const [startingUsage, setStartingUsage] = useState(null);
-  const [resettingUsage, setResettingUsage] = useState(null);
+  const [startingUsage, setStartingUsage] = useState(() => new Set());
+  const [resettingUsage, setResettingUsage] = useState(() => new Set());
   const [loadingProviders, setLoadingProviders] = useState(() => new Set());
   const [providerErrors, setProviderErrors] = useState({});
   const loadSequence = useRef(0);
@@ -118,7 +118,7 @@ export default function Accounts() {
     const impact =
       provider.id === 'codex'
         ? 'This signs Codex out locally and removes its managed account home when applicable. Existing scans and results are kept.'
-        : 'This signs Claude out locally. Existing scans and results are kept.';
+        : 'This signs Claude out locally and removes its managed account home when applicable. Existing scans and results are kept.';
     if (!window.confirm(`Remove ${label}?\n\n${impact}`)) return;
     const key = `${provider.id}:${account.id}`;
     const previous = data;
@@ -137,13 +137,13 @@ export default function Accounts() {
 
   const startWeeklyUsage = async (account) => {
     setError(null);
-    setStartingUsage(account.id);
+    setStartingUsage((current) => updatePendingAccounts(current, account.id, true));
     try {
       await startCodexWeeklyUsageUntilStarted(account.id, api.startCodexWeeklyUsage, setData);
     } catch (nextError) {
       setError(nextError);
     } finally {
-      setStartingUsage(null);
+      setStartingUsage((current) => updatePendingAccounts(current, account.id, false));
     }
   };
 
@@ -152,13 +152,13 @@ export default function Accounts() {
     const label = account.email || account.label;
     if (!window.confirm(`Use 1 of ${available} manual resets for ${label}?\n\nThis cannot be undone.`)) return;
     setError(null);
-    setResettingUsage(account.id);
+    setResettingUsage((current) => updatePendingAccounts(current, account.id, true));
     try {
       setData(await api.useCodexManualReset(account.id));
     } catch (nextError) {
       setError(nextError);
     } finally {
-      setResettingUsage(null);
+      setResettingUsage((current) => updatePendingAccounts(current, account.id, false));
     }
   };
 
@@ -310,8 +310,8 @@ function ProviderCard({
               onStartWeeklyUsage={() => onStartWeeklyUsage(account)}
               onUseManualReset={() => onUseManualReset(account)}
               removing={removingAccount === `${provider.id}:${account.id}`}
-              startingUsage={startingUsage === account.id}
-              resettingUsage={resettingUsage === account.id}
+              startingUsage={startingUsage.has(account.id)}
+              resettingUsage={resettingUsage.has(account.id)}
             />
           ))
         ) : (
@@ -355,7 +355,14 @@ export function providerActionLabel(provider) {
   const signInRequired = provider.accounts.some((account) => account.statusKind === 'expired');
   if (provider.id === 'codex') return signInRequired ? 'Sign in to Codex again' : 'Add Codex account';
   if (signInRequired) return 'Sign in to Claude again';
-  return provider.configured ? 'Reconnect Claude' : 'Sign in to Claude';
+  return 'Add Claude account';
+}
+
+export function updatePendingAccounts(current, accountId, pending) {
+  const next = new Set(current);
+  if (pending) next.add(accountId);
+  else next.delete(accountId);
+  return next;
 }
 
 export function providerReloginAccountId(provider) {
@@ -532,6 +539,7 @@ export function CodexWeeklyUsage({ usage, onStart, onReset, starting, resetting 
   const busy = starting || resetting;
   const hasManualReset = usage.manualResetsAvailable !== null && usage.manualResetsAvailable > 0;
   const resetEligible = usage.manualResetsApplicable === null || usage.manualResetsApplicable > 0;
+  const manualResetCredits = usage.manualResetCredits || [];
   return (
     <div
       className={`account-weekly-usage${usage.notStarted ? ' account-weekly-usage-warning' : ''}`}
@@ -553,9 +561,16 @@ export function CodexWeeklyUsage({ usage, onStart, onReset, starting, resetting 
           <span>{usage.resetRemaining || 'Time unavailable'}</span>
         </div>
         {usage.manualResetsAvailable !== null && (
-          <div className="account-weekly-stat">
+          <div className="account-weekly-stat account-manual-reset-stat">
             <span className="mono account-kicker">Manual resets</span>
-            <span>{usage.manualResetsAvailable} available</span>
+            <span className="account-manual-reset-details">
+              <span>{usage.manualResetsAvailable} available</span>
+              {manualResetCredits.map((credit, index) => (
+                <span className="account-manual-reset-expiry" key={`${credit.expiresAt}-${index}`}>
+                  {credit.title} · Expires {formatResetExpiryDate(credit.expiresAt)}
+                </span>
+              ))}
+            </span>
           </div>
         )}
       </div>
@@ -608,11 +623,20 @@ export function codexWeeklyUsage(account, now = Date.now()) {
     Number.isFinite(observedAt) &&
     Number.isFinite(resetsAt) &&
     Math.abs(resetsAt - observedAt - weeklyWindowMs) <= RESET_ALIGNMENT_TOLERANCE_MS;
+  const manualResetCredits = Array.isArray(account?.rateLimits?.manualResetCredits?.credits)
+    ? account.rateLimits.manualResetCredits.credits
+        .map((credit) => ({
+          title: typeof credit?.title === 'string' && credit.title.trim() ? credit.title.trim() : 'Usage reset',
+          expiresAt: credit?.expiresAt,
+        }))
+        .filter((credit) => Number.isFinite(new Date(credit.expiresAt).getTime()))
+    : [];
   return {
     notStarted: Boolean(account?.active && usedPercent !== null && usedPercent <= 0 && resetIsFullWindowAway),
     resetRemaining: formatResetRemaining(weeklyLimit.resetsAt, now),
     manualResetsAvailable: finiteNumber(account?.rateLimits?.manualResetCredits?.availableCount),
     manualResetsApplicable: finiteNumber(account?.rateLimits?.manualResetCredits?.applicableAvailableCount),
+    ...(manualResetCredits.length ? { manualResetCredits } : {}),
   };
 }
 
@@ -643,6 +667,16 @@ export function formatResetRemaining(value, now = Date.now()) {
   if (hours) return `${hours}h ${minutes}m remaining`;
   if (minutes) return `${minutes}m remaining`;
   return '<1m remaining';
+}
+
+export function formatResetExpiryDate(value, locale) {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return 'date unavailable';
+  return new Intl.DateTimeFormat(locale, {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  }).format(date);
 }
 
 function CreditUsage({ credit }) {
@@ -711,6 +745,7 @@ export function AccountRateLimits({ providerId, rateLimits, authenticated = true
 
 function RateLimit({ label, limit, unavailableNote = 'No recent limit data' }) {
   const used = Math.max(0, Math.min(100, Number(limit?.usedPercent) || 0));
+  const note = limit?.resetsAt ? formatUntil(limit.resetsAt, 'resets') : limit ? null : unavailableNote;
   return (
     <div>
       <div className="mono account-kicker">{label}</div>
@@ -726,9 +761,7 @@ function RateLimit({ label, limit, unavailableNote = 'No recent limit data' }) {
       >
         <div style={{ width: `${used}%`, background: used >= 90 ? 'var(--fail)' : 'var(--accent)' }} />
       </div>
-      <div style={{ fontSize: 10.5, color: 'var(--text-3)', marginTop: 5 }}>
-        {limit?.resetsAt ? formatUntil(limit.resetsAt, 'resets') : unavailableNote}
-      </div>
+      {note && <div style={{ fontSize: 10.5, color: 'var(--text-3)', marginTop: 5 }}>{note}</div>}
     </div>
   );
 }
@@ -844,7 +877,7 @@ function LoginDialog({ provider, onClose, onComplete }) {
                 ? `Sign in to ${provider.label} again`
                 : provider.id === 'codex'
                   ? 'Add Codex account'
-                  : 'Sign in to Claude'}
+                  : 'Add Claude account'}
             </div>
           </div>
           <button className="account-dialog-close" type="button" aria-label="Close" onClick={cancel}>
@@ -862,7 +895,7 @@ function LoginDialog({ provider, onClose, onComplete }) {
             ) : (
               <>
                 Claude will open its subscription sign-in page. After authentication, copy the callback code into this
-                dialog to {relogin ? 'replace the expired login on this account' : 'finish linking Claude Code'}.
+                dialog to {relogin ? 'replace the expired login on this account' : 'add this Claude account'}.
               </>
             )}
           </div>

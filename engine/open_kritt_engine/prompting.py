@@ -1,6 +1,7 @@
 import fcntl
 import hashlib
 import json
+import logging
 import os
 import re
 import subprocess
@@ -8,9 +9,10 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from .repository import LOCAL_SNAPSHOT_REVISION
+from .repository import LOCAL_SNAPSHOT_REVISION, fetch_remote_ref
 from .schema import EXTRACTOR_HELPER_FIELD
 
+LOGGER = logging.getLogger("open_kritt_engine.prompting")
 REF_RE = re.compile(r"\{\{\s*([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)*)\s*\}\}")
 SELECTED_AGENT_SKILLS_SLUG = "open-kritt-selected-skills"
 PATCH_HISTORY_REFS = (
@@ -18,9 +20,10 @@ PATCH_HISTORY_REFS = (
     "refs/remotes/origin",
     "refs/remotes/open-kritt-patched-since",
 )
-PATCH_HISTORY_CONTEXT_VERSION = 2
+PATCH_HISTORY_CONTEXT_VERSION = 3
 PATCH_HISTORY_DEFAULT_REF = "refs/remotes/open-kritt-patched-since/default"
 PATCH_HISTORY_DIFF_LIMIT = 24_000
+PATCH_HISTORY_FETCH_TIMEOUT = 120
 _PATCH_HISTORY_LOCKS: dict[str, threading.Lock] = {}
 _PATCH_HISTORY_LOCKS_GUARD = threading.Lock()
 
@@ -94,12 +97,23 @@ def scan_revision(scan: dict[str, Any]) -> str:
 def patched_since_prompt(template: str) -> str:
     return f"""Open-Kritt patch-history comparison (authoritative instructions):
 The worktree intentionally remains checked out at the scan's pinned, potentially vulnerable commit. Do not use
-`git rev-parse HEAD` or the checked-out files alone as evidence that the finding is still unpatched. The engine has
-selected the repository that owns the finding path, fetched its remote default branch, and precomputed path-scoped
-comparison evidence below. Treat `current_default` as a successful identity comparison: the pinned commit and current
-remote default are the same commit. For `available`, use the supplied diff and commit log to determine whether the
-finding changed. When a specific fixing commit is identifiable, use that commit rather than assuming the newest tree
-proves when or how the behavior changed. Do not claim to have run Git commands that are not available to you.
+`git rev-parse HEAD` or the checked-out files alone as evidence that the finding is still unpatched.
+
+On every run, independently check the live main branch of the repository that owns the finding, identified by
+`repository.workspace_path`. Use Git in this disposable container. Resolve and fetch `origin/main` into a temporary
+remote-tracking ref without checking it out. If that repository genuinely has no `main` branch, resolve `origin`'s
+symbolic HEAD, fetch that exact default branch instead, and state which branch was compared. Compare the vulnerable
+commit to the fetched commit, scoped to `finding_path.repo_relative`, and inspect the newer implementation directly.
+Keep the worktree pinned.
+
+The engine-provided context below is supporting path-scoped evidence, not a substitute for this live Git check. Treat
+`current_default` as a successful identity comparison: the pinned commit and current remote default are the same
+commit. For `available`, use the supplied diff and commit log together with your live verification. If the direct
+comparison fails, report the actual Git/network error and require manual review; never translate unavailable history
+into `patched: false`.
+
+When a specific fixing commit is identifiable, use that commit rather than assuming the newest tree proves when or how
+the behavior changed. Do not claim to have run Git commands that are not available to you.
 
 Set `found_at_commit` to the vulnerable scan commit. Set `target_commit` to the exact fixing commit when
 the patch-status boolean (`_chip_patched` or `patched`, whichever the output schema requests) is true, or to the
@@ -118,7 +132,8 @@ def patched_since_history_context(
     scan: dict[str, Any],
     *,
     history_repo_dir: str | None = None,
-    fetch_timeout: int = 30,
+    fetch_timeout: int = PATCH_HISTORY_FETCH_TIMEOUT,
+    github_token: str | None = None,
 ) -> str:
     """Describe newer descendants while keeping network history shared per scan."""
     if (scan.get("repo_kind") or "remote") == "local":
@@ -165,6 +180,7 @@ def patched_since_history_context(
         target_revision=target_revision,
         target=target,
         fetch_timeout=fetch_timeout,
+        github_token=github_token,
     )
     if history_repo != repo_dir and not _install_patch_history_refs(history_repo, repo_dir):
         context = {
@@ -183,7 +199,8 @@ def patched_since_workspace_history_context(
     scan: dict[str, Any],
     finding_file_path: str | None,
     *,
-    fetch_timeout: int = 30,
+    fetch_timeout: int = PATCH_HISTORY_FETCH_TIMEOUT,
+    github_token: str | None = None,
 ) -> str:
     """Compare the finding's owning repository and exact path with its default branch."""
 
@@ -204,6 +221,7 @@ def patched_since_workspace_history_context(
             str(selected_repo_dir),
             selected_scan,
             fetch_timeout=fetch_timeout,
+            github_token=github_token,
         )
     )
     target = context.get("target_commit")
@@ -215,7 +233,8 @@ def patched_since_workspace_history_context(
         "kind": selected_scan["repo_kind"],
         "alias": selected.get("alias"),
         "role": "dependency" if selected.get("alias") else "primary",
-        "workspace_path": str(selected_repo_dir),
+        "workspace_path": selected.get("path")
+        or (f"/workspace/{selected.get('alias')}" if selected.get("alias") else "/workspace"),
     }
     context["finding_path"] = {
         "reported": finding_file_path or "",
@@ -250,6 +269,7 @@ def _cached_patch_history_context(
     target_revision: str,
     target: str,
     fetch_timeout: int,
+    github_token: str | None,
 ) -> dict[str, Any]:
     state_dir = Path(history_repo) / ".git" / "open-kritt-patched-since"
     if not state_dir.parent.is_dir():
@@ -258,6 +278,7 @@ def _cached_patch_history_context(
             target_revision=target_revision,
             target=target,
             fetch_timeout=fetch_timeout,
+            github_token=github_token,
         )
     state_dir.mkdir(parents=True, exist_ok=True)
     cache_key = hashlib.sha256(
@@ -280,7 +301,10 @@ def _cached_patch_history_context(
                 target_revision=target_revision,
                 target=target,
                 fetch_timeout=fetch_timeout,
+                github_token=github_token,
             )
+            if any(item.get("status") != "fetched" for item in context.get("fetch_results", [])):
+                return context
             tmp_marker = marker.with_suffix(".tmp")
             tmp_marker.write_text(json.dumps(context, sort_keys=True) + "\n", encoding="utf-8")
             os.replace(tmp_marker, marker)
@@ -293,11 +317,13 @@ def _build_patch_history_context(
     target_revision: str,
     target: str,
     fetch_timeout: int,
+    github_token: str | None,
 ) -> dict[str, Any]:
     fetch_status = _git_fetch_status(
         history_repo,
         f"+HEAD:{PATCH_HISTORY_DEFAULT_REF}",
         timeout=fetch_timeout,
+        github_token=github_token,
     )
     fetch_results = [
         {
@@ -546,20 +572,22 @@ def _patch_history_thread_lock(path: Path) -> threading.Lock:
         return lock
 
 
-def _git_fetch_status(repo_dir: str, refspec: str, *, timeout: int) -> str:
-    try:
-        result = subprocess.run(
-            ["git", "fetch", "--quiet", "--prune", "--no-tags", "origin", refspec],
-            cwd=repo_dir,
-            text=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-            timeout=timeout,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return "unavailable"
-    return "fetched" if result.returncode == 0 else "unavailable"
+def _git_fetch_status(
+    repo_dir: str,
+    refspec: str,
+    *,
+    timeout: int,
+    github_token: str | None = None,
+) -> str:
+    fetched, detail = fetch_remote_ref(
+        repo_dir,
+        refspec,
+        github_token=github_token,
+        timeout=timeout,
+    )
+    if not fetched:
+        LOGGER.warning("patch-history fetch failed for %s: %s", repo_dir, detail or "unknown Git error")
+    return "fetched" if fetched else "unavailable"
 
 
 def _git_stdout(repo_dir: str, *args: str) -> str:

@@ -6,6 +6,102 @@ VULNERABILITIES_TABLE = "workflows.vulnerabilities"
 
 
 @dataclass(frozen=True)
+class ModelSelection:
+    model: str
+    model_provider: str
+    harness: str
+    thinking_effort: str
+
+
+def _selection_value(configuration: dict[str, Any], snake_key: str, camel_key: str, fallback: str) -> str:
+    value = configuration.get(snake_key)
+    if value is None:
+        value = configuration.get(camel_key)
+    normalized = str(value or "").strip()
+    return normalized or fallback
+
+
+def model_selection_for_depth(scan: dict[str, Any], depth: int | None = None) -> ModelSelection:
+    default = ModelSelection(
+        model=str(scan.get("model") or "").strip(),
+        model_provider=_selection_value(scan, "model_provider", "modelProvider", "openrouter"),
+        harness=str(scan.get("harness") or "").strip(),
+        thinking_effort=_selection_value(scan, "thinking_effort", "thinkingEffort", "medium"),
+    )
+    overrides = scan.get("model_overrides")
+    if overrides is None:
+        overrides = scan.get("modelOverrides")
+    override = overrides.get(str(depth)) if depth is not None and isinstance(overrides, dict) else None
+    if not isinstance(override, dict):
+        return default
+    return ModelSelection(
+        model=_selection_value(override, "model", "model", default.model),
+        model_provider=_selection_value(
+            override,
+            "model_provider",
+            "modelProvider",
+            default.model_provider,
+        ),
+        harness=_selection_value(override, "harness", "harness", default.harness),
+        thinking_effort=_selection_value(
+            override,
+            "thinking_effort",
+            "thinkingEffort",
+            default.thinking_effort,
+        ),
+    )
+
+
+def post_processing_thinking_effort(scan: dict[str, Any]) -> str:
+    return post_processing_model_selection(scan).thinking_effort
+
+
+def post_processing_model_selection(scan: dict[str, Any]) -> ModelSelection:
+    configuration = scan.get("configuration")
+    if not isinstance(configuration, dict):
+        configuration = {}
+    default = model_selection_for_depth(scan)
+    return ModelSelection(
+        model=_selection_value(
+            configuration,
+            "post_processing_model",
+            "postProcessingModel",
+            default.model,
+        ),
+        model_provider=_selection_value(
+            configuration,
+            "post_processing_model_provider",
+            "postProcessingModelProvider",
+            default.model_provider,
+        ),
+        harness=_selection_value(
+            configuration,
+            "post_processing_harness",
+            "postProcessingHarness",
+            default.harness,
+        ),
+        thinking_effort=_selection_value(
+            configuration,
+            "post_processing_thinking_effort",
+            "postProcessingThinkingEffort",
+            default.thinking_effort,
+        ),
+    )
+
+
+def supplemental_post_script_model_selection(scan: dict[str, Any], run: dict[str, Any]) -> ModelSelection:
+    """Resolve a run's snapshotted model settings with legacy scan fallbacks."""
+
+    default = post_processing_model_selection(scan)
+    return ModelSelection(
+        model=_selection_value(run, "model", "model", default.model),
+        model_provider=_selection_value(run, "model_provider", "modelProvider", default.model_provider),
+        harness=_selection_value(run, "harness", "harness", default.harness),
+        thinking_effort=_selection_value(run, "thinking_effort", "thinkingEffort", default.thinking_effort),
+    )
+
+
+@dataclass(frozen=True)
 class Step:
     id: int
     content: str
@@ -18,6 +114,8 @@ class Step:
     order: int
     # A non-root depth may run once over the full previous-depth result array.
     consumes_all: bool = False
+    # When set, only outputs from this adjacent previous-depth step are accepted.
+    bound_source_step_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -43,6 +141,8 @@ class State:
     # The immediate preceding step result. Batches aggregate this exact payload,
     # rather than every value accumulated in the rendered prompt context.
     output: dict[str, Any] | None = None
+    # The step that produced the immediate result represented by this state.
+    source_step_id: int | None = None
 
 
 @dataclass(frozen=True)

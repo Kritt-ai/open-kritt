@@ -13,20 +13,25 @@ from .models import Step, StepResultRow, Workflow
 
 RATE_LIMIT_RETRY_BASE_SECONDS = 60.0
 RATE_LIMIT_RETRY_MAX_SECONDS = 10 * 60.0
+QUOTA_RETRY_MAX_SECONDS = 30 * 60.0
 QUEUED_SCAN_ADMISSION_LOCK = (0x6B726974, 0x71756575)
 
 
-def rate_limit_retry_delay(retry_count: int, provider_retry_after_seconds: float = 0.0) -> float:
+def rate_limit_retry_delay(
+    retry_count: int,
+    provider_retry_after_seconds: float = 0.0,
+    *,
+    maximum_seconds: float = RATE_LIMIT_RETRY_MAX_SECONDS,
+) -> float:
     """Return the persistent retry delay for a rate-limited scan."""
 
+    maximum_seconds = max(RATE_LIMIT_RETRY_BASE_SECONDS, float(maximum_seconds))
     exponent = max(0, retry_count - 1)
     exponential_delay = (
-        RATE_LIMIT_RETRY_MAX_SECONDS
-        if exponent >= 8
-        else min(RATE_LIMIT_RETRY_BASE_SECONDS * (2**exponent), RATE_LIMIT_RETRY_MAX_SECONDS)
+        maximum_seconds if exponent >= 8 else min(RATE_LIMIT_RETRY_BASE_SECONDS * (2**exponent), maximum_seconds)
     )
     provider_delay = max(0.0, float(provider_retry_after_seconds))
-    return min(max(exponential_delay, provider_delay), RATE_LIMIT_RETRY_MAX_SECONDS)
+    return min(max(exponential_delay, provider_delay), maximum_seconds)
 
 
 def _json(value):
@@ -121,7 +126,13 @@ class Database:
                    OR (
                       status = 'rate_limited'
                       AND reasoning->>'retry_after' IS NOT NULL
-                      AND (reasoning->>'retry_after')::timestamptz <= now()
+                      AND (
+                          (reasoning->>'retry_after')::timestamptz <= now()
+                          OR (
+                              reasoning->>'limit_kind' IN ('account_quota_limited', 'subagent_limited')
+                              AND updated_at + make_interval(secs => %s::double precision) <= now()
+                          )
+                      )
                   )
                 ORDER BY inserted_at ASC
                 FOR UPDATE SKIP LOCKED
@@ -142,7 +153,8 @@ class Database:
             FROM next_scan
             WHERE s.id = next_scan.id
             RETURNING s.*
-            """
+            """,
+                (QUOTA_RETRY_MAX_SECONDS,),
             ).fetchone()
 
         if active_count == 0 and not admitted:
@@ -559,7 +571,15 @@ class Database:
         if not isinstance(previous_retries, int) or isinstance(previous_retries, bool) or previous_retries < 0:
             previous_retries = 0
         retry_count = previous_retries + 1
-        retry_delay_seconds = rate_limit_retry_delay(retry_count, retry_after_seconds)
+        retry_delay_seconds = rate_limit_retry_delay(
+            retry_count,
+            retry_after_seconds,
+            maximum_seconds=(
+                QUOTA_RETRY_MAX_SECONDS
+                if limit_kind in {"account_quota_limited", "subagent_limited"}
+                else RATE_LIMIT_RETRY_MAX_SECONDS
+            ),
+        )
 
         next_reasoning = dict(reasoning) if isinstance(reasoning, dict) else {}
         next_reasoning.update(
@@ -570,7 +590,7 @@ class Database:
                 "retry_count": retry_count,
             }
         )
-        if autoscale_workers and limit_kind == "provider_throttled":
+        if autoscale_workers and limit_kind in {"provider_throttled", "subagent_limited"}:
             stored_cap = next_reasoning.get("provider_capacity_worker_cap")
             if not isinstance(stored_cap, int) or isinstance(stored_cap, bool) or stored_cap < 1:
                 stored_cap = current_worker_cap
@@ -700,6 +720,9 @@ class Database:
                     output_table=row["output_table"],
                     order=order,
                     consumes_all=bool(row.get("consume_all_previous", False)),
+                    bound_source_step_id=(
+                        _to_int(row["bound_source_step_id"]) if row.get("bound_source_step_id") is not None else None
+                    ),
                 )
             )
         return Workflow(id=_to_int(workflow["id"]), name=workflow["name"], steps=tuple(steps))
@@ -709,6 +732,21 @@ class Database:
 
     def load_claimed_metadata(self, conn, scan_id: int) -> set[tuple[int, int, str | None, int]]:
         return self.load_metadata_keys(conn, scan_id, ("completed", "running"))
+
+    def load_attempted_metadata(self, conn, scan_id: int) -> set[tuple[int, int, str | None, int]]:
+        rows = conn.execute(
+            """
+            SELECT step_id, coalesce(prev_id, 0) AS prev_id, prev_table, coalesce(repeat_run, 1) AS repeat_run
+            FROM workflows.step_metadata
+            WHERE scan_id = %s
+              AND coalesce(kind, 'step') = 'step'
+            """,
+            (scan_id,),
+        ).fetchall()
+        return {
+            (_to_int(row["step_id"]), _to_int(row["prev_id"]), row["prev_table"], int(row["repeat_run"]))
+            for row in rows
+        }
 
     def load_metadata_keys(
         self, conn, scan_id: int, statuses: tuple[str, ...]
@@ -838,6 +876,239 @@ class Database:
             (scan_id,),
         ).fetchall()
 
+    def claim_supplemental_post_script_target(self, conn) -> dict[str, Any] | None:
+        """Claim one ready supplemental finding without changing the scan status."""
+
+        candidate = conn.execute(
+            """
+            SELECT t.id, t.scan_id
+            FROM workflows.supplemental_post_script_targets t
+            INNER JOIN workflows.supplemental_post_script_runs r ON r.id = t.run_id
+            INNER JOIN public.scans s ON s.id = t.scan_id
+            WHERE t.status = 'pending'
+              AND t.available_at <= now()
+              AND r.status IN ('queued', 'running')
+              AND s.status IN ('paused', 'completed', 'stopped', 'failed')
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM workflows.step_metadata sm
+                  WHERE sm.scan_id = t.scan_id
+                    AND sm.status = 'running'
+                    AND coalesce(sm.kind, 'step') = 'step'
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM workflows.post_process_metadata pm
+                  WHERE pm.scan_id = t.scan_id
+                    AND pm.status = 'running'
+                    AND pm.supplemental_run_id IS NULL
+              )
+            ORDER BY r.inserted_at ASC, r.id ASC, t.id ASC
+            FOR UPDATE OF t SKIP LOCKED
+            LIMIT 1
+            """
+        ).fetchone()
+        if not candidate:
+            return None
+
+        # Share-lock the scan so a resume/delete cannot race the target claim.
+        scan = conn.execute(
+            """
+            SELECT *
+            FROM public.scans
+            WHERE id = %s
+              AND status IN ('paused', 'completed', 'stopped', 'failed')
+            FOR SHARE
+            """,
+            (_to_int(candidate["scan_id"]),),
+        ).fetchone()
+        if not scan:
+            return None
+
+        target = conn.execute(
+            """
+            UPDATE workflows.supplemental_post_script_targets
+            SET status = 'running',
+                attempts = attempts + 1,
+                error = NULL,
+                started_at = coalesce(started_at, now()),
+                updated_at = now()
+            WHERE id = %s AND status = 'pending'
+            RETURNING *
+            """,
+            (_to_int(candidate["id"]),),
+        ).fetchone()
+        if not target:
+            return None
+        run = conn.execute(
+            "SELECT * FROM workflows.supplemental_post_script_runs WHERE id = %s",
+            (_to_int(target["run_id"]),),
+        ).fetchone()
+        vulnerability = conn.execute(
+            """
+            SELECT * FROM workflows.vulnerabilities
+            WHERE id = %s AND scan_id = %s
+            """,
+            (_to_int(target["vulnerability_id"]), _to_int(target["scan_id"])),
+        ).fetchone()
+        if not run or not vulnerability:
+            conn.execute(
+                """
+                UPDATE workflows.supplemental_post_script_targets
+                SET status = 'failed', error = %s, completed_at = now(), updated_at = now()
+                WHERE id = %s
+                """,
+                ("The selected scan or finding no longer exists.", _to_int(target["id"])),
+            )
+            self.refresh_supplemental_post_script_run(conn, _to_int(target["run_id"]))
+            return None
+        conn.execute(
+            """
+            UPDATE workflows.supplemental_post_script_runs
+            SET status = 'running', started_at = coalesce(started_at, now()), updated_at = now()
+            WHERE id = %s AND status = 'queued'
+            """,
+            (_to_int(run["id"]),),
+        )
+        run["status"] = "running"
+        return {"target": target, "run": run, "scan": scan, "vulnerability": vulnerability}
+
+    def create_supplemental_post_process_metadata(
+        self,
+        conn,
+        *,
+        target: dict[str, Any],
+        run: dict[str, Any],
+        scan: dict[str, Any],
+        prompt_template: str,
+        model: str,
+        harness: str,
+        thinking_effort: str | None,
+        model_provider: str | None,
+        run_started_at: datetime,
+    ) -> int:
+        row = conn.execute(
+            """
+            INSERT INTO workflows.post_process_metadata (
+                scan_id, workflow_id, post_script_id, post_script_name, vulnerability_id,
+                supplemental_run_id, kind, target_vulnerability_ids, status, phase,
+                prompt_template, prompt_filled, run_started_at, run_time_ms,
+                model, harness, thinking_effort, model_provider
+            )
+            VALUES (
+                %(scan_id)s, %(workflow_id)s, %(post_script_id)s, %(post_script_name)s, %(vulnerability_id)s,
+                %(supplemental_run_id)s, 'supplemental_post_script', %(target_ids)s, 'running',
+                'building_workspace', %(prompt_template)s, '', %(run_started_at)s, 0,
+                %(model)s, %(harness)s, %(thinking_effort)s, %(model_provider)s
+            )
+            RETURNING id
+            """,
+            {
+                "scan_id": _to_int(scan["id"]),
+                "workflow_id": _to_int(scan["workflow_id"]),
+                "post_script_id": _to_int(run["post_script_id"]),
+                "post_script_name": run["post_script_name"],
+                "vulnerability_id": _to_int(target["vulnerability_id"]),
+                "supplemental_run_id": _to_int(run["id"]),
+                "target_ids": [_to_int(target["vulnerability_id"])],
+                "prompt_template": prompt_template,
+                "run_started_at": run_started_at,
+                "model": model,
+                "harness": harness,
+                "thinking_effort": thinking_effort,
+                "model_provider": model_provider,
+            },
+        ).fetchone()
+        metadata_id = _to_int(row["id"])
+        conn.execute(
+            """
+            UPDATE workflows.supplemental_post_script_targets
+            SET post_process_metadata_id = %s, updated_at = now()
+            WHERE id = %s AND status = 'running'
+            """,
+            (metadata_id, _to_int(target["id"])),
+        )
+        self.mirror_post_process_metadata(conn, metadata_id)
+        return metadata_id
+
+    def refresh_supplemental_post_script_run(self, conn, run_id: int) -> dict[str, Any] | None:
+        return conn.execute(
+            """
+            WITH counts AS (
+                SELECT
+                    count(*) FILTER (WHERE status = 'completed')::integer AS completed_count,
+                    count(*) FILTER (WHERE status = 'failed')::integer AS failed_count,
+                    count(*) FILTER (WHERE status IN ('pending', 'running'))::integer AS open_count
+                FROM workflows.supplemental_post_script_targets
+                WHERE run_id = %(run_id)s
+            )
+            UPDATE workflows.supplemental_post_script_runs r
+            SET completed_count = counts.completed_count,
+                failed_count = counts.failed_count,
+                status = CASE
+                    WHEN counts.open_count > 0 THEN 'running'
+                    WHEN counts.failed_count > 0 THEN 'completed_with_errors'
+                    ELSE 'completed'
+                END,
+                completed_at = CASE WHEN counts.open_count = 0 THEN coalesce(r.completed_at, now()) ELSE NULL END,
+                updated_at = now()
+            FROM counts
+            WHERE r.id = %(run_id)s
+            RETURNING r.*
+            """,
+            {"run_id": run_id},
+        ).fetchone()
+
+    def complete_supplemental_post_script_target(self, conn, *, target_id: int, enrichment_id: int) -> bool:
+        row = conn.execute(
+            """
+            UPDATE workflows.supplemental_post_script_targets
+            SET status = 'completed', enrichment_id = %s, error = NULL,
+                completed_at = now(), updated_at = now()
+            WHERE id = %s AND status = 'running'
+            RETURNING run_id
+            """,
+            (enrichment_id, target_id),
+        ).fetchone()
+        if not row:
+            return False
+        self.refresh_supplemental_post_script_run(conn, _to_int(row["run_id"]))
+        return True
+
+    def fail_supplemental_post_script_target(self, conn, *, target_id: int, error: str) -> bool:
+        row = conn.execute(
+            """
+            UPDATE workflows.supplemental_post_script_targets
+            SET status = 'failed', error = %s, completed_at = now(), updated_at = now()
+            WHERE id = %s AND status = 'running'
+            RETURNING run_id
+            """,
+            (error, target_id),
+        ).fetchone()
+        if not row:
+            return False
+        self.refresh_supplemental_post_script_run(conn, _to_int(row["run_id"]))
+        return True
+
+    def defer_supplemental_post_script_target(
+        self, conn, *, target_id: int, error: str, retry_after_seconds: float
+    ) -> bool:
+        row = conn.execute(
+            """
+            UPDATE workflows.supplemental_post_script_targets
+            SET status = 'pending', error = %s,
+                available_at = now() + make_interval(secs => %s::double precision),
+                post_process_metadata_id = NULL, updated_at = now()
+            WHERE id = %s AND status = 'running'
+            RETURNING run_id
+            """,
+            (error, max(0.0, float(retry_after_seconds)), target_id),
+        ).fetchone()
+        if not row:
+            return False
+        self.refresh_supplemental_post_script_run(conn, _to_int(row["run_id"]))
+        return True
+
     def count_running_post_process(self, conn, scan_id: int, kind: str | None = None) -> int:
         params: list[Any] = [scan_id]
         kind_sql = ""
@@ -890,7 +1161,13 @@ class Database:
         post_script_name: str | None = None,
         vulnerability_id: int | None = None,
     ) -> int | None:
-        lock_key = f"post-process:{scan_id}:{kind}:{batch_index or 0}:{post_script_id or 0}:{vulnerability_id or 0}"
+        # Batch indexes are chosen before this transaction. Lock batch pipelines by
+        # logical kind so two workers cannot turn the same snapshot into different
+        # batch indexes; post-script jobs remain independently claimable.
+        if kind == "post_script":
+            lock_key = f"post-process:{scan_id}:{kind}:{post_script_id or 0}:{vulnerability_id or 0}"
+        else:
+            lock_key = f"post-process:{scan_id}:{kind}"
         conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (lock_key,))
         scan = conn.execute(
             """
@@ -919,20 +1196,44 @@ class Database:
                 (scan_id, kind, vulnerability_id, post_script_id),
             ).fetchone()
         else:
+            # The scan row lock serializes this recheck with every other claim.
             existing = conn.execute(
                 """
                 SELECT id
                 FROM workflows.post_process_metadata
                 WHERE scan_id = %s
                   AND kind = %s
-                  AND batch_index = %s
-                  AND status IN ('running', 'completed')
+                  AND (
+                      status = 'running'
+                      OR (batch_index = %s AND status = 'completed')
+                  )
                 LIMIT 1
                 """,
                 (scan_id, kind, batch_index),
             ).fetchone()
         if existing:
             return None
+        expected_target_ids = sorted(set(target_vulnerability_ids))
+        if kind in {"dedupe", "ranker"}:
+            if not expected_target_ids:
+                return None
+            target_state = (
+                "dedupe_is_canonical IS NULL"
+                if kind == "dedupe"
+                else "dedupe_is_canonical = true AND bounty_rank IS NULL"
+            )
+            eligible = conn.execute(
+                f"""
+                SELECT count(*) AS count
+                FROM workflows.vulnerabilities
+                WHERE scan_id = %s
+                  AND id = ANY(%s::bigint[])
+                  AND {target_state}
+                """,
+                (scan_id, expected_target_ids),
+            ).fetchone()
+            if int(eligible["count"]) != len(expected_target_ids):
+                return None
         previous = conn.execute(
             """
             SELECT id
@@ -1001,7 +1302,8 @@ class Database:
             INSERT INTO workflows.step_metadata (
                 scan_id, workflow_id, step_id, prev_id, prev_table, repeat_run,
                 status, phase, error, kind, post_process_metadata_id, post_script_id,
-                post_script_name, vulnerability_id, target_vulnerability_ids, batch_index,
+                post_script_name, vulnerability_id, supplemental_run_id,
+                target_vulnerability_ids, batch_index,
                 prompt_template, prompt_filled, output_json, checked_out_commit,
                 run_started_at, run_time_ms, raw_token_usage, token_count_cached_input,
                 token_count_input, token_count_output, token_count_reasoning_output,
@@ -1024,6 +1326,7 @@ class Database:
                 p.post_script_id,
                 p.post_script_name,
                 p.vulnerability_id,
+                p.supplemental_run_id,
                 p.target_vulnerability_ids,
                 p.batch_index,
                 p.prompt_template,
@@ -1066,6 +1369,7 @@ class Database:
                 post_script_id = EXCLUDED.post_script_id,
                 post_script_name = EXCLUDED.post_script_name,
                 vulnerability_id = EXCLUDED.vulnerability_id,
+                supplemental_run_id = EXCLUDED.supplemental_run_id,
                 target_vulnerability_ids = EXCLUDED.target_vulnerability_ids,
                 batch_index = EXCLUDED.batch_index,
                 prompt_template = EXCLUDED.prompt_template,
@@ -1253,7 +1557,40 @@ class Database:
         result: dict[str, Any] | None,
         stub: bool,
         stub_explanation: str | None,
+        supplemental_run_id: int | None = None,
     ) -> int:
+        if supplemental_run_id is not None:
+            row = conn.execute(
+                """
+                INSERT INTO workflows.vulnerability_enrichments (
+                    scan_id, vulnerability_id, post_script_id, post_script_name,
+                    result, stub, stub_explanation, supplemental_run_id
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (supplemental_run_id, vulnerability_id)
+                    WHERE supplemental_run_id IS NOT NULL
+                DO UPDATE SET
+                    scan_id = EXCLUDED.scan_id,
+                    post_script_id = EXCLUDED.post_script_id,
+                    post_script_name = EXCLUDED.post_script_name,
+                    result = EXCLUDED.result,
+                    stub = EXCLUDED.stub,
+                    stub_explanation = EXCLUDED.stub_explanation,
+                    updated_at = now()
+                RETURNING id
+                """,
+                (
+                    scan_id,
+                    vulnerability_id,
+                    post_script_id,
+                    post_script_name,
+                    _json(result),
+                    stub,
+                    stub_explanation,
+                    supplemental_run_id,
+                ),
+            ).fetchone()
+            return _to_int(row["id"])
         row = conn.execute(
             """
             INSERT INTO workflows.vulnerability_enrichments (
@@ -1262,6 +1599,7 @@ class Database:
             )
             VALUES (%s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (vulnerability_id, post_script_id)
+                WHERE supplemental_run_id IS NULL
             DO UPDATE SET
                 scan_id = EXCLUDED.scan_id,
                 post_script_name = EXCLUDED.post_script_name,
@@ -1660,13 +1998,31 @@ class Database:
                 {"post_ids": post_ids, "error": error},
             )
 
-        return {"step": len(step_rows), "post": len(post_rows)}
+        supplemental_rows = conn.execute(
+            """
+            UPDATE workflows.supplemental_post_script_targets
+            SET status = 'pending',
+                error = %(error)s,
+                post_process_metadata_id = NULL,
+                available_at = now(),
+                updated_at = now()
+            WHERE status = 'running'
+              AND updated_at < %(engine_started_at)s
+            RETURNING run_id
+            """,
+            {"engine_started_at": engine_started_at, "error": error},
+        ).fetchall()
+        for run_id in {_to_int(row["run_id"]) for row in supplemental_rows}:
+            self.refresh_supplemental_post_script_run(conn, run_id)
+
+        return {"step": len(step_rows), "post": len(post_rows), "supplemental": len(supplemental_rows)}
 
     def load_artifact_cleanup_state(
         self,
         conn,
         *,
         retain_inactive_scan_caches_after: datetime,
+        retain_finished_workspaces_after: datetime,
     ) -> tuple[set[int], set[int]]:
         # Keep cleanup mutually exclusive with scan admission. This prevents a
         # completed/failed scan from being resumed while its stale cache is
@@ -1677,14 +2033,14 @@ class Database:
             """
             SELECT id::bigint AS workspace_id
             FROM workflows.step_metadata
-            WHERE status = 'running'
+            WHERE (status = 'running' OR updated_at >= %s)
               AND coalesce(kind, 'step') = 'step'
             UNION ALL
             SELECT (%s::bigint + id)::bigint AS workspace_id
             FROM workflows.post_process_metadata
-            WHERE status = 'running'
+            WHERE status = 'running' OR updated_at >= %s
             """,
-            (POST_WORKSPACE_ID_OFFSET,),
+            (retain_finished_workspaces_after, POST_WORKSPACE_ID_OFFSET, retain_finished_workspaces_after),
         ).fetchall()
         scan_rows = conn.execute(
             """
@@ -1702,6 +2058,15 @@ class Database:
             {_to_int(row["workspace_id"]) for row in workspace_rows},
             {_to_int(row["id"]) for row in scan_rows},
         )
+
+    def load_active_scan_cache_specs(self, conn) -> list[dict[str, Any]]:
+        return conn.execute(
+            """
+            SELECT id, repo_kind, repo_full, commit_sha, dependencies, dependencies_detail
+            FROM public.scans
+            WHERE status IN ('queued', 'pending', 'prewarming_cache', 'running', 'rate_limited', 'post_processing')
+            """
+        ).fetchall()
 
 
 def now_utc():

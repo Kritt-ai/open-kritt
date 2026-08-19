@@ -5,11 +5,12 @@ import { usePageChrome } from '../context/ui.jsx';
 import { Spinner, ErrorState, Button } from '../components/ui.jsx';
 import Markdown from '../components/Markdown.jsx';
 import SearchSelect from '../components/SearchSelect.jsx';
-import ModelConfiguration, {
-  modelConfigurationForCatalog,
-  modelConfigurationIsValid,
-} from '../components/ModelConfiguration.jsx';
+import WorkflowModelConfiguration, {
+  workflowModelConfigurationForCatalog,
+  workflowModelConfigurationIsValid,
+} from '../components/WorkflowModelConfiguration.jsx';
 import { configuredModelCatalog, configuredModelProviders, modelCatalogIsReady } from '../lib/modelProviders.js';
+import { modelOverridesEqual, reconcileModelOverrides, workflowDepths } from '../lib/modelOverrides.js';
 import { combineSeverityRanker } from '../lib/severityRanker.js';
 import { defaultRankerIds, defaultWorkflowId } from '../lib/scanPresentation.js';
 import { scanConfigurationDraft } from '../lib/scanDuplication.js';
@@ -98,6 +99,12 @@ export default function CreateScan() {
     model_provider: '',
     harness: '',
     thinking_effort: 'medium',
+    post_processing_model_override: false,
+    post_processing_model: '',
+    post_processing_model_provider: '',
+    post_processing_harness: '',
+    post_processing_thinking_effort: 'medium',
+    model_overrides: {},
     extra: {},
     rankerIds: [],
     rankerExtra: '', // severity ranker: ordered ranker ids + per-scan custom rules
@@ -227,8 +234,20 @@ export default function CreateScan() {
             modelCatalog,
           });
           setForm((f) => {
-            if (sourceScan) return { ...f, ...scanConfigurationDraft(sourceScan) };
-            const modelConfiguration = modelConfigurationForCatalog(f, configuredProviders, modelCatalog);
+            if (sourceScan) {
+              const duplicateDraft = scanConfigurationDraft(sourceScan);
+              const duplicateWorkflow = workflows.find((workflow) => workflow.id === duplicateDraft.workflowId);
+              return {
+                ...f,
+                ...duplicateDraft,
+                model_overrides: reconcileModelOverrides(
+                  duplicateDraft.model_overrides,
+                  workflowDepths(duplicateWorkflow),
+                  duplicateDraft
+                ),
+              };
+            }
+            const modelConfiguration = workflowModelConfigurationForCatalog(f, configuredProviders, modelCatalog);
             return {
               ...f,
               workflowId: defaultWorkflowId(workflows, params.get('workflow') || ''),
@@ -284,7 +303,7 @@ export default function CreateScan() {
           if (!isDuplicating) {
             setForm((current) => ({
               ...current,
-              ...modelConfigurationForCatalog(current, modelProviders, modelCatalog),
+              ...workflowModelConfigurationForCatalog(current, modelProviders, modelCatalog),
             }));
           }
         })
@@ -302,12 +321,18 @@ export default function CreateScan() {
     if (!activeModelCatalog || isDuplicating) return;
 
     setForm((f) => {
-      const normalized = modelConfigurationForCatalog(f, refData?.modelProviders || [], activeModelCatalog);
+      const normalized = workflowModelConfigurationForCatalog(f, refData?.modelProviders || [], activeModelCatalog);
       if (
         normalized.model === f.model &&
         normalized.model_provider === f.model_provider &&
         normalized.thinking_effort === f.thinking_effort &&
-        normalized.harness === f.harness
+        normalized.post_processing_model_override === f.post_processing_model_override &&
+        normalized.post_processing_model === f.post_processing_model &&
+        normalized.post_processing_model_provider === f.post_processing_model_provider &&
+        normalized.post_processing_harness === f.post_processing_harness &&
+        normalized.post_processing_thinking_effort === f.post_processing_thinking_effort &&
+        normalized.harness === f.harness &&
+        modelOverridesEqual(normalized.model_overrides, f.model_overrides)
       )
         return f;
       return { ...f, ...normalized };
@@ -348,6 +373,15 @@ export default function CreateScan() {
     setDirty(true);
     setForm((f) => ({ ...f, extra: { ...f.extra, [key]: value } }));
   };
+  const setWorkflow = (workflowId) => {
+    const workflow = refData.workflows.find((candidate) => candidate.id === workflowId);
+    setDirty(true);
+    setForm((current) => ({
+      ...current,
+      workflowId,
+      model_overrides: reconcileModelOverrides(current.model_overrides, workflowDepths(workflow), current),
+    }));
+  };
 
   // local repos as SearchSelect items (id = folder name)
   const localItems = refData.localRepos.map((r) => ({ id: r.name, ...r }));
@@ -358,6 +392,7 @@ export default function CreateScan() {
   };
 
   const selectedWorkflow = refData.workflows.find((w) => w.id === form.workflowId);
+  const selectedWorkflowDepths = workflowDepths(selectedWorkflow);
   const selectedPostScriptIds = form.postScriptIds?.length
     ? form.postScriptIds
     : form.postScriptId
@@ -366,7 +401,12 @@ export default function CreateScan() {
   const expectedExtra = requiredScanExtraKeys(selectedWorkflow, refData.postScripts, selectedPostScriptIds);
   const modelProviders = refData.modelProviders;
   const hasConfiguredProvider = modelProviders.length > 0;
-  const modelConfigurationValid = modelConfigurationIsValid(form, modelProviders, refData.modelCatalog);
+  const modelConfigurationValid = workflowModelConfigurationIsValid(
+    form,
+    selectedWorkflowDepths,
+    modelProviders,
+    refData.modelCatalog
+  );
   const missingExtra = expectedExtra.filter((k) => !(form.extra[k] && form.extra[k].trim()));
 
   // Severity ranker: concatenate selected rankers' content (in selection order)
@@ -489,6 +529,15 @@ export default function CreateScan() {
       model_provider: form.model_provider,
       harness: form.harness,
       thinking_effort: form.thinking_effort,
+      ...(form.post_processing_model_override
+        ? {
+            post_processing_model: form.post_processing_model,
+            post_processing_model_provider: form.post_processing_model_provider,
+            post_processing_harness: form.post_processing_harness,
+          }
+        : {}),
+      post_processing_thinking_effort: form.post_processing_thinking_effort,
+      model_overrides: form.model_overrides,
       severity_ranker: combinedRanker,
       extra: form.extra,
       jobLimit: form.jobLimit.trim() ? Number(form.jobLimit) : null,
@@ -585,7 +634,7 @@ export default function CreateScan() {
             <SearchSelect
               items={workflowOptions}
               value={form.workflowId}
-              onChange={(id) => set({ workflowId: id })}
+              onChange={setWorkflow}
               placeholder="Search workflows…"
               renderTrigger={(w) => (
                 <span style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
@@ -982,7 +1031,7 @@ export default function CreateScan() {
           {/* ===================== MODEL & HARNESS ===================== */}
           <Label>6 · MODEL &amp; HARNESS</Label>
           <div style={{ marginBottom: 28 }}>
-            <ModelConfiguration
+            <WorkflowModelConfiguration
               value={form}
               onChange={(configuration) => {
                 setDirty(true);
@@ -991,6 +1040,8 @@ export default function CreateScan() {
               providers={modelProviders}
               catalog={refData.modelCatalog}
               catalogError={modelCatalogError}
+              depths={selectedWorkflowDepths}
+              depthChips={selectedWorkflow?.depthChips || []}
             />
           </div>
 

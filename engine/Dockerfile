@@ -12,7 +12,8 @@ COPY --from=node_runtime /usr/local/ /usr/local/
 RUN apt-get update \
     && apt-get install -y --no-install-recommends bash ca-certificates curl git util-linux \
     && npm install --global --no-audit --no-fund npm@12.0.1 \
-    && npm install --global --no-audit --no-fund @openai/codex@0.144.6 \
+    && npm install --global --no-audit --no-fund @openai/codex@0.145.0 \
+    && codex --version \
     && npm install --global --no-audit --no-fund --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code@2.1.215 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
@@ -23,6 +24,7 @@ RUN mkdir -p /run/open-kritt-secrets \
     && chmod 0700 /run/open-kritt-secrets \
     && ln -s /run/open-kritt-secrets/credentials /credentials \
     && ln -s /run/open-kritt-secrets/codex-accounts /codex-accounts \
+    && ln -s /run/open-kritt-secrets/claude-accounts /claude-accounts \
     && ln -s /run/open-kritt-secrets/codex-home-source /codex-home-source \
     && ln -s /run/open-kritt-secrets/local-repos /local_repos
 

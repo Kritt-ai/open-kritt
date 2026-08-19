@@ -1,6 +1,6 @@
 {
   "name": "open-kritt-backend",
-  "version": "1.1.0",
+  "version": "1.4.1",
   "description": "Open-kritt API — Express + Prisma backend serving the workflow/scan UI.",
   "license": "AGPL-3.0-only",
   "type": "module",
@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",
+    "archiver": "8.0.0",
     "cors": "^2.8.5",
     "express": "^5.2.1",
     "pino": "^10.3.1",
