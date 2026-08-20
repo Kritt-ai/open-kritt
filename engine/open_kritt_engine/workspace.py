@@ -1,5 +1,6 @@
 import base64
 import copy
+import errno
 import fcntl
 import hashlib
 import json
@@ -57,6 +58,7 @@ JOB_UID_SPAN = 2_000_000_000
 _SHARED_WORKSPACE_LOCKS: dict[str, threading.Lock] = {}
 _SHARED_WORKSPACE_LOCKS_GUARD = threading.Lock()
 IMAGE_WORKSPACE_MODES = {"image", "snapshot", "snapshot_image"}
+CHECKOUT_CACHE_FALLBACK_DIRNAME = "checkout-cache-fallback"
 
 
 @dataclass(frozen=True)
@@ -1175,21 +1177,57 @@ def _checkout_scan_repo_to_cache(
     commit_sha: str,
     github_token: str | None,
     scan_id: Any | None,
+    allow_fallback: bool = True,
 ) -> tuple[str, str]:
     cache_base = _checkout_cache_base(cache_dir, repo_full, commit_sha, kind=kind, scan_id=scan_id)
-    ready = _read_ready_cache_checkout(cache_base)
-    if ready is not None:
-        return ready
+    try:
+        ready = _read_ready_cache_checkout(cache_base)
+        if ready is not None:
+            return ready
 
-    if cache_base.exists():
-        shutil.rmtree(cache_base)
+        if cache_base.exists():
+            shutil.rmtree(cache_base)
 
-    if kind == "local":
-        repo_dir, checked_out = snapshot_local_repo(repo_full, str(cache_base), os.getenv("LOCAL_REPOS_PATH"))
-    else:
-        repo_dir, checked_out = checkout_repo(repo_full, commit_sha, str(cache_base), github_token)
-    _write_ready_cache_checkout(cache_base, repo_dir, checked_out, kind=kind)
-    return repo_dir, checked_out
+        if kind == "local":
+            repo_dir, checked_out = snapshot_local_repo(repo_full, str(cache_base), os.getenv("LOCAL_REPOS_PATH"))
+        else:
+            repo_dir, checked_out = checkout_repo(repo_full, commit_sha, str(cache_base), github_token)
+        _write_ready_cache_checkout(cache_base, repo_dir, checked_out, kind=kind)
+        return repo_dir, checked_out
+    except OSError as exc:
+        if not allow_fallback or exc.errno not in {errno.EACCES, errno.EPERM, errno.EROFS}:
+            raise
+        fallback_dir = _fallback_checkout_cache_dir(cache_dir)
+        if fallback_dir is None:
+            raise
+        shutil.rmtree(cache_base, ignore_errors=True)
+        LOGGER.warning(
+            "checkout cache %s is not writable; retrying %s at %s in fallback cache %s",
+            cache_dir,
+            repo_full,
+            commit_sha,
+            fallback_dir,
+        )
+        return _checkout_scan_repo_to_cache(
+            cache_dir=fallback_dir,
+            kind=kind,
+            repo_full=repo_full,
+            commit_sha=commit_sha,
+            github_token=github_token,
+            scan_id=scan_id,
+            allow_fallback=False,
+        )
+
+
+def _fallback_checkout_cache_dir(cache_dir: Path) -> Path | None:
+    fallback_dir = Path(os.getenv("ENGINE_DATA_DIR", "/data")) / CHECKOUT_CACHE_FALLBACK_DIRNAME
+    try:
+        if fallback_dir.resolve(strict=False) == cache_dir.resolve(strict=False):
+            return None
+    except (OSError, RuntimeError):
+        if fallback_dir == cache_dir:
+            return None
+    return _checkout_cache_dir(str(fallback_dir))
 
 
 def _read_ready_cache_checkout(cache_base: Path) -> tuple[str, str] | None:

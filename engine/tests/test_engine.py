@@ -1,3 +1,4 @@
+import errno
 import json
 import shutil
 import subprocess
@@ -721,6 +722,36 @@ def test_prewarm_scan_checkout_cache_only_populates_cache(monkeypatch, tmp_path)
     assert all(str(tmp_path / "cache") in call[2] for call in calls)
     assert manifest["primary"]["commit"] == "commit-repo"
     assert manifest["dependencies"][0]["commit"] == "commit-agave"
+
+
+def test_checkout_cache_falls_back_when_configured_cache_is_read_only(monkeypatch, tmp_path):
+    configured_cache = tmp_path / "configured-cache"
+    configured_cache.mkdir()
+    data_dir = tmp_path / "data"
+    monkeypatch.setenv("ENGINE_DATA_DIR", str(data_dir))
+    calls = []
+
+    def fake_checkout_repo(repo_full, commit_sha, base_dir, github_token=None):
+        base_path = Path(base_dir)
+        calls.append(base_path)
+        if configured_cache in base_path.parents:
+            raise OSError(errno.EROFS, "Read-only file system", base_path)
+        path = base_path / repo_full.replace("/", "__")
+        path.mkdir(parents=True)
+        (path / ".git").mkdir()
+        (path / "repo.txt").write_text(repo_full, encoding="utf-8")
+        return str(path), "commit-repo"
+
+    monkeypatch.setattr(workspace_module, "checkout_repo", fake_checkout_repo)
+    monkeypatch.setattr(workspace_module, "_git_head_commit", fake_cache_git_head)
+
+    manifest = prewarm_scan_checkout_cache(checkout_cache_dir=str(configured_cache), scan=scan())
+
+    fallback = data_dir / workspace_module.CHECKOUT_CACHE_FALLBACK_DIRNAME
+    assert calls[0] == configured_cache / "owner__repo@HEAD"
+    assert calls[1] == fallback / "owner__repo@HEAD"
+    assert Path(manifest["primary"]["cache_path"]).is_relative_to(fallback)
+    assert manifest["primary"]["commit"] == "commit-repo"
 
 
 def test_ready_checkout_cache_skips_fetch_and_uses_shared_clone(monkeypatch, tmp_path):
