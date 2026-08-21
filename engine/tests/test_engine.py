@@ -1396,6 +1396,14 @@ def test_claude_harness_can_route_glm_through_openrouter(monkeypatch, tmp_path):
     assert captured["env"]["ANTHROPIC_BASE_URL"] == "https://openrouter.ai/api"
     assert captured["env"]["ANTHROPIC_AUTH_TOKEN"] == "or-key"
     assert captured["env"]["ANTHROPIC_API_KEY"] == ""
+    for key in harnesses.CLAUDE_OPENROUTER_MODEL_ENV_KEYS:
+        assert captured["env"][key] == "z-ai/glm-5.2"
+    settings = json.loads(captured["cmd"][captured["cmd"].index("--settings") + 1])
+    assert settings == {
+        "availableModels": ["z-ai/glm-5.2"],
+        "enforceAvailableModels": True,
+        "model": "z-ai/glm-5.2",
+    }
     # The subprocess environment is authoritative in both containers and local
     # development; credentials must never be serialized into process arguments.
     if captured["cmd"][:3] == ["runuser", "-u", "nobody"]:

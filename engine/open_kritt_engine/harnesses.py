@@ -178,6 +178,15 @@ OPENROUTER_MODEL_ALIASES = {
     "glm-5.2": "z-ai/glm-5.2",
     "grok-4.5": "x-ai/grok-4.5",
 }
+CLAUDE_OPENROUTER_MODEL_ENV_KEYS = (
+    "ANTHROPIC_MODEL",
+    "ANTHROPIC_DEFAULT_MODEL",
+    "ANTHROPIC_DEFAULT_FABLE_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "CLAUDE_CODE_SUBAGENT_MODEL",
+)
 CLAUDE_MODEL_ALIASES = {
     "opus-4.7": "claude-opus-4-7",
     "opus-4.8": "claude-opus-4-8",
@@ -849,6 +858,7 @@ def _scan_docker_command(
         "ANTHROPIC_BASE_URL",
         "ANTHROPIC_AUTH_TOKEN",
         "ANTHROPIC_API_KEY",
+        *CLAUDE_OPENROUTER_MODEL_ENV_KEYS,
         "CODEX_MODEL_PROVIDER",
         "CLAUDE_CODE_MODEL_PROVIDER",
         "CURSOR_API_KEY",
@@ -999,9 +1009,12 @@ def _claude_env(env: dict[str, str], model: str, model_provider: str | None = No
     if claude_model_provider(model, actual_env, model_provider) == "openrouter":
         if not actual_env.get("OPENROUTER_API_KEY"):
             raise HarnessError("OPENROUTER_API_KEY is required when model provider is openrouter")
+        routed_model = OPENROUTER_MODEL_ALIASES.get(model, model)
         actual_env["ANTHROPIC_BASE_URL"] = actual_env.get("ANTHROPIC_BASE_URL") or OPENROUTER_CLAUDE_BASE_URL
         actual_env["ANTHROPIC_AUTH_TOKEN"] = actual_env.get("ANTHROPIC_AUTH_TOKEN") or actual_env["OPENROUTER_API_KEY"]
         actual_env["ANTHROPIC_API_KEY"] = ""
+        for key in CLAUDE_OPENROUTER_MODEL_ENV_KEYS:
+            actual_env[key] = routed_model
     return actual_env
 
 
@@ -1710,6 +1723,20 @@ class ClaudeHarness:
             "--append-system-prompt",
             CLAUDE_WORKSPACE_SYSTEM_PROMPT if allow_tools else CLAUDE_GENERATION_SYSTEM_PROMPT,
         ]
+        if provider == "openrouter":
+            cmd.extend(
+                [
+                    "--settings",
+                    json.dumps(
+                        {
+                            "availableModels": [model],
+                            "enforceAvailableModels": True,
+                            "model": model,
+                        },
+                        separators=(",", ":"),
+                    ),
+                ]
+            )
         if allow_tools:
             cmd.extend(["--dangerously-skip-permissions", "--tools", "default"])
         else:
