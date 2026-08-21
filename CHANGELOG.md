@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.5.0](https://github.com/Kritt-ai/open-kritt/compare/v1.4.1...v1.5.0) (2026-08-21)
+
+
+### Features
+
+* added post-scripts re-runs ([0a44d0c](https://github.com/Kritt-ai/open-kritt/commit/0a44d0c43e37d9ac5cfe10307ed84ba03f60ff52))
+* attach workflow context as workspace files ([a06b1ee](https://github.com/Kritt-ai/open-kritt/commit/a06b1ee503cc9d4d4a632c7bb709da7d2644b405))
+* attach workflow context as workspace files ([52ade8d](https://github.com/Kritt-ai/open-kritt/commit/52ade8d1dbb6792715175e464e350cb7267f8010))
+* deduplicate step 3 candidates ([aceb53f](https://github.com/Kritt-ai/open-kritt/commit/aceb53f6466eb2153d606959163536b88c7a763b))
+* **engine:** add OpenRouter Ox Alpha efforts ([5512556](https://github.com/Kritt-ai/open-kritt/commit/55125561bb5f4ba42c8c23d8486fd2c24aca0335))
+* **engine:** add OpenRouter Ox Alpha efforts ([8ef7213](https://github.com/Kritt-ai/open-kritt/commit/8ef7213ab0b3d3edb9ac2d968c54d4c0d90d1fe9))
+
+
+### Bug Fixes
+
+* **cli:** fall back to a visible secret prompt when raw mode is unavailable ([#63](https://github.com/Kritt-ai/open-kritt/issues/63)) ([7556458](https://github.com/Kritt-ai/open-kritt/commit/7556458d8aa7461eebbe849a837be9c0b298b59c))
+* **compose:** separate engine and runner image tags ([#84](https://github.com/Kritt-ai/open-kritt/issues/84)) ([69c9ad4](https://github.com/Kritt-ai/open-kritt/commit/69c9ad4e670e780f9b36e282928ab969f03f793d)), closes [#42](https://github.com/Kritt-ai/open-kritt/issues/42)
+* **engine:** pin OpenRouter Claude harness models ([5e46b7b](https://github.com/Kritt-ai/open-kritt/commit/5e46b7b57e88b0aa71fcb86bcc86d888d4fe72bd))
+* **engine:** pin OpenRouter Claude harness models ([9c97455](https://github.com/Kritt-ai/open-kritt/commit/9c9745555b07616ef65a25300d1c970d06aefc62))
+* **engine:** prune only dangling images so tagged scan runners survive ([cd312b1](https://github.com/Kritt-ai/open-kritt/commit/cd312b1de41111f7763a00b7b4f3a0f1729f6d78))
+* post scripts re-runs for failed should run only once ([baf69f1](https://github.com/Kritt-ai/open-kritt/commit/baf69f1af77f5e6a0d901c8a2e977d8fa6d97d5d))
+
 ## [1.4.1](https://github.com/Kritt-ai/open-kritt/compare/v1.4.0...v1.4.1) (2026-08-16)
 
 
