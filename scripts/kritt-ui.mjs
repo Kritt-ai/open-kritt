@@ -6,7 +6,9 @@ import {
   CLAUDE_LOGIN,
   CODEX_LOGIN,
   ENVIRONMENT_ITEMS,
+  checkDockerEnvironment,
   disableManagedProviderCredential,
+  dockerEnvironmentMessage,
   UserCancelledError,
   ensureEnvFile,
   getSetupStatus,
@@ -659,6 +661,20 @@ async function confirmExternalDestination(terminal, context, targetPath) {
   });
 }
 
+// Suspending swaps back to the normal screen buffer, and resuming hides it again, so
+// anything the login prints there is gone by the time a notice appears. Report a Docker
+// problem before that happens.
+async function dockerReady(terminal, context, title) {
+  const preflight = await checkDockerEnvironment({ rootDir: context.rootDir, runner: context.runner });
+  if (preflight.ok) return true;
+  await terminal.notice({
+    title,
+    subtitle: 'Docker is not ready',
+    message: dockerEnvironmentMessage(preflight),
+  });
+  return false;
+}
+
 async function manageCodexLogin(terminal, context) {
   while (true) {
     const status = await getSetupStatus(context);
@@ -732,6 +748,7 @@ async function manageCodexLogin(terminal, context) {
       continue;
     }
     if (!(await confirmExternalDestination(terminal, context, dirname(targetPath)))) continue;
+    if (!(await dockerReady(terminal, context, CODEX_LOGIN.label))) continue;
     await terminal.suspend();
     let result = { ok: false, message: 'Codex login did not complete.' };
     try {
@@ -793,6 +810,7 @@ async function manageClaudeLogin(terminal, context) {
       continue;
     }
 
+    if (!(await dockerReady(terminal, context, CLAUDE_LOGIN.label))) continue;
     await terminal.suspend();
     let saved = false;
     try {

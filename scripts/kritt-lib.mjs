@@ -15,6 +15,11 @@ const CODEX_LOGIN_CONTAINER_USER_HOME = '/open-kritt-login';
 const CODEX_LOGIN_CONTAINER_HOME = `${CODEX_LOGIN_CONTAINER_USER_HOME}/.codex`;
 const CODEX_LOGIN_CONTAINER_BOOTSTRAP =
   'umask 077; mkdir -p "$HOME" "$CODEX_HOME" && chmod 700 "$HOME" "$CODEX_HOME" && exec codex "$@"';
+const MAX_CAPTURED_OUTPUT = 64 * 1024;
+const DOCKER_INSTALL_HINT = 'Install Docker Desktop, or Docker Engine with the Docker Compose plugin, then try again.';
+
+// `docker compose run --build` backs both guided logins and arrived in Compose 2.13.0.
+export const MINIMUM_COMPOSE_VERSION = '2.13.0';
 
 export const ENVIRONMENT_ITEMS = [
   {
@@ -756,6 +761,17 @@ export function createPrompter(io) {
 export async function runCommand(command, args, options = {}) {
   return new Promise((resolveCommand, rejectCommand) => {
     const child = spawn(command, args, { cwd: options.cwd, stdio: options.stdio || 'inherit' });
+    const captured = { stdout: '', stderr: '' };
+    const capture = (stream, key) => {
+      if (!stream) return;
+      stream.setEncoding('utf8');
+      stream.on('data', (chunk) => {
+        if (captured[key].length >= MAX_CAPTURED_OUTPUT) return;
+        captured[key] = `${captured[key]}${chunk}`.slice(0, MAX_CAPTURED_OUTPUT);
+      });
+    };
+    capture(child.stdout, 'stdout');
+    capture(child.stderr, 'stderr');
     const abortSignal = options.signal;
     const removeAbortListener = () => abortSignal?.removeEventListener('abort', onAbort);
     const onAbort = () => {
@@ -770,7 +786,7 @@ export async function runCommand(command, args, options = {}) {
     });
     child.once('close', (code, signal) => {
       removeAbortListener();
-      resolveCommand({ code: code ?? 1, signal });
+      resolveCommand({ code: code ?? 1, signal, ...captured });
     });
   });
 }
@@ -924,7 +940,106 @@ async function removeLoginContainer(runner, rootDir, containerName, io) {
   }
 }
 
+function versionNumbers(text) {
+  const match = /(\d+)\.(\d+)(?:\.(\d+))?/.exec(text || '');
+  return match ? [Number(match[1]), Number(match[2]), Number(match[3] ?? 0)] : null;
+}
+
+function isOlderVersion(candidate, minimum) {
+  for (let index = 0; index < minimum.length; index += 1) {
+    const left = candidate[index] ?? 0;
+    const right = minimum[index] ?? 0;
+    if (left !== right) return left < right;
+  }
+  return false;
+}
+
+function firstLine(text) {
+  return (text || '')
+    .split('\n')
+    .map((line) => line.trim())
+    .find((line) => line.length > 0);
+}
+
+// Docker prints the useful part of a failure on the first line; keep it as a sentence so
+// issue messages stay readable both in the plain CLI and in a fullscreen notice.
+function commandDetail(result) {
+  const line = firstLine(result?.stderr) || firstLine(result?.stdout);
+  if (!line) return '';
+  const detail = line.replace(/\s+/g, ' ').slice(0, 300);
+  return /[.!?]$/.test(detail) ? `${detail} ` : `${detail}. `;
+}
+
+/**
+ * Verifies the Docker environment this project actually needs: a reachable daemon, a
+ * Compose plugin new enough for the flags the CLI passes, and a Compose project the
+ * plugin can parse. Without it, an old or stopped Docker surfaces as an unexplained
+ * login or startup failure.
+ */
+export async function checkDockerEnvironment({ rootDir, runner = runCommand } = {}) {
+  const issues = [];
+  const probe = (args) => runner('docker', args, { cwd: rootDir, stdio: 'pipe' });
+  let serverVersion = null;
+  let composeVersion = null;
+
+  try {
+    const daemon = await probe(['version', '--format', '{{.Server.Version}}']);
+    serverVersion = daemon.code === 0 ? firstLine(daemon.stdout) || null : null;
+    if (daemon.code !== 0) {
+      issues.push({
+        code: 'daemon_unreachable',
+        message: `The Docker daemon is not reachable. ${commandDetail(daemon)}Start Docker Desktop or the docker service, and check "docker context ls" when more than one Docker is installed.`,
+      });
+    }
+
+    const compose = await probe(['compose', 'version', '--short']);
+    if (compose.code !== 0) {
+      issues.push({
+        code: 'compose_missing',
+        message: `The Docker Compose plugin is not available. ${commandDetail(compose)}${DOCKER_INSTALL_HINT}`,
+      });
+      return { ok: false, issues, serverVersion, composeVersion };
+    }
+
+    composeVersion = (firstLine(compose.stdout) || '').replace(/^v/, '') || null;
+    const numbers = versionNumbers(composeVersion);
+    if (numbers && isOlderVersion(numbers, versionNumbers(MINIMUM_COMPOSE_VERSION))) {
+      issues.push({
+        code: 'compose_outdated',
+        message: `Docker Compose ${composeVersion} is too old for open-kritt, which needs ${MINIMUM_COMPOSE_VERSION} or newer: the guided logins run "docker compose run --build". Update Docker, then try again.`,
+      });
+      return { ok: false, issues, serverVersion, composeVersion };
+    }
+
+    const project = await probe(['compose', 'config', '-q']);
+    if (project.code !== 0) {
+      issues.push({
+        code: 'project_invalid',
+        message: `Docker Compose could not read this project. ${commandDetail(project)}Update Docker Compose to a current release, or correct the reported docker-compose.yml or .env value, then try again.`,
+      });
+    }
+  } catch (error) {
+    issues.push({ code: 'docker_missing', message: `${error.message}. ${DOCKER_INSTALL_HINT}` });
+  }
+
+  return { ok: issues.length === 0, issues, serverVersion, composeVersion };
+}
+
+export function dockerEnvironmentMessage(preflight) {
+  return preflight.issues.map((issue) => issue.message).join(' ');
+}
+
+async function dockerEnvironmentBlocked({ io, rootDir, runner }) {
+  const preflight = await checkDockerEnvironment({ rootDir, runner });
+  if (preflight.ok) return null;
+  for (const issue of preflight.issues) writeError(io, issue.message);
+  return preflight;
+}
+
 export async function saveDockerCodexLogin({ io, rootDir, runner = runCommand, signalSource = process, targetPath }) {
+  const blocked = await dockerEnvironmentBlocked({ io, rootDir, runner });
+  if (blocked) return failedAuthResult('docker_unavailable', dockerEnvironmentMessage(blocked));
+
   const directoryResult = await ensureCodexHomeDirectory(dirname(targetPath), rootDir);
   if (!directoryResult.ok) {
     writeError(io, directoryResult.message);
@@ -1031,6 +1146,8 @@ export async function saveDockerCodexLogin({ io, rootDir, runner = runCommand, s
 }
 
 export async function saveDockerClaudeLogin({ io, rootDir, runner = runCommand, home }) {
+  if (await dockerEnvironmentBlocked({ io, rootDir, runner })) return false;
+
   await mkdir(home, { recursive: true, mode: 0o700 });
   write(
     io,
@@ -1234,6 +1351,8 @@ export async function runStart(options = {}) {
     return 1;
   }
 
+  if (await dockerEnvironmentBlocked(context)) return 1;
+
   write(context.io, 'Starting open-kritt. Press Ctrl+C to stop the stack.');
   try {
     const result = await context.runner('docker', ['compose', 'up', '--build'], {
@@ -1262,14 +1381,14 @@ Creates .env from .env.example when it does not exist, shows credential status, 
 
 Configure one model provider key or a saved Codex or Claude login. GITHUB_TOKEN is optional and only needed for private GitHub repositories.
 
-The Codex and Claude login flows use temporary engine containers and persist their provider credentials in the same homes monitored by Accounts. OpenRouter keys are saved in .env and mirrored to the managed credential store used by running services.
+The Codex and Claude login flows use temporary engine containers and persist their provider credentials in the same homes monitored by Accounts. Both check first that Docker is running, that the Docker Compose plugin is ${MINIMUM_COMPOSE_VERSION} or newer, and that Compose can read this project, so an unusable Docker is reported instead of an empty login. OpenRouter keys are saved in .env and mirrored to the managed credential store used by running services.
 
 The recommended Codex flow uses device authentication (no localhost callback) and saves auth.json with host-user ownership and private permissions.
 
 Run ./kritt as your normal user, not with sudo. Use Import local login instead of copying auth.json by hand.`,
   start: `Usage: ./kritt start
 
-Checks that .env and at least one model provider credential or Codex login are configured, then runs:
+Checks that .env and at least one model provider credential or Codex login are configured, that the Docker daemon is reachable, that the Docker Compose plugin is ${MINIMUM_COMPOSE_VERSION} or newer, and that Compose can read this project, then runs:
 
   docker compose up --build
 

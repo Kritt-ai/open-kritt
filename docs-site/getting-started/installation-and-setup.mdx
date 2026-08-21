@@ -10,7 +10,7 @@ the stack. It does not need an npm install step.
 ## Prerequisites
 
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/), or Docker Engine with
-  the Docker Compose plugin
+  the Docker Compose plugin, version 2.13.0 or newer (`docker compose version`)
 - Git
 - Node.js 20 or newer for the repository-local CLI
 
@@ -70,6 +70,21 @@ user:
 docker info >/dev/null
 docker compose version
 ```
+
+### The Docker preflight check
+
+`./kritt start` and both guided logins verify Docker before they run anything, and stop
+with the reason when they cannot:
+
+| Reported problem | What to do |
+| --- | --- |
+| The Docker daemon is not reachable | Start Docker Desktop or the `docker` service. When more than one Docker is installed, check that `docker context ls` selects the running one. |
+| The Docker Compose plugin is not available | Install the Compose plugin, or Docker Desktop, and confirm `docker compose version` works. |
+| Docker Compose is too old | Update Docker. The guided logins run `docker compose run --build`, which needs Compose 2.13.0 or newer. |
+| Docker Compose could not read this project | Usually an outdated Compose that cannot parse `docker-compose.yml`; the message quotes the value it rejected. Update Docker, or correct the reported `docker-compose.yml` or `.env` entry. |
+
+Before this check existed, a stopped or outdated Docker surfaced only as a login that
+saved nothing.
 
 If Docker requires `sudo`, configure [non-root Docker access](https://docs.docker.com/engine/install/linux-postinstall/)
 or use [rootless Docker](https://docs.docker.com/engine/security/rootless/) before running
@@ -162,7 +177,7 @@ credential, how it is billed, which harness it enables, and how to verify it.
 | --- | --- |
 | `./kritt` | Open the full-screen interactive menu. Arrow keys navigate, Enter selects, and Esc or Ctrl+C exits. |
 | `./kritt setup` | Create `.env` when needed and configure model access or the optional GitHub token. |
-| `./kritt start` | Check setup, then run `docker compose up --build`. Ctrl+C stops the attached stack. |
+| `./kritt start` | Check setup and Docker, then run `docker compose up --build`. Ctrl+C stops the attached stack. |
 | `./kritt help` | Show command guidance. Use `./kritt help setup` or `./kritt help start` for a specific command. |
 | `./kritt-headless` | Operate a running stack without the web UI: import resources, create and inspect scans, configure settings, and export results. |
 | `./kritt-headless help` | Show headless interactive and command-mode usage. |
