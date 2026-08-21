@@ -662,3 +662,33 @@ test('validateScan enforces model provider and harness compatibility after norma
     );
   }
 });
+
+test('validatePostScript rejects duplicate keys in array-form output format', () => {
+  assert.throws(
+    () =>
+      validatePostScript({
+        name: 'duplicate-output',
+        content: 'Analyze {{summary}}.',
+        outputFormat: [
+          { key: '_chip_risk', type: 'string' },
+          { key: '_chip_risk', type: 'number' },
+        ],
+      }),
+    (error) =>
+      error instanceof ValidationError &&
+      error.errors.some((item) => item.field === 'outputFormat' && item.message.includes('duplicate output key'))
+  );
+});
+
+test('validateWorkflow rejects duplicate keys in an array-form level output format', () => {
+  const workflow = workflowWithTerminal([
+    { key: 'summary', type: 'string' },
+    { key: 'summary', type: 'number' },
+  ]);
+  assert.throws(
+    () => validateWorkflow(workflow),
+    (error) =>
+      error instanceof ValidationError &&
+      error.errors.some((item) => item.message.includes('duplicate output key'))
+  );
+});
