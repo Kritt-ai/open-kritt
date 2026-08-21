@@ -325,6 +325,31 @@ def test_fetch_openrouter_models_uses_account_catalog_and_keeps_all_text_models(
     assert timeout == 2
 
 
+def test_fetch_openrouter_models_pins_ox_alpha_thinking_efforts(monkeypatch):
+    entries = [
+        _openrouter_model("z-ai/glm-5.2", name="Z.ai GLM 5.2"),
+        _openrouter_model(
+            "stealth/ox-alpha",
+            name="Ox Alpha",
+            reasoning={"mandatory": True, "supported_efforts": ["low", "high"]},
+        ),
+    ]
+    monkeypatch.setattr(
+        model_catalog,
+        "urlopen",
+        lambda *_args, **_kwargs: io.BytesIO(json.dumps({"data": entries}).encode("utf-8")),
+    )
+
+    models, _default_model = fetch_openrouter_models("openrouter-test-key", 2)
+
+    assert models[1] == {
+        "id": "stealth/ox-alpha",
+        "label": "Ox Alpha",
+        "thinkingEfforts": ["low", "high", "max"],
+        "isDefault": False,
+    }
+
+
 def test_fetch_openrouter_models_uses_provider_default_or_all_gateway_efforts(monkeypatch):
     entries = [
         _openrouter_model(

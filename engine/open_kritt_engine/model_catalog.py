@@ -24,6 +24,9 @@ LOGGER = logging.getLogger("open_kritt_engine")
 ANTHROPIC_MODELS_URL = "https://api.anthropic.com/v1/models"
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models/user"
 OPENROUTER_DEFAULT_MODEL_ID = "z-ai/glm-5.2"
+OPENROUTER_MODEL_THINKING_EFFORTS = {
+    "stealth/ox-alpha": ("low", "high", "max"),
+}
 CATALOG_REFRESH_ERROR = "Unable to refresh the provider model catalog."
 MAX_CATALOG_MODELS = 500
 MAX_CATALOG_PAGES = 10
@@ -421,11 +424,14 @@ def fetch_openrouter_models(api_key: str, timeout_seconds: float) -> tuple[list[
         if not model_id or model_id in seen_ids:
             continue
         seen_ids.add(model_id)
+        thinking_efforts = OPENROUTER_MODEL_THINKING_EFFORTS.get(model_id)
         entries.append(
             {
                 "model": model_id,
                 "displayName": raw.get("name"),
-                "supportedReasoningEfforts": _openrouter_thinking_efforts(raw),
+                "supportedReasoningEfforts": (
+                    list(thinking_efforts) if thinking_efforts else _openrouter_thinking_efforts(raw)
+                ),
                 "isDefault": model_id == OPENROUTER_DEFAULT_MODEL_ID,
             }
         )
