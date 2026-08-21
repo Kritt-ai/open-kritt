@@ -85,6 +85,21 @@ class ScriptedTerminal {
   }
 }
 
+// Answers the Docker preflight probes as a healthy host, so these tests exercise the
+// interactive flow rather than the environment check covered in kritt.test.mjs.
+function dockerRunner(handler) {
+  return async (command, args, options) => {
+    if (command === 'docker' && args[0] === 'version') return { code: 0, stdout: '27.3.1\n', stderr: '' };
+    if (command === 'docker' && args[0] === 'compose' && args[1] === 'version') {
+      return { code: 0, stdout: '2.29.7\n', stderr: '' };
+    }
+    if (command === 'docker' && args[0] === 'compose' && args[1] === 'config') {
+      return { code: 0, stdout: '', stderr: '' };
+    }
+    return handler(command, args, options);
+  };
+}
+
 async function createProject(t) {
   const rootDir = await mkdtemp(join(tmpdir(), 'open-kritt-ui-'));
   const templateFile = join(rootDir, '.env.example');
@@ -320,10 +335,10 @@ test('interactive Codex login reports a failed container run without crashing', 
   const result = await runInteractiveCli({
     ...project,
     terminal,
-    runner: async (command, args) => {
+    runner: dockerRunner(async (command, args) => {
       commands.push({ args, command });
       return { code: args[0] === 'compose' ? 1 : 0 };
-    },
+    }),
   });
 
   assert.deepEqual(result, { code: 0 });
@@ -360,4 +375,45 @@ test('TTY detection rejects piped and dumb terminals', () => {
   assert.equal(isInteractiveTerminal({ input, output }, 'xterm-256color'), true);
   assert.equal(isInteractiveTerminal({ input: {}, output }, 'xterm-256color'), false);
   assert.equal(isInteractiveTerminal({ input, output }, 'dumb'), false);
+});
+
+test('interactive Claude login reports a stopped Docker without suspending the terminal', async (t) => {
+  const project = await createProject(t);
+  const commands = [];
+  const terminal = new ScriptedTerminal({
+    choices: ['setup', 'claude-login', 'login', 'back', 'back', 'back'],
+  });
+
+  const result = await runInteractiveCli({
+    ...project,
+    terminal,
+    runner: async (command, args) => {
+      if (args[0] === 'version') {
+        return {
+          code: 1,
+          stdout: '',
+          stderr: 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?\n',
+        };
+      }
+      commands.push(args);
+      return { code: 0, stdout: '2.29.7\n', stderr: '' };
+    },
+  });
+
+  assert.deepEqual(result, { code: 0 });
+  const notice = terminal.notices.find((item) => item.title === 'Claude login');
+  assert.equal(notice.subtitle, 'Docker is not ready');
+  assert.match(notice.message, /The Docker daemon is not reachable/);
+  assert.match(notice.message, /Cannot connect to the Docker daemon/);
+  assert.equal(
+    terminal.calls.some((call) => call === 'suspend'),
+    false
+  );
+  assert.deepEqual(
+    commands.map((args) => args.slice(0, 2)),
+    [
+      ['compose', 'version'],
+      ['compose', 'config'],
+    ]
+  );
 });
