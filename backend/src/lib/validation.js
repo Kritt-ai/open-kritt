@@ -32,6 +32,7 @@ import {
   hasMalformedTemplateRefs,
   parseRefs,
   normalizeOutputFormat,
+  duplicateOutputFormatKeys,
   refResolves,
   extractExtraKeys,
   multiOutputDepthKey,
@@ -272,6 +273,9 @@ export function validateWorkflow(body) {
     let outputFormat = {};
     try {
       outputFormat = normalizeOutputFormat(lvl?.outputFormat ?? {});
+      for (const key of duplicateOutputFormatKeys(lvl?.outputFormat ?? {})) {
+        push(`levels[${i}].outputFormat`, `"${key}" is used more than once in this output format.`);
+      }
     } catch {
       push(`levels[${i}].outputFormat`, 'Output format is not valid JSON.');
     }
@@ -577,6 +581,9 @@ export function validatePostScript(body) {
   let outputFormat = {};
   try {
     outputFormat = normalizeOutputFormat(body?.outputFormat ?? {});
+    for (const key of duplicateOutputFormatKeys(body?.outputFormat ?? {})) {
+      push('outputFormat', `"${key}" is a duplicate output key.`);
+    }
   } catch {
     push('outputFormat', 'Output format is not valid JSON.');
   }
