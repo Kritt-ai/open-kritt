@@ -1,4 +1,4 @@
-FROM postgres:16.4-alpine3.20
+FROM postgres:17.5-alpine3.20
 
 RUN apk add --no-cache musl-locales musl-locales-lang tzdata
 
