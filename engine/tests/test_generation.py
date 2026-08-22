@@ -561,7 +561,7 @@ def test_tool_free_codex_command_disables_search_and_execution_features():
     assert not any(value.startswith("model_provider=") for value in tool_free)
     assert "--search" in scan_mode
     assert "--dangerously-bypass-approvals-and-sandbox" in scan_mode
-    assert "agents.max_concurrent_threads_per_session=5" in scan_mode
+    assert "agents.max_threads=5" in scan_mode
     assert not any(value.startswith("model_provider=") for value in scan_mode)
 
     provider_default = codex_exec_command(

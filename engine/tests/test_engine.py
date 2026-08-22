@@ -1042,7 +1042,7 @@ def test_codex_harness_uses_dangerous_permissions_and_web_search(monkeypatch):
     assert result.payload == marked({"stub": True, "stub_explanation": "No matching records.", "results": []})
     assert captured["cmd"][:3] == ["codex", "--search", "exec"]
     assert "--dangerously-bypass-approvals-and-sandbox" in captured["cmd"]
-    assert "agents.max_concurrent_threads_per_session=5" in captured["cmd"]
+    assert "agents.max_threads=5" in captured["cmd"]
     assert "--ephemeral" not in captured["cmd"]
     assert "--sandbox" not in captured["cmd"]
 
@@ -1277,7 +1277,7 @@ def test_codex_harness_resumes_corrupted_session_for_json(monkeypatch, tmp_path)
     assert result.usage["total_tokens"] == 7
     assert calls[1][:3] == ["codex", "exec", "resume"]
     assert calls[1][-2:] == ["session-bad", "-"]
-    assert "agents.max_concurrent_threads_per_session=5" in calls[1]
+    assert "agents.max_threads=5" in calls[1]
     assert 'model_provider="openrouter"' in calls[1]
     assert 'model_reasoning_effort="medium"' in calls[1]
     assert EXTRACTOR_HELPER_FIELD in prompts[1]
