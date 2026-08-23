@@ -194,6 +194,104 @@ test('Claude account refresh renews each rejected managed account in its own hom
   );
 });
 
+test('xAI account refresh marks Grok-rejected device logins as requiring sign-in', async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  globalThis.fetch = async () => ({
+    ok: true,
+    async json() {
+      return {
+        kind: 'xai',
+        accounts: [
+          {
+            id: 'primary',
+            path: '/untrusted/primary',
+            active: true,
+            statusKind: 'available',
+          },
+          {
+            id: 'reviewer',
+            path: '/untrusted/reviewer',
+            active: true,
+            statusKind: 'available',
+          },
+          {
+            id: 'xai-api-key',
+            path: 'XAI_API_KEY',
+            active: true,
+            statusKind: 'available',
+          },
+        ],
+      };
+    },
+  });
+  const probedHomes = [];
+
+  const provider = await fetchExecutorProvider('xai', {
+    refresh: true,
+    executorViewUrl: 'http://executor-view:8090',
+    internalToken: 'backend-only-token',
+    grokHome: '/provider-homes/grok',
+    grokAccountsRoot: '/provider-homes/grok-accounts',
+    probeGrokLogin: async (home) => {
+      probedHomes.push(home);
+      return {
+        statusKind: home.endsWith('/reviewer/.grok') ? 'expired' : 'available',
+      };
+    },
+  });
+
+  assert.deepEqual(probedHomes, ['/provider-homes/grok', '/provider-homes/grok-accounts/reviewer/.grok']);
+  assert.deepEqual(provider.accounts[1], {
+    id: 'reviewer',
+    path: '/untrusted/reviewer',
+    active: false,
+    status: 'sign-in required',
+    statusKind: 'expired',
+    authError: 'Grok rejected the saved login.',
+  });
+  assert.equal(provider.accounts[0].statusKind, 'available');
+  assert.equal(provider.accounts[2].statusKind, 'available');
+});
+
+test('xAI account status does not run Grok or trust account paths without an explicit refresh', async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  globalThis.fetch = async () => ({
+    ok: true,
+    async json() {
+      return {
+        kind: 'xai',
+        accounts: [
+          {
+            id: '../../escape',
+            path: '/attacker/chosen',
+            active: true,
+            statusKind: 'available',
+          },
+        ],
+      };
+    },
+  });
+  let probeCount = 0;
+
+  const provider = await fetchExecutorProvider('xai', {
+    executorViewUrl: 'http://executor-view:8090',
+    internalToken: 'backend-only-token',
+    probeGrokLogin: async () => {
+      probeCount += 1;
+      return { statusKind: 'expired' };
+    },
+  });
+
+  assert.equal(probeCount, 0);
+  assert.equal(provider.accounts[0].statusKind, 'available');
+});
+
 test('executor account integration fails closed when its internal token is unavailable', async (t) => {
   const originalFetch = globalThis.fetch;
   t.after(() => {
