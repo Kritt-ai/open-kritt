@@ -61,12 +61,9 @@ const modelCatalog = configuredModelCatalog({
 
 describe('configuredModelProviders', () => {
   it('uses only supported provider IDs returned by the API', () => {
-    expect(configuredModelProviders({ providers: ['OPENROUTER', 'unknown', 'claude', 'codex', 'codex', 'xai'] })).toEqual([
-      'codex',
-      'claude',
-      'openrouter',
-      'xai',
-    ]);
+    expect(
+      configuredModelProviders({ providers: ['OPENROUTER', 'unknown', 'claude', 'codex', 'codex', 'xai'] })
+    ).toEqual(['codex', 'claude', 'openrouter', 'xai']);
   });
 
   it('handles empty and malformed availability responses', () => {
