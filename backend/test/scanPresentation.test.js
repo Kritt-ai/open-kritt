@@ -80,6 +80,7 @@ test('supplemental run serialization exposes model settings and safe target erro
       modelProvider: 'codex',
       harness: 'codex',
       thinkingEffort: 'high',
+      retryOfRunId: 40n,
       status: 'completed_with_errors',
       targetCount: 1,
       completedCount: 0,
@@ -101,6 +102,7 @@ test('supplemental run serialization exposes model settings and safe target erro
   assert.equal(serialized.model, 'gpt-5-codex');
   assert.equal(serialized.modelProvider, 'codex');
   assert.equal(serialized.thinkingEffort, 'high');
+  assert.equal(serialized.retryOfRunId, '40');
   assert.equal(serialized.targets[0].error, 'The model timed out.');
 });
 

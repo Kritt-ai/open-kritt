@@ -471,6 +471,7 @@ export function serializeSupplementalPostScriptRun(run, targets = []) {
     modelProvider: run.modelProvider ?? null,
     harness: run.harness ?? null,
     thinkingEffort: run.thinkingEffort ?? null,
+    retryOfRunId: run.retryOfRunId?.toString() ?? null,
     status: run.status,
     targetCount: run.targetCount,
     completedCount: run.completedCount,

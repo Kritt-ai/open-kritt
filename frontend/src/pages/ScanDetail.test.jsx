@@ -179,6 +179,51 @@ describe('supplemental post-script runs', () => {
     expect(html).toContain('original script and extra values are reused');
     expect(html).toContain('Queue retry for 1');
   });
+
+  it('removes the retry action after a retry run has been queued', () => {
+    const html = renderToStaticMarkup(
+      createElement(
+        MemoryRouter,
+        null,
+        createElement(SupplementalPostScriptControls, {
+          availability: { ready: true, message: 'Ready' },
+          mode: false,
+          onBegin: () => {},
+          runsError: null,
+          runs: [
+            {
+              id: '42',
+              retryOfRunId: '41',
+              status: 'running',
+              postScriptName: 'Report creator',
+              targetCount: 1,
+              completedCount: 0,
+              failedCount: 0,
+              targets: [{ id: '52', vulnerabilityId: '31', status: 'running' }],
+            },
+            {
+              id: '41',
+              retryOfRunId: null,
+              status: 'completed_with_errors',
+              postScriptName: 'Report creator',
+              targetCount: 1,
+              completedCount: 0,
+              failedCount: 1,
+              targets: [{ id: '51', vulnerabilityId: '31', status: 'failed', error: 'Model timed out.' }],
+            },
+          ],
+          findings: [{ id: '31', rank: 2, summary: 'Unsafe call' }],
+          scanId: '9',
+          retry: null,
+          retrySubmitting: false,
+          modelReferences: supplementalModelReferences,
+        })
+      )
+    );
+
+    expect(html).not.toContain('Re-run failed');
+    expect(html).toContain('Failed findings were re-run.');
+  });
 });
 
 describe('scan model references', () => {

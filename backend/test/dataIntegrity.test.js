@@ -908,20 +908,23 @@ test('supplemental retry clones the snapshot and extras but queues only failed f
       }),
     },
     supplementalPostScriptRun: {
-      findFirst: async () => ({
-        id: 71n,
-        scanId: 9n,
-        status: 'completed_with_errors',
-        postScriptId: 4n,
-        postScriptName: 'Network report',
-        postScriptContent: 'Inspect {{extra.network}}',
-        postScriptOutputFormat: '{"note":"string"}',
-        model: 'old-model',
-        modelProvider: 'codex',
-        harness: 'codex',
-        thinkingEffort: 'medium',
-        extra: { network: 'mainnet' },
-      }),
+      findFirst: async ({ where }) =>
+        where.retryOfRunId
+          ? null
+          : {
+              id: 71n,
+              scanId: 9n,
+              status: 'completed_with_errors',
+              postScriptId: 4n,
+              postScriptName: 'Network report',
+              postScriptContent: 'Inspect {{extra.network}}',
+              postScriptOutputFormat: '{"note":"string"}',
+              model: 'old-model',
+              modelProvider: 'codex',
+              harness: 'codex',
+              thinkingEffort: 'medium',
+              extra: { network: 'mainnet' },
+            },
       create: async ({ data }) => {
         created.push(data);
         return {
@@ -965,6 +968,7 @@ test('supplemental retry clones the snapshot and extras but queues only failed f
     modelProvider: 'openrouter',
     harness: 'codex',
     thinkingEffort: 'high',
+    retryOfRunId: 71n,
     extra: { network: 'mainnet' },
     targetCount: 2,
   });
@@ -972,6 +976,22 @@ test('supplemental retry clones the snapshot and extras but queues only failed f
     created[1].targets.map((target) => target.vulnerabilityId),
     [31n, 33n]
   );
+});
+
+test('supplemental retry cannot be queued twice from the same failed run', async () => {
+  const tx = {
+    $queryRaw: async () => [],
+    scan: { findUnique: async () => ({ id: 9n, status: 'completed' }) },
+    supplementalPostScriptRun: {
+      findFirst: async ({ where }) =>
+        where.retryOfRunId ? { id: 72n } : { id: 71n, scanId: 9n, status: 'completed_with_errors' },
+    },
+  };
+
+  assert.deepEqual(await retrySupplementalPostScriptRun(tx, 9n, 71n), {
+    kind: 'already-retried',
+    retryRunId: 72n,
+  });
 });
 
 test('supplemental creation rejects scans that can still execute automatically', async () => {

@@ -177,6 +177,7 @@ export default function ScanDetail() {
     data: supplementalRuns,
     error: supplementalRunsError,
     reload: reloadSupplementalRuns,
+    setData: setSupplementalRuns,
   } = useFetch(() => api.supplementalPostScriptRuns(id), [id], { pollMs: 1000 });
 
   useEffect(() => {
@@ -441,12 +442,16 @@ export default function ScanDetail() {
     setSupplementalRetrySubmitting(true);
     setSupplementalRetryError(null);
     try {
-      await api.retrySupplementalPostScriptRun(id, supplementalRetry.runId, {
+      const createdRun = await api.retrySupplementalPostScriptRun(id, supplementalRetry.runId, {
         model: supplementalRetry.model.model,
         model_provider: supplementalRetry.model.model_provider,
         harness: supplementalRetry.model.harness,
         thinking_effort: supplementalRetry.model.thinking_effort,
       });
+      setSupplementalRuns((current) => [
+        createdRun,
+        ...(current || []).filter((run) => String(run.id) !== String(createdRun.id)),
+      ]);
       setSupplementalRetry(null);
       reloadSupplementalRuns();
       reloadVulns();
@@ -1253,6 +1258,12 @@ export function SupplementalPostScriptControls({
     !!modelReferences &&
     modelConfigurationIsValid(retry.model, modelReferences.providers, modelReferences.catalog);
   const findingsById = new Map((findings || []).map((finding) => [String(finding.id), finding]));
+  const retriedRunIds = new Set(
+    (runs || [])
+      .map((run) => run.retryOfRunId)
+      .filter(Boolean)
+      .map(String)
+  );
 
   return (
     <section
@@ -1417,6 +1428,7 @@ export function SupplementalPostScriptControls({
                   : 0;
                 const failedTargets = (run.targets || []).filter((target) => target.status === 'failed');
                 const retrying = String(retry?.runId) === String(run.id);
+                const wasRetried = retriedRunIds.has(String(run.id));
                 const statusColor =
                   run.status === 'completed'
                     ? 'var(--ok)'
@@ -1495,7 +1507,7 @@ export function SupplementalPostScriptControls({
                             })}
                           </div>
                         </details>
-                        {!retrying && (
+                        {!retrying && !wasRetried && (
                           <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 9 }}>
                             <Button
                               variant="ghost"
@@ -1504,6 +1516,11 @@ export function SupplementalPostScriptControls({
                             >
                               Re-run failed
                             </Button>
+                          </div>
+                        )}
+                        {wasRetried && (
+                          <div style={{ marginTop: 9, color: 'var(--text-3)', textAlign: 'right' }}>
+                            Failed findings were re-run.
                           </div>
                         )}
                       </>

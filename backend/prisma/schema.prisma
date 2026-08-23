@@ -256,6 +256,7 @@ model SupplementalPostScriptRun {
   modelProvider          String?   @map("model_provider")
   harness                String?
   thinkingEffort         String?   @map("thinking_effort")
+  retryOfRunId           BigInt?   @unique(map: "supplemental_post_script_runs_retry_of_run_id_key") @map("retry_of_run_id")
   extra                  Json      @default("{}")
   status                 String    @default("queued")
   targetCount            Int       @default(0) @map("target_count")

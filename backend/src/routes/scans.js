@@ -218,7 +218,15 @@ function supplementalModelSelection(scan, body = {}, fallbackRun = null) {
   });
 }
 
-async function createSupplementalRunRecords(tx, scanId, postScript, vulnerabilityIds, extra, selection) {
+async function createSupplementalRunRecords(
+  tx,
+  scanId,
+  postScript,
+  vulnerabilityIds,
+  extra,
+  selection,
+  { retryOfRunId = null } = {}
+) {
   const run = await tx.supplementalPostScriptRun.create({
     data: {
       scanId,
@@ -230,6 +238,7 @@ async function createSupplementalRunRecords(tx, scanId, postScript, vulnerabilit
       modelProvider: selection.modelProvider,
       harness: selection.harness,
       thinkingEffort: selection.thinkingEffort,
+      ...(retryOfRunId === null ? {} : { retryOfRunId }),
       extra,
       targetCount: vulnerabilityIds.length,
     },
@@ -306,6 +315,12 @@ export async function retrySupplementalPostScriptRun(tx, scanId, runId, body = {
     return { kind: 'run-active', status: original.status };
   }
 
+  const existingRetry = await tx.supplementalPostScriptRun.findFirst({
+    where: { scanId, retryOfRunId: runId },
+    select: { id: true },
+  });
+  if (existingRetry) return { kind: 'already-retried', retryRunId: existingRetry.id };
+
   const failedTargets = await tx.supplementalPostScriptTarget.findMany({
     where: { runId, scanId, status: 'failed' },
     select: { vulnerabilityId: true },
@@ -339,7 +354,8 @@ export async function retrySupplementalPostScriptRun(tx, scanId, runId, body = {
     },
     vulnerabilityIds,
     original.extra,
-    selection
+    selection,
+    { retryOfRunId: original.id }
   );
 }
 
@@ -801,6 +817,11 @@ router.post('/:id/supplemental-post-script-runs/:runId/retry', async (req, res, 
     }
     if (result.kind === 'no-failures') {
       return res.status(409).json({ error: 'This supplemental run has no failed findings to retry.' });
+    }
+    if (result.kind === 'already-retried') {
+      return res.status(409).json({
+        error: `These failed findings were already re-run as supplemental run ${result.retryRunId}.`,
+      });
     }
     res.status(201).json(serializeSupplementalPostScriptRun(result.run, result.targets));
   } catch (e) {

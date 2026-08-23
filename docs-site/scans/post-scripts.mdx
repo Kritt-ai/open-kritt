@@ -39,8 +39,10 @@ Supplemental runs are additive. Their output is attached as a new enrichment ins
 replacing an earlier result, and the findings list shows how many additional runs targeted
 each finding. Run progress and finding-level error messages remain visible in **Supplemental
 run history**. A run that completed with errors can requeue only its failed findings; its
-snapshotted script and extra values are reused while the model settings remain editable. A scan
-cannot be resumed or deleted while supplemental targets are queued or running.
+snapshotted script and extra values are reused while the model settings remain editable. Once
+that retry is queued, the original run no longer offers the retry action; if the retry itself
+fails, it can be retried once in turn. A scan cannot be resumed or deleted while supplemental
+targets are queued or running.
 
 <Note>
   Post-scripts are chosen per scan, independent of the workflow - so you can reuse the same
