@@ -244,7 +244,7 @@ function Summary({ label, value, color = 'var(--text)' }) {
   );
 }
 
-function ProviderCard({
+export function ProviderCard({
   provider,
   onEdit,
   onEditKey,
@@ -315,7 +315,7 @@ function ProviderCard({
             <div style={{ fontWeight: 500 }}>Could not load {provider.label} accounts</div>
             <div style={{ color: 'var(--text-2)', fontSize: 12, marginTop: 4 }}>{loadError}</div>
           </div>
-        ) : provider.configured && provider.accounts.length ? (
+        ) : (provider.configured || signInRequired) && provider.accounts.length ? (
           accountPages.pageItems.map((account, index) => (
             <AccountDetail
               key={`${account.path || account.label}-${accountPages.startIndex + index}`}

@@ -645,7 +645,7 @@ test('Grok login is added to runtime homes atomically and idempotently', async (
   );
 });
 
-test('xAI sign-in again reuses the selected Grok account home', async (t) => {
+test('xAI sign-in again reuses the selected Grok account home when credentials are missing', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'open-kritt-login-reuse-grok-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const accountsRoot = join(directory, 'grok-accounts');
@@ -653,7 +653,6 @@ test('xAI sign-in again reuses the selected Grok account home', async (t) => {
   const runtimeConfigPath = join(directory, 'engine-runtime.env');
   const environmentFilePath = join(directory, '.env');
   await mkdir(accountHome, { recursive: true });
-  await writeFile(join(accountHome, 'auth.json'), '{"tokens":{"access_token":"expired"}}');
   await writeFile(runtimeConfigPath, 'ENGINE_GROK_HOME=/runtime-accounts/reviewer/.grok\n');
   await writeFile(environmentFilePath, 'ENGINE_GROK_HOME=/runtime-accounts/reviewer/.grok\n');
   let invocation;
@@ -733,5 +732,20 @@ test('xAI sign-in again rejects an unknown target before creating a session', as
   const manager = new AccountLoginManager({ grokAccountsRoot: '/definitely/missing/grok-accounts' });
 
   await assert.rejects(manager.start('xai', 'missing'), { statusCode: 404 });
+  assert.equal(manager.sessions.size, 0);
+});
+
+test('xAI sign-in again rejects a symbolic-link account home', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'open-kritt-login-grok-symlink-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const accountsRoot = join(directory, 'grok-accounts');
+  const accountDirectory = join(accountsRoot, 'reviewer');
+  const linkedHome = join(directory, 'linked-grok-home');
+  await mkdir(accountDirectory, { recursive: true });
+  await mkdir(linkedHome);
+  await symlink(linkedHome, join(accountDirectory, '.grok'));
+  const manager = new AccountLoginManager({ grokAccountsRoot: accountsRoot });
+
+  await assert.rejects(manager.start('xai', 'reviewer'), { statusCode: 404 });
   assert.equal(manager.sessions.size, 0);
 });

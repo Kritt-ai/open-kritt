@@ -380,7 +380,14 @@ async function grokReloginTarget(accountId, { primaryHome, primaryRuntimeHome, a
     throw error;
   }
   const home = join(accountDirectory, '.grok');
-  if (!(await usableJsonFile(join(home, 'auth.json')))) throw loginError('xAI account not found.', 404);
+  try {
+    const entry = await lstat(home);
+    if (!entry.isDirectory() || entry.isSymbolicLink()) throw loginError('xAI account not found.', 404);
+  } catch (error) {
+    if (error?.statusCode) throw error;
+    if (error?.code === 'ENOENT') throw loginError('xAI account not found.', 404);
+    throw error;
+  }
   return { home, runtimeHome: join(runtimeAccountsRoot, accountId, '.grok') };
 }
 
