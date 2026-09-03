@@ -95,21 +95,20 @@ describe('local repository file preflight', () => {
     expect(html).not.toContain('data-file-count-progress');
   });
 
-  it('warns when the folder currently contains snapshot-incompatible entries', () => {
+  it('warns about snapshot-blocking special files', () => {
     const html = renderToStaticMarkup(
       createElement(LocalRepoFilePreflight, {
         stats: {
           status: 'ready',
           fileCount: 12,
           complete: true,
-          snapshotIssues: ['invalid_symlink', 'special_file'],
+          snapshotIssues: ['special_file'],
         },
         configuration: '{"max_files":4000}',
         onRetry: () => {},
       })
     );
 
-    expect(html).toContain('absolute or out-of-root symlink');
     expect(html).toContain('unsupported special file');
     expect(html).toContain('scan is expected to fail');
   });

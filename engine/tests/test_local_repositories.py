@@ -135,7 +135,7 @@ def test_snapshot_local_repo_rejects_top_level_symlink(tmp_path):
 
 
 @pytest.mark.parametrize("absolute", [False, True], ids=["relative", "absolute"])
-def test_snapshot_local_repo_rejects_outbound_symlink(tmp_path, absolute):
+def test_snapshot_local_repo_skips_outbound_symlink(tmp_path, absolute):
     local_root = tmp_path / "local-repos"
     source = local_root / "repo"
     source.mkdir(parents=True)
@@ -143,21 +143,31 @@ def test_snapshot_local_repo_rejects_outbound_symlink(tmp_path, absolute):
     outside.write_text("outside\n", encoding="utf-8")
     target = str(outside.resolve()) if absolute else "../outside.txt"
     (source / "escape").symlink_to(target)
+    (source / "kept.txt").write_text("kept\n", encoding="utf-8")
 
-    expected = "absolute symbolic link" if absolute else "symbolic link outside its root"
-    with pytest.raises(RepoError, match=expected):
-        snapshot_local_repo("repo", str(tmp_path / "cache"), str(local_root))
+    snapshot_dir, revision = snapshot_local_repo("repo", str(tmp_path / "cache"), str(local_root))
+
+    snapshot = Path(snapshot_dir)
+    assert revision == LOCAL_SNAPSHOT_REVISION
+    assert not (snapshot / "escape").exists()
+    assert not (snapshot / "escape").is_symlink()
+    assert (snapshot / "kept.txt").read_text(encoding="utf-8") == "kept\n"
 
 
-def test_copy_local_snapshot_rejects_outbound_symlink(tmp_path):
+def test_copy_local_snapshot_skips_outbound_symlink(tmp_path):
     source = tmp_path / "source"
     source.mkdir()
     outside = tmp_path / "outside.txt"
     outside.write_text("outside\n", encoding="utf-8")
     (source / "escape").symlink_to("../outside.txt")
 
-    with pytest.raises(RepoError, match="symbolic link outside its root"):
-        copy_local_snapshot(str(source), str(tmp_path / "destination"))
+    destination = tmp_path / "destination"
+    copied_dir, revision = copy_local_snapshot(str(source), str(destination))
+
+    assert copied_dir == str(destination)
+    assert revision == LOCAL_SNAPSHOT_REVISION
+    assert not (destination / "escape").exists()
+    assert not (destination / "escape").is_symlink()
 
 
 def test_snapshot_local_repo_rejects_special_file(tmp_path):

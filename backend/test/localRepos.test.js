@@ -87,15 +87,15 @@ test('snapshot file counting bounds directory-heavy trees and supports cancellat
   });
 });
 
-test('snapshot file counting flags links the engine cannot safely snapshot', async (t) => {
+test('snapshot file counting omits links the engine safely skips', async (t) => {
   const repo = await temporaryDirectory(t);
   const outside = await temporaryDirectory(t);
   await fs.symlink(outside, path.join(repo, 'outside-link'));
 
   assert.deepEqual(await countLocalRepoSnapshotFiles(repo), {
-    fileCount: 1,
+    fileCount: 0,
     complete: true,
-    snapshotIssues: ['invalid_symlink'],
+    snapshotIssues: [],
   });
 });
 

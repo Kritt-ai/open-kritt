@@ -158,7 +158,7 @@ export default function CreateScan() {
           payload.fileCount < 0 ||
           typeof payload.complete !== 'boolean' ||
           !Array.isArray(payload.snapshotIssues) ||
-          payload.snapshotIssues.some((issue) => !['invalid_symlink', 'special_file'].includes(issue))
+          payload.snapshotIssues.some((issue) => issue !== 'special_file')
         ) {
           throw new Error('The local repository file count response was invalid.');
         }
@@ -1584,9 +1584,8 @@ export function LocalRepoFilePreflight({ stats, repoName, configuration, onRetry
 
   const overLimit = preflight.kind === 'over_limit';
   const atLimit = preflight.kind === 'at_limit';
-  const invalidSymlink = visibleStats.snapshotIssues?.includes('invalid_symlink');
   const specialFile = visibleStats.snapshotIssues?.includes('special_file');
-  const snapshotIncompatible = invalidSymlink || specialFile;
+  const snapshotIncompatible = specialFile;
   const progress =
     preflight.maxFiles && (preflight.complete || preflight.isOverLimit)
       ? Math.min(100, Math.max(0, (preflight.fileCount / preflight.maxFiles) * 100))
@@ -1620,14 +1619,8 @@ export function LocalRepoFilePreflight({ stats, repoName, configuration, onRetry
       )}
       {snapshotIncompatible && (
         <div style={{ color: 'var(--fail)', fontWeight: 600, marginTop: progress === null ? 7 : 0 }}>
-          This folder contains{' '}
-          {invalidSymlink && specialFile
-            ? 'absolute or out-of-root symlinks and unsupported special files'
-            : invalidSymlink
-              ? 'one or more absolute or out-of-root symlinks'
-              : 'one or more unsupported special files'}
-          . The engine cannot safely snapshot it, so the scan is expected to fail unless the incompatible entries are
-          removed.
+          This folder contains one or more unsupported special files. The engine cannot safely snapshot it, so the scan
+          is expected to fail unless the incompatible entries are removed.
         </div>
       )}
       <div style={{ color: 'var(--text-2)', marginTop: snapshotIncompatible ? 5 : 0 }}>{preflight.detail}</div>

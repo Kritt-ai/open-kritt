@@ -411,6 +411,14 @@ def _copy_local_tree_from_fd(source_fd: int, destination: Path, source_label: Pa
         _copy_local_directory(source_fd, staging, source_label)
         if _directory_changed(source_stat, os.fstat(source_fd)):
             raise RepoError(f"local repository {source_label} changed while it was being snapshotted")
+        skipped_symlinks = _remove_unsafe_snapshot_symlinks(staging)
+        if skipped_symlinks:
+            LOGGER.warning(
+                "Skipped %d absolute or out-of-root symbolic link(s) while snapshotting %s: %s",
+                len(skipped_symlinks),
+                source_label,
+                ", ".join(skipped_symlinks),
+            )
         _validate_local_tree(staging)
         _make_snapshot_readable(staging)
         if destination.exists() or destination.is_symlink():
@@ -474,9 +482,32 @@ def _copy_local_symlink(
         raise RepoError(f"could not read local repository symbolic link {source_label}") from exc
     if not _same_entry(entry_stat, current_stat):
         raise RepoError(f"local repository symbolic link {source_label} changed while it was being snapshotted")
-    if os.path.isabs(target):
-        raise RepoError(f"local repository contains an absolute symbolic link: {source_label}")
     destination.symlink_to(target)
+
+
+def _remove_unsafe_snapshot_symlinks(root: Path) -> list[str]:
+    root_resolved = root.resolve(strict=True)
+    removed: list[str] = []
+    for current_root, dir_names, file_names in os.walk(root, followlinks=False):
+        current = Path(current_root)
+        for name in [*dir_names, *file_names]:
+            path = current / name
+            if not path.is_symlink():
+                continue
+            unsafe = False
+            try:
+                target = os.readlink(path)
+                if os.path.isabs(target):
+                    unsafe = True
+                else:
+                    (path.parent / target).resolve(strict=False).relative_to(root_resolved)
+            except (OSError, RuntimeError, ValueError):
+                unsafe = True
+            if not unsafe:
+                continue
+            removed.append(path.relative_to(root).as_posix())
+            path.unlink()
+    return removed
 
 
 def _copy_local_file(

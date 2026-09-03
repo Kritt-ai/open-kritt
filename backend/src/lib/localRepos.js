@@ -167,12 +167,12 @@ export async function countLocalRepoSnapshotFiles(
         continue;
       }
 
-      fileCount += 1;
       if (entry.isSymbolicLink()) {
-        if (!(await symlinkStaysWithinRoot(entryPath, repoRoot))) snapshotIssues.add('invalid_symlink');
+        if (!(await symlinkStaysWithinRoot(entryPath, repoRoot))) continue;
       } else if (!entry.isFile()) {
         snapshotIssues.add('special_file');
       }
+      fileCount += 1;
       if (fileCount > ceiling) return result(false);
     }
 
