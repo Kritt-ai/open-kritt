@@ -1,7 +1,8 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
-import { StepPanel } from './WorkflowDetail.jsx';
+import { StepPanel, WorkflowStepCard } from './WorkflowDetail.jsx';
+import Drawer from '../components/Drawer.jsx';
 import { REQUIRED_VULN_KEYS } from '../lib/keys.js';
 
 // A minimal terminal step: isLast triggers the "emits all N required vulnerability
@@ -18,6 +19,29 @@ const terminalStep = {
 };
 
 describe('WorkflowDetail terminal step summary', () => {
+  it('renders workflow steps as keyboard-operable controls', () => {
+    const html = renderToStaticMarkup(
+      <WorkflowStepCard step={terminalStep} steps={[terminalStep]} selected={false} onSelect={vi.fn()} />
+    );
+
+    expect(html).toContain('<button');
+    expect(html).toContain('aria-label="Open step details: Report"');
+    expect(html).toContain('aria-haspopup="dialog"');
+    expect(html).toContain('aria-expanded="false"');
+  });
+
+  it('exposes the opened step drawer as a labelled modal dialog', () => {
+    const html = renderToStaticMarkup(
+      <Drawer open onClose={vi.fn()} ariaLabel="Workflow step details">
+        Step details
+      </Drawer>
+    );
+
+    expect(html).toContain('role="dialog"');
+    expect(html).toContain('aria-modal="true"');
+    expect(html).toContain('aria-label="Workflow step details"');
+  });
+
   it('reports the real number of required vulnerability keys, not a hardcoded value', () => {
     const html = renderToStaticMarkup(
       <MemoryRouter>

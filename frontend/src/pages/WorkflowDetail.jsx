@@ -217,77 +217,13 @@ export default function WorkflowDetail() {
                 </div>
                 <div style={{ display: 'flex', gap: 18, justifyContent: 'center', flexWrap: 'wrap' }}>
                   {level.steps.map((step) => (
-                    <div
+                    <WorkflowStepCard
                       key={step.id}
-                      onClick={() => setSelStepId(step.id)}
-                      style={{
-                        width: 300,
-                        border: `1px solid ${selStepId === step.id ? 'var(--accent)' : 'var(--border)'}`,
-                        borderRadius: 11,
-                        background: 'var(--surface)',
-                        boxShadow: 'var(--shadow)',
-                        cursor: 'pointer',
-                        overflow: 'hidden',
-                      }}
-                    >
-                      <div style={{ padding: '13px 15px 11px' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                          <span style={{ fontWeight: 600, fontSize: 14 }}>{step.name || 'Untitled step'}</span>
-                          {step.multiOutput && (
-                            <span
-                              className="mono"
-                              style={{
-                                fontSize: 9.5,
-                                color: 'var(--accent)',
-                                background: 'var(--accent-subtle)',
-                                padding: '2px 6px',
-                                borderRadius: 4,
-                              }}
-                            >
-                              MULTI ⤳
-                            </span>
-                          )}
-                        </div>
-                        <div
-                          style={{
-                            fontSize: 12,
-                            color: 'var(--text-2)',
-                            marginTop: 6,
-                            lineHeight: 1.5,
-                            height: 34,
-                            overflow: 'hidden',
-                          }}
-                        >
-                          {step.content.replace(/\{\{\s*|\s*\}\}/g, '').slice(0, 90)}…
-                        </div>
-                        {step.boundSourceStepId && (
-                          <div className="mono" style={{ fontSize: 10, color: 'var(--accent)', marginTop: 7 }}>
-                            input only from{' '}
-                            {wf.steps.find((candidate) => candidate.id === step.boundSourceStepId)?.name ||
-                              `step ${step.boundSourceStepId}`}
-                          </div>
-                        )}
-                      </div>
-                      <div
-                        className="mono"
-                        style={{
-                          borderTop: '1px solid var(--border-2)',
-                          padding: '9px 15px',
-                          display: 'flex',
-                          gap: 5,
-                          flexWrap: 'wrap',
-                          background: 'var(--surface-2)',
-                        }}
-                      >
-                        {Object.keys(step.outputFormat)
-                          .slice(0, 4)
-                          .map((k) => (
-                            <span key={k} style={{ fontSize: 10, color: 'var(--text-2)' }}>
-                              {k}
-                            </span>
-                          ))}
-                      </div>
-                    </div>
+                      step={step}
+                      steps={wf.steps}
+                      selected={selStepId === step.id}
+                      onSelect={() => setSelStepId(step.id)}
+                    />
                   ))}
                 </div>
                 {i < levels.length - 1 && <Connector level={level} next={levels[i + 1]} />}
@@ -297,12 +233,96 @@ export default function WorkflowDetail() {
         </div>
       </div>
 
-      <Drawer open={!!sel} onClose={() => setSelStepId(null)} width={560}>
+      <Drawer open={!!sel} onClose={() => setSelStepId(null)} width={560} ariaLabel="Workflow step details">
         {sel && (
           <StepPanel step={sel} steps={wf.steps} editTo={editWorkflowPath(sel.id)} onClose={() => setSelStepId(null)} />
         )}
       </Drawer>
     </div>
+  );
+}
+
+export function WorkflowStepCard({ step, steps, selected, onSelect }) {
+  const label = step.name || 'Untitled step';
+  return (
+    <button
+      type="button"
+      aria-label={`Open step details: ${label}`}
+      aria-haspopup="dialog"
+      aria-expanded={selected}
+      onClick={onSelect}
+      style={{
+        width: 300,
+        padding: 0,
+        border: `1px solid ${selected ? 'var(--accent)' : 'var(--border)'}`,
+        borderRadius: 11,
+        background: 'var(--surface)',
+        boxShadow: 'var(--shadow)',
+        color: 'inherit',
+        cursor: 'pointer',
+        font: 'inherit',
+        textAlign: 'left',
+        overflow: 'hidden',
+      }}
+    >
+      <div style={{ padding: '13px 15px 11px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <span style={{ fontWeight: 600, fontSize: 14 }}>{label}</span>
+          {step.multiOutput && (
+            <span
+              className="mono"
+              style={{
+                fontSize: 9.5,
+                color: 'var(--accent)',
+                background: 'var(--accent-subtle)',
+                padding: '2px 6px',
+                borderRadius: 4,
+              }}
+            >
+              MULTI ⤳
+            </span>
+          )}
+        </div>
+        <div
+          style={{
+            fontSize: 12,
+            color: 'var(--text-2)',
+            marginTop: 6,
+            lineHeight: 1.5,
+            height: 34,
+            overflow: 'hidden',
+          }}
+        >
+          {step.content.replace(/\{\{\s*|\s*\}\}/g, '').slice(0, 90)}…
+        </div>
+        {step.boundSourceStepId && (
+          <div className="mono" style={{ fontSize: 10, color: 'var(--accent)', marginTop: 7 }}>
+            input only from{' '}
+            {steps.find((candidate) => candidate.id === step.boundSourceStepId)?.name ||
+              `step ${step.boundSourceStepId}`}
+          </div>
+        )}
+      </div>
+      <div
+        className="mono"
+        style={{
+          borderTop: '1px solid var(--border-2)',
+          padding: '9px 15px',
+          display: 'flex',
+          gap: 5,
+          flexWrap: 'wrap',
+          background: 'var(--surface-2)',
+        }}
+      >
+        {Object.keys(step.outputFormat)
+          .slice(0, 4)
+          .map((key) => (
+            <span key={key} style={{ fontSize: 10, color: 'var(--text-2)' }}>
+              {key}
+            </span>
+          ))}
+      </div>
+    </button>
   );
 }
 

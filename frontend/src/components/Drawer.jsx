@@ -1,10 +1,17 @@
 // A right-side sliding drawer rendered absolutely within a positioned parent.
-export default function Drawer({ open, onClose, width = 560, children }) {
+export default function Drawer({ open, onClose, width = 560, ariaLabel = 'Details', children }) {
   if (!open) return null;
   return (
     <>
-      <div onClick={onClose} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,.12)', zIndex: 9 }} />
       <div
+        aria-hidden="true"
+        onClick={onClose}
+        style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,.12)', zIndex: 9 }}
+      />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={ariaLabel}
         style={{
           position: 'absolute',
           top: 0,
