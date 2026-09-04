@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { prisma } from '../src/db.js';
 import {
   activeJobElapsedMs,
   activeJobRuntimeSelection,
@@ -11,6 +12,7 @@ import {
   isDerivativeScanStatusError,
   knownError,
   orderScanErrorsForDisplay,
+  statusSummariesByScan,
   summarizeExpectedWorkflowLineages,
 } from '../src/lib/repo.js';
 import {
@@ -304,6 +306,50 @@ test('configured post-scripts preserve primary-first order and remove duplicates
     }),
     ['4', '3', '2']
   );
+});
+
+test('status summary exposes successful empty step explanations', async (t) => {
+  const originalGroupBy = prisma.stepMetadata.groupBy;
+  const originalFindMany = prisma.stepMetadata.findMany;
+  prisma.stepMetadata.groupBy = async () => [
+    { scanId: 7n, kind: 'step', status: 'completed', stub: true, _count: { _all: 1 } },
+  ];
+  prisma.stepMetadata.findMany = async ({ where }) => {
+    if (where.status === 'running' || where.error) return [];
+    if (where.status === 'completed' && where.stub === true) {
+      return [
+        {
+          id: 12n,
+          scanId: 7n,
+          kind: 'step',
+          stepId: 10n,
+          status: 'completed',
+          phase: 'completed',
+          stubExplanation: 'No reachable entrypoints were found.',
+          runStartedAt: new Date('2026-09-04T10:00:00Z'),
+          runTimeMs: 100,
+          insertedAt: new Date('2026-09-04T10:00:00Z'),
+          updatedAt: new Date('2026-09-04T10:00:01Z'),
+        },
+      ];
+    }
+    throw new Error(`Unexpected step metadata query: ${JSON.stringify(where)}`);
+  };
+  t.after(() => {
+    prisma.stepMetadata.groupBy = originalGroupBy;
+    prisma.stepMetadata.findMany = originalFindMany;
+  });
+
+  const summaries = await statusSummariesByScan(
+    [{ id: 7n, status: 'completed', configuration: {} }],
+    new Map([['10', { id: 10n, depth: 0, name: 'Trace reachable flows' }]]),
+    new Map()
+  );
+  const summary = summaries.get('7');
+
+  assert.equal(summary.emptyStepResults, 1);
+  assert.equal(summary.recentEmptyResults[0].title, '0 · Trace reachable flows');
+  assert.equal(summary.recentEmptyResults[0].explanation, 'No reachable entrypoints were found.');
 });
 
 test('scan serialization distinguishes raw candidates from listed findings', () => {

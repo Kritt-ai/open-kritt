@@ -1376,6 +1376,7 @@ def test_claude_harness_uses_dangerous_permissions_and_default_tools(monkeypatch
 
 def test_claude_harness_can_route_glm_through_openrouter(monkeypatch, tmp_path):
     captured = {}
+    source_schema = output_schema('{"thing":"string"}', multi_output=False)
 
     def fake_run_process(cmd, prompt, cwd, timeout, env=None):
         captured["cmd"] = cmd
@@ -1409,7 +1410,7 @@ def test_claude_harness_can_route_glm_through_openrouter(monkeypatch, tmp_path):
 
     result = ClaudeHarness(timeout_seconds=5).run(
         prompt="prompt",
-        schema=output_schema('{"thing":"string"}', multi_output=False),
+        schema=source_schema,
         repo_dir="/tmp",
         model="glm-5.2",
         thinking_effort="medium",
@@ -1445,8 +1446,54 @@ def test_claude_harness_can_route_glm_through_openrouter(monkeypatch, tmp_path):
     assert "--verbose" in captured["cmd"]
     assert "--disallowedTools" not in captured["cmd"]
     assert "--append-system-prompt" in captured["cmd"]
-    assert "--json-schema" not in captured["cmd"]
+    claude_schema = json.loads(captured["cmd"][captured["cmd"].index("--json-schema") + 1])
+    assert "$schema" not in claude_schema
+    assert claude_schema["properties"] == harnesses._claude_json_schema(source_schema)["properties"]
     assert harnesses.claude_model_provider("glm-5.2", captured["env"]) == "openrouter"
+
+
+def test_claude_openrouter_terminal_stream_error_rejects_partial_json(monkeypatch, tmp_path):
+    payload = marked({"stub": True, "stub_explanation": "No matching records.", "results": []})
+    raw_stdout = "\n".join(
+        [
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {"content": [{"type": "text", "text": json.dumps(payload)}]},
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "result",
+                    "is_error": True,
+                    "result": "API returned an empty or malformed response (HTTP 200)",
+                }
+            ),
+        ]
+    )
+
+    def fake_run_process(cmd, prompt, cwd, timeout, env=None):
+        return SimpleNamespace(stdout=raw_stdout, stderr="", returncode=0)
+
+    monkeypatch.setattr(harnesses, "_run_process", fake_run_process)
+
+    with pytest.raises(HarnessError) as raised:
+        ClaudeHarness(timeout_seconds=5).run(
+            prompt="prompt",
+            schema=output_schema('{"thing":"string"}', multi_output=False),
+            repo_dir="/tmp",
+            model="glm-5.2",
+            env={
+                "HOME": str(tmp_path / "home"),
+                "CLAUDE_HOME": str(tmp_path / "home" / ".claude"),
+                "CLAUDE_CONFIG_DIR": str(tmp_path / "home" / ".claude"),
+                "OPENROUTER_API_KEY": "or-key",
+                "CODEX_MODEL_PROVIDER": "openrouter",
+            },
+        )
+
+    assert raised.value.code == "provider_unavailable"
+    assert raised.value.output.stdout == raw_stdout
 
 
 def test_claude_openrouter_parse_error_carries_raw_output(monkeypatch, tmp_path):
@@ -2851,6 +2898,13 @@ def test_worker_retries_strict_validation_then_writes_results(monkeypatch, tmp_p
     assert fake_db.metadata[0]["harness"] == "claude-code"
     assert fake_db.metadata[0]["model_provider"] == "claude"
     assert fake_db.step_results[0]["json_answer"] == {"thing": "ok"}
+    assert fake_db.metadata[0]["output_json"] == marked(
+        {
+            "stub": False,
+            "stub_explanation": "",
+            "results": [{"thing": "ok"}],
+        }
+    )
     assert not root.exists()
 
 

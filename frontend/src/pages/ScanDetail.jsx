@@ -2246,6 +2246,7 @@ export function ScanStatusPanel({ scan }) {
   }, 0);
   const recentErrors = summary.recentErrors || [];
   const currentFailedAttempts = summary.currentFailedAttempts ?? summary.failedAttempts ?? 0;
+  const recentEmptyResults = summary.recentEmptyResults || [];
   const [expandedErrorIds, setExpandedErrorIds] = useState(() => new Set());
   const toggleError = (id) => {
     setExpandedErrorIds((prev) => {
@@ -2291,6 +2292,7 @@ export function ScanStatusPanel({ scan }) {
             <RuntimeMetric label="Workflow" value={`${completedLineages}/${expectedLineages}`} />
             <RuntimeMetric label="Attempts" value={summary.totalAttempts || 0} />
             <RuntimeMetric label="Running" value={summary.runningAttempts || 0} color="var(--run)" />
+            <RuntimeMetric label="Empty" value={summary.emptyStepResults || 0} />
             <RuntimeMetric
               label={rateLimited ? 'Attempt errors' : 'Failed'}
               value={currentFailedAttempts}
@@ -2403,6 +2405,30 @@ export function ScanStatusPanel({ scan }) {
           <div className="mono" style={{ color: 'var(--text-3)', fontSize: 9.5, marginTop: 7 }}>
             Live duration is informational. The engine reports failures separately below.
           </div>
+        </div>
+      )}
+
+      {recentEmptyResults.length > 0 && (
+        <div style={{ marginTop: 15, display: 'grid', gap: 8 }}>
+          <div className="mono" style={{ fontSize: 10, color: 'var(--text-3)', textTransform: 'uppercase' }}>
+            Completed with no results
+          </div>
+          {recentEmptyResults.slice(0, 3).map((result) => (
+            <div
+              key={result.id}
+              style={{
+                border: '1px solid var(--border-2)',
+                borderRadius: 8,
+                padding: '9px 10px',
+                background: 'var(--surface-2)',
+              }}
+            >
+              <div className="mono" style={{ fontSize: 11, color: 'var(--text-2)', marginBottom: 5 }}>
+                {result.source} · {result.title}
+              </div>
+              <div style={{ fontSize: 12.5, color: 'var(--text-2)', lineHeight: 1.45 }}>{result.explanation}</div>
+            </div>
+          ))}
         </div>
       )}
 

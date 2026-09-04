@@ -580,6 +580,15 @@ function metadataError(row, stepsMap, scan) {
   };
 }
 
+function metadataEmptyResult(row, stepsMap, scan) {
+  return {
+    ...metadataJob(row, stepsMap, scan),
+    explanation: row.stubExplanation || 'The model returned a valid empty result.',
+    insertedAt: row.insertedAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
 function scanReasoningError(scan) {
   const reasoning = scan.reasoning && typeof scan.reasoning === 'object' ? scan.reasoning : null;
   const message = cleanError(reasoning?.error || reasoning?.message);
@@ -620,20 +629,22 @@ function emptyStatusSummary(scan) {
     postFailedAttempts: 0,
     activeJobCount: 0,
     activeJobs: [],
+    emptyStepResults: 0,
+    recentEmptyResults: [],
     latestError: null,
     recentErrors: [],
   };
 }
 
-async function statusSummariesByScan(scans, stepsMap, workflowsById) {
+export async function statusSummariesByScan(scans, stepsMap, workflowsById) {
   const summaries = new Map(scans.map((scan) => [scan.id.toString(), emptyStatusSummary(scan)]));
   const scansById = new Map(scans.map((scan) => [scan.id.toString(), scan]));
   if (scans.length === 0) return summaries;
 
   const scanIds = scans.map((scan) => scan.id);
-  const [countRows, activeRows, errorRows] = await Promise.all([
+  const [countRows, activeRows, errorRows, emptyRows] = await Promise.all([
     prisma.stepMetadata.groupBy({
-      by: ['scanId', 'kind', 'status'],
+      by: ['scanId', 'kind', 'status', 'stub'],
       where: { scanId: { in: scanIds } },
       _count: { _all: true },
     }),
@@ -687,6 +698,26 @@ async function statusSummariesByScan(scans, stepsMap, workflowsById) {
       orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
       take: Math.max(200, scans.length * 5),
     }),
+    prisma.stepMetadata.findMany({
+      where: { scanId: { in: scanIds }, kind: 'step', status: 'completed', stub: true },
+      select: {
+        id: true,
+        scanId: true,
+        kind: true,
+        stepId: true,
+        status: true,
+        phase: true,
+        stubExplanation: true,
+        runStartedAt: true,
+        runTimeMs: true,
+        codexAccountId: true,
+        codexAccountEmail: true,
+        insertedAt: true,
+        updatedAt: true,
+      },
+      orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
+      take: Math.max(200, scans.length * 5),
+    }),
   ]);
 
   for (const row of countRows) {
@@ -698,6 +729,7 @@ async function statusSummariesByScan(scans, stepsMap, workflowsById) {
     if (row.status === 'completed') summary.completedAttempts += count;
     if (row.status === 'running') summary.runningAttempts += count;
     if (row.status === 'failed') summary.failedAttempts += count;
+    if (!isPost && row.status === 'completed' && row.stub) summary.emptyStepResults += count;
 
     const prefix = isPost ? 'post' : 'step';
     summary[`${prefix}Attempts`] += count;
@@ -730,9 +762,17 @@ async function statusSummariesByScan(scans, stepsMap, workflowsById) {
     summary.recentErrors.push(error);
   }
 
+  for (const row of emptyRows) {
+    const summary = summaries.get(row.scanId.toString());
+    if (!summary) continue;
+    const scan = scansById.get(row.scanId.toString());
+    summary.recentEmptyResults.push(metadataEmptyResult(row, stepsMap, scan));
+  }
+
   for (const summary of summaries.values()) {
     summary.activeJobCount = summary.activeJobs.length;
     summary.recentErrors = orderScanErrorsForDisplay(summary.recentErrors).slice(0, 5);
+    summary.recentEmptyResults = summary.recentEmptyResults.slice(0, 5);
     summary.latestError = summary.recentErrors.find((error) => !error.previousRun) || null;
     summary.expectedStepLineages = summary.stepAttempts;
     summary.completedStepLineages = summary.stepCompletedAttempts;

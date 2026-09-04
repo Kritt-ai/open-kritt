@@ -1187,7 +1187,7 @@ def _extract_json_from_output_file(path: str) -> dict[str, Any]:
 def _extract_json_from_claude_stream(
     stdout: str, *, provider: str | None = None
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    candidates: list[str] = []
+    candidates: list[Any] = []
     usage = None
     stream_error = None
     for line in stdout.splitlines():
@@ -1204,6 +1204,8 @@ def _extract_json_from_claude_stream(
             )
             if text:
                 candidates.append(text)
+        if event.get("type") == "error":
+            stream_error = event
         if event.get("type") == "result":
             usage = {
                 "usage": event.get("usage"),
@@ -1211,20 +1213,27 @@ def _extract_json_from_claude_stream(
                 "modelUsage": event.get("modelUsage"),
             }
             if event.get("is_error"):
-                stream_error = event.get("result") or "; ".join(event.get("errors") or [])
+                stream_error = event.get("result") or event.get("errors") or event
             if event.get("result"):
                 candidates.append(event["result"])
-        if event.get("type") == "error":
-            stream_error = json.dumps(event.get("error") or event)
+            if isinstance(event.get("structured_output"), dict):
+                candidates.append(event["structured_output"])
+
+    if stream_error:
+        error_text = stream_error if isinstance(stream_error, str) else json.dumps(stream_error)
+        raise _classified_harness_error(
+            error_text,
+            harness="claude-code",
+            default_code="provider_unavailable",
+            provider=provider,
+        )
 
     last_error = None
     for candidate in reversed(candidates):
         try:
-            return _parse_json_text(candidate), usage
-        except json.JSONDecodeError as exc:
+            return _extract_json(candidate), usage
+        except (HarnessError, json.JSONDecodeError) as exc:
             last_error = exc
-    if stream_error:
-        raise _classified_harness_error(stream_error, harness="claude-code", provider=provider)
     raise HarnessError(
         "Claude did not return a usable structured response.",
         code="invalid_output",
@@ -1790,9 +1799,8 @@ class ClaudeHarness:
             # No tools, MCP configuration, or user/project settings are loaded for
             # untrusted generation requests. The response is schema-only text.
             cmd.extend(["--tools", "", "--permission-mode", "dontAsk", "--strict-mcp-config", "--setting-sources", ""])
-        if provider != "openrouter":
-            cmd.extend(["--json-schema", json.dumps(_claude_json_schema(schema))])
-        else:
+        cmd.extend(["--json-schema", json.dumps(_claude_json_schema(schema))])
+        if provider == "openrouter":
             cmd.extend(["--include-partial-messages", "--verbose"])
         if thinking_effort and thinking_effort != "default":
             cmd.extend(["--effort", thinking_effort])
