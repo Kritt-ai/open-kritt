@@ -309,7 +309,7 @@ export function duplicateOutputFormatKeys(input) {
   const seen = new Set();
   const duplicates = new Set();
   for (const field of value) {
-    if (!field || typeof field !== 'object' || !('key' in field) || !field.key) continue;
+    if (!field || typeof field !== 'object' || !('key' in field)) continue;
     const key = `${field.key}`;
     if (seen.has(key)) duplicates.add(key);
     else seen.add(key);
