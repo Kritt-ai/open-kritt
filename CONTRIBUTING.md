@@ -17,7 +17,8 @@ Thanks for helping improve open·kritt. Please follow our
 You need Git, Docker with Docker Compose, and Node.js 20 or newer. Fork the
 repository, then:
 
-```bash# 1. Get the code
+```bash
+# 1. Get the code
 #    External contributors: fork on GitHub, then clone your fork:
 git clone https://github.com/<you>/open-kritt && cd open-kritt
 
