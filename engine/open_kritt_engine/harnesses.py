@@ -13,8 +13,11 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
+from jsonschema import Draft202012Validator
+
 from .claude_auth import CLAUDE_OAUTH_EXPIRY_ENV, claude_oauth_timeout_seconds
 from .provider_credentials import provider_environment
+from .runtime_config import runtime_float, runtime_int
 from .schema import EXTRACTOR_HELPER_FIELD
 
 NON_RETRYABLE_HARNESS_FAILURES = frozenset(
@@ -30,7 +33,7 @@ NON_RETRYABLE_HARNESS_FAILURES = frozenset(
         "start_failed",
     }
 )
-CAPACITY_RATE_LIMIT_FAILURES = frozenset({"provider_throttled", "subagent_limited"})
+CAPACITY_RATE_LIMIT_FAILURES = frozenset({"provider_throttled", "subagent_limited", "runner_resource_limited"})
 RETRYABLE_RATE_LIMIT_FAILURES = frozenset({"rate_limited", "account_quota_limited", *CAPACITY_RATE_LIMIT_FAILURES})
 
 HARNESS_FAILURE_MESSAGES = {
@@ -81,6 +84,7 @@ HARNESS_FAILURE_MESSAGES = {
     "rate_limited": "The model provider is rate limiting generation requests. Wait and try again.",
     "start_failed": "The configured model harness could not be started. Rebuild or restart the engine and try again.",
     "timeout": "Generation timed out before the model provider returned a draft. Try again or choose a faster model.",
+    "runner_resource_limited": "The runner was terminated by the system. It will be retried with lower concurrency.",
 }
 
 
@@ -342,6 +346,20 @@ def _docker_run_details(cmd: list[str]) -> tuple[str, str | None] | None:
     return name, network
 
 
+def _scan_network_fallback_subnets(network: str):
+    """Yield isolated /28 networks from RFC 2544's benchmarking range."""
+
+    subnet_count = 1 << 13  # 198.18.0.0/15 contains 8192 non-overlapping /28s.
+    seed = int.from_bytes(hashlib.sha256(network.encode()).digest()[:4], "big")
+    for attempt in range(8):
+        subnet_index = (seed + attempt * 811) % subnet_count
+        offset = subnet_index * 16
+        second_octet = 18 + (offset >> 16)
+        third_octet = (offset >> 8) & 0xFF
+        fourth_octet = offset & 0xFF
+        yield f"198.{second_octet}.{third_octet}.{fourth_octet}/28"
+
+
 def _prepare_docker_sandbox(cmd: list[str]):
     details = _docker_run_details(cmd)
     if details is None:
@@ -352,8 +370,32 @@ def _prepare_docker_sandbox(cmd: list[str]):
     create = _docker_control_run(
         [cmd[0], "network", "create", "--label", "open-kritt.scan-sandbox=1", network],
     )
-    if create.returncode != 0:
-        raise HarnessError("Could not create the scan network.", code="start_failed")
+    if create.returncode == 0:
+        return
+
+    create_error = f"{create.stdout}\n{create.stderr}".lower()
+    address_pool_exhausted = (
+        "available, non-overlapping ipv4 address pool" in create_error
+        or "all predefined address pools have been fully subnetted" in create_error
+    )
+    if address_pool_exhausted:
+        for subnet in _scan_network_fallback_subnets(network):
+            fallback = _docker_control_run(
+                [
+                    cmd[0],
+                    "network",
+                    "create",
+                    "--subnet",
+                    subnet,
+                    "--label",
+                    "open-kritt.scan-sandbox=1",
+                    network,
+                ],
+            )
+            if fallback.returncode == 0:
+                return
+
+    raise HarnessError("Could not create the scan network.", code="start_failed")
 
 
 def _cleanup_docker_run_container(cmd: list[str], env: dict[str, str] | None = None):
@@ -685,23 +727,46 @@ def _run_process(cmd, prompt, cwd, timeout, env=None):
     try:
         if docker_run:
             _prepare_docker_sandbox(process_cmd)
-        proc = subprocess.run(
-            process_cmd,
-            input=prompt,
-            cwd=cwd,
-            env=process_env,
-            text=True,
-            capture_output=True,
-            timeout=timeout,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise HarnessError(
-            "Harness timed out before returning a result.",
-            output=HarnessOutput(stdout=_output_text(exc.stdout), stderr=_output_text(exc.stderr)),
-            code="timeout",
-            harness=harness,
-        ) from exc
+        # Long Codex JSONL streams can be hundreds of MiB. Spool each process to
+        # disk while it runs instead of retaining every concurrent transcript in
+        # the coordinator's heap. The completed output is loaded only when that
+        # worker is ready to parse and persist it.
+        with (
+            tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stdout_file,
+            tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stderr_file,
+        ):
+            try:
+                completed = subprocess.run(
+                    process_cmd,
+                    input=prompt,
+                    cwd=cwd,
+                    env=process_env,
+                    text=True,
+                    stdout=stdout_file,
+                    stderr=stderr_file,
+                    timeout=timeout,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired as exc:
+                stdout_file.seek(0)
+                stderr_file.seek(0)
+                raise HarnessError(
+                    "Harness timed out before returning a result.",
+                    output=HarnessOutput(
+                        stdout=stdout_file.read() or _output_text(exc.stdout),
+                        stderr=stderr_file.read() or _output_text(exc.stderr),
+                    ),
+                    code="timeout",
+                    harness=harness,
+                ) from exc
+            stdout_file.seek(0)
+            stderr_file.seek(0)
+            proc = subprocess.CompletedProcess(
+                process_cmd,
+                completed.returncode,
+                getattr(completed, "stdout", None) or stdout_file.read(),
+                getattr(completed, "stderr", None) or stderr_file.read(),
+            )
     except OSError as exc:
         raise HarnessError(
             "Harness could not be started.",
@@ -711,6 +776,15 @@ def _run_process(cmd, prompt, cwd, timeout, env=None):
     finally:
         if docker_run:
             _cleanup_docker_run_container(process_cmd)
+    if docker_run and proc.returncode == 137:
+        raise HarnessError(
+            "Scan runner was terminated before completion (exit 137).",
+            output=_process_output(proc),
+            code="runner_resource_limited",
+            exit_code=proc.returncode,
+            harness=harness,
+            retry_after_seconds=60.0,
+        )
     if proc.returncode != 0:
         raise _classified_harness_error(
             _short_output(proc),
@@ -932,6 +1006,24 @@ def _scan_docker_command(
         "--pids-limit",
         "512",
     ]
+    data_dir = os.getenv("ENGINE_DATA_DIR")
+    runner_cpus = runtime_float(
+        "ENGINE_SCAN_RUNNER_CPUS",
+        0.0,
+        data_dir=data_dir,
+        minimum=0.0,
+        maximum=64.0,
+    )
+    if runner_cpus > 0:
+        docker_cmd.extend(["--cpus", f"{runner_cpus:g}"])
+    runner_oom_score_adj = runtime_int(
+        "ENGINE_SCAN_RUNNER_OOM_SCORE_ADJ",
+        500,
+        data_dir=data_dir,
+        minimum=-1000,
+        maximum=1000,
+    )
+    docker_cmd.extend(["--oom-score-adj", str(runner_oom_score_adj)])
     if memory_limit_mb > 0:
         memory = f"{int(memory_limit_mb)}m"
         docker_cmd.extend(["--memory", memory, "--memory-swap", memory])
@@ -1065,8 +1157,36 @@ def _claude_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in schema.items() if key != "$schema"}
 
 
-def _looks_like_structured_output(value: Any) -> bool:
-    return isinstance(value, dict) and any(key in value for key in ("results", "clusters", "rankings"))
+def _structured_output_candidate(
+    value: Any,
+    schema: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    if schema is None:
+        if any(key in value for key in ("results", "clusters", "rankings")):
+            return _with_extractor_marker(value)
+        return None
+
+    properties = schema.get("properties")
+    required = schema.get("required")
+    if not isinstance(properties, dict) or not properties or not isinstance(required, list):
+        # Very loose schemas are used by a few harness unit tests and external
+        # integrations. Preserve the historical key-based guard so a wrapper
+        # object such as {"result": ...} is not mistaken for the payload.
+        if any(key in value for key in ("results", "clusters", "rankings")):
+            return _with_extractor_marker(value)
+        return None
+
+    candidates = [value]
+    if EXTRACTOR_HELPER_FIELD in properties and EXTRACTOR_HELPER_FIELD not in value:
+        candidates.append(_with_extractor_marker(value))
+    validator = Draft202012Validator(schema)
+    return next((candidate for candidate in candidates if validator.is_valid(candidate)), None)
+
+
+def _looks_like_structured_output(value: Any, schema: dict[str, Any] | None = None) -> bool:
+    return _structured_output_candidate(value, schema) is not None
 
 
 def _with_extractor_marker(value: dict[str, Any]) -> dict[str, Any]:
@@ -1109,10 +1229,37 @@ def _balanced_json_objects(text: str):
                 start = None
 
 
-def _parse_json_text(text: str) -> dict[str, Any]:
+def _last_structured_json_object(text: str, schema: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """Find the terminal schema-valid object even after malformed prose.
+
+    Agent transcripts can contain unmatched braces in shell snippets or
+    explanatory text before the final answer. A forward balanced-brace scan
+    then treats the final JSON as part of one invalid outer fragment. Decode
+    from each opening brace in reverse order so the last complete structured
+    answer wins without requiring the preceding transcript to be balanced.
+    """
+
+    decoder = json.JSONDecoder()
+    for index in range(len(text) - 1, -1, -1):
+        if text[index] != "{":
+            continue
+        try:
+            parsed, _end = decoder.raw_decode(text, index)
+        except json.JSONDecodeError:
+            continue
+        structured = _structured_output_candidate(parsed, schema)
+        if structured is not None:
+            return structured
+    return None
+
+
+def _parse_json_text(text: str, schema: dict[str, Any] | None = None) -> dict[str, Any]:
     stripped = text.strip()
     if not stripped:
         raise json.JSONDecodeError("Expecting value", text, 0)
+    terminal = _last_structured_json_object(text, schema)
+    if terminal is not None:
+        return terminal
     candidates = [stripped]
     candidates.extend(match.strip() for match in FENCED_JSON_RE.findall(text) if match.strip())
     candidates.extend(_balanced_json_objects(text))
@@ -1128,8 +1275,11 @@ def _parse_json_text(text: str) -> dict[str, Any]:
         except json.JSONDecodeError as exc:
             last_error = exc
             continue
-        if _looks_like_structured_output(parsed):
-            parsed_structured.append(parsed)
+        structured = _structured_output_candidate(parsed, schema)
+        if structured is not None:
+            parsed_structured.append(structured)
+    if schema is not None and parsed_structured:
+        return parsed_structured[0]
     for parsed in parsed_structured:
         if parsed.get(EXTRACTOR_HELPER_FIELD) is True:
             return parsed
@@ -1143,49 +1293,54 @@ def _parse_json_text(text: str) -> dict[str, Any]:
     raise HarnessError("harness did not return the required JSON object")
 
 
-def _extract_json(value: Any) -> dict[str, Any]:
-    if _looks_like_structured_output(value):
-        return _with_extractor_marker(value)
+def _extract_json(value: Any, schema: dict[str, Any] | None = None) -> dict[str, Any]:
+    structured = _structured_output_candidate(value, schema)
+    if structured is not None:
+        return structured
     if isinstance(value, str):
-        return _parse_json_text(value)
+        return _parse_json_text(value, schema)
     if isinstance(value, dict):
-        # Prefer camelCase structuredOutput (Grok Build --json-schema) over free text.
         for key in ("structuredOutput", "structured_output"):
             structured_output = value.get(key)
             if isinstance(structured_output, dict):
-                return _with_extractor_marker(structured_output)
+                if schema is None:
+                    return _with_extractor_marker(structured_output)
+                structured = _structured_output_candidate(structured_output, schema)
+                if structured is not None:
+                    return structured
         for key in ("output", "data"):
             nested = value.get(key)
-            if _looks_like_structured_output(nested):
-                return _with_extractor_marker(nested)
+            structured = _structured_output_candidate(nested, schema)
+            if structured is not None:
+                return structured
         result = value.get("result")
         if isinstance(result, dict):
             for key in ("structuredOutput", "structured_output"):
-                nested = result.get(key)
-                if _looks_like_structured_output(nested):
-                    return _with_extractor_marker(nested)
+                structured = _structured_output_candidate(result.get(key), schema)
+                if structured is not None:
+                    return structured
             content = result.get("content")
             if isinstance(content, list):
                 text = "".join(part.get("text", "") for part in content if isinstance(part, dict))
                 if text:
-                    return _parse_json_text(text)
+                    return _parse_json_text(text, schema)
         if isinstance(result, str):
-            return _parse_json_text(result)
+            return _parse_json_text(result, schema)
     raise HarnessError("harness did not return the required JSON object")
 
 
-def _extract_json_from_output_file(path: str) -> dict[str, Any]:
+def _extract_json_from_output_file(path: str, schema: dict[str, Any] | None = None) -> dict[str, Any]:
     text = _read_output_file(path)
     if text is None:
         raise HarnessError("codex did not write the output file")
     try:
-        return _extract_json(json.loads(text))
+        return _extract_json(json.loads(text), schema)
     except json.JSONDecodeError:
-        return _parse_json_text(text)
+        return _parse_json_text(text, schema)
 
 
 def _extract_json_from_claude_stream(
-    stdout: str, *, provider: str | None = None
+    stdout: str, *, provider: str | None = None, schema: dict[str, Any] | None = None
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     candidates: list[Any] = []
     usage = None
@@ -1196,6 +1351,8 @@ def _extract_json_from_claude_stream(
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
             continue
         if event.get("type") == "assistant":
             content = (event.get("message") or {}).get("content") or []
@@ -1231,7 +1388,7 @@ def _extract_json_from_claude_stream(
     last_error = None
     for candidate in reversed(candidates):
         try:
-            return _extract_json(candidate), usage
+            return _extract_json(candidate, schema), usage
         except (HarnessError, json.JSONDecodeError) as exc:
             last_error = exc
     raise HarnessError(
@@ -1311,6 +1468,8 @@ def _usage_from_codex_jsonl(stdout: str) -> tuple[dict[str, Any] | None, str | N
             event = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if not isinstance(event, dict):
+            continue
         payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
         if event.get("type") == "thread.started":
             thread_id = event.get("thread_id")
@@ -1352,13 +1511,21 @@ def _count_subagent_event(event: dict[str, Any], subagents: dict[str, int]):
         subagents["taskCompleteEvents"] += 1
 
 
-def _extract_json_from_codex_jsonl(stdout: str) -> dict[str, Any] | None:
+def _extract_json_from_codex_jsonl(
+    stdout: str,
+    schema: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
     texts = []
     for line in stdout.splitlines():
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if not isinstance(event, dict):
+            continue
+        item = event.get("item") if isinstance(event.get("item"), dict) else {}
+        if item.get("type") == "agent_message" and isinstance(item.get("text"), str):
+            texts.append(item["text"])
         payload = event.get("payload") if isinstance(event, dict) else None
         if not isinstance(payload, dict):
             payload = event
@@ -1368,20 +1535,43 @@ def _extract_json_from_codex_jsonl(stdout: str) -> dict[str, Any] | None:
             texts.append(payload["last_agent_message"])
     for text in reversed(texts):
         try:
-            return _parse_json_text(text)
+            return _parse_json_text(text, schema)
         except (HarnessError, json.JSONDecodeError):
             continue
     return None
 
 
-def _jsonl_result(stdout: str) -> CodexJsonlResult:
+def _codex_error_diagnostic_text(stdout: str, stderr: str) -> str:
+    """Exclude repository command output from provider-error classification."""
+
+    diagnostics = [stderr] if stderr else []
+    for line in stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        item = event.get("item") if isinstance(event.get("item"), dict) else {}
+        if (
+            event.get("type") in {"error", "turn.failed"}
+            or payload.get("type") in {"error", "turn.failed"}
+            or item.get("type") == "error"
+        ):
+            diagnostics.append(line)
+    return "\n".join(diagnostics)
+
+
+def _jsonl_result(stdout: str, schema: dict[str, Any] | None = None) -> CodexJsonlResult:
     usage, thread_id = _usage_from_codex_jsonl(stdout)
-    return CodexJsonlResult(payload=_extract_json_from_codex_jsonl(stdout), usage=usage, thread_id=thread_id)
+    return CodexJsonlResult(payload=_extract_json_from_codex_jsonl(stdout, schema), usage=usage, thread_id=thread_id)
 
 
 def _extract_json_from_codex_session_files(
     codex_home: str | None,
     started_at: float,
+    schema: dict[str, Any] | None = None,
 ) -> CodexJsonlResult | None:
     if not codex_home:
         return None
@@ -1405,7 +1595,7 @@ def _extract_json_from_codex_session_files(
             stdout = path.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
-        result = _jsonl_result(stdout)
+        result = _jsonl_result(stdout, schema)
         if result.payload is not None or result.thread_id:
             return CodexJsonlResult(
                 payload=result.payload,
@@ -1588,12 +1778,14 @@ class CodexHarness:
             try:
                 if not os.path.exists(output_path):
                     raise HarnessError("codex did not write the structured output file")
-                parsed_payload = _extract_json_from_output_file(output_path)
+                parsed_payload = _extract_json_from_output_file(output_path, schema)
             except (HarnessError, json.JSONDecodeError) as exc:
                 payload_error = _harness_error_with_output(exc, process_output)
-                parsed_payload = _extract_json_from_codex_jsonl(proc.stdout)
+                parsed_payload = _extract_json_from_codex_jsonl(proc.stdout, schema)
                 if parsed_payload is None and allow_tools:
-                    session_result = _extract_json_from_codex_session_files(actual_env.get("CODEX_HOME"), started_at)
+                    session_result = _extract_json_from_codex_session_files(
+                        actual_env.get("CODEX_HOME"), started_at, schema
+                    )
                     if session_result is not None:
                         parsed_payload = session_result.payload
                         usage = usage or session_result.usage
@@ -1641,7 +1833,7 @@ class CodexHarness:
                         )
             if parsed_payload is None:
                 raise _classified_harness_error(
-                    proc.stdout,
+                    _codex_error_diagnostic_text(proc.stdout, proc.stderr),
                     harness="codex",
                     default_code="invalid_output",
                     output_artifact=process_output,
@@ -1706,14 +1898,14 @@ class CodexHarness:
         try:
             if not os.path.exists(output_path):
                 raise HarnessError("codex resume did not write the structured output file")
-            parsed_payload = _extract_json_from_output_file(output_path)
+            parsed_payload = _extract_json_from_output_file(output_path, schema)
         except (HarnessError, json.JSONDecodeError) as exc:
             payload_error = _harness_error_with_output(exc, process_output)
             parsed_payload = None
         if parsed_payload is None:
-            parsed_payload = _extract_json_from_codex_jsonl(proc.stdout)
+            parsed_payload = _extract_json_from_codex_jsonl(proc.stdout, schema)
         if parsed_payload is None:
-            session_result = _extract_json_from_codex_session_files(env.get("CODEX_HOME"), started_at)
+            session_result = _extract_json_from_codex_session_files(env.get("CODEX_HOME"), started_at, schema)
             if session_result is not None:
                 parsed_payload = session_result.payload
                 usage = usage or session_result.usage
@@ -1723,7 +1915,7 @@ class CodexHarness:
                     process_output = _add_output_file(process_output, source_name, session_result.source_text)
         if parsed_payload is None:
             raise _classified_harness_error(
-                proc.stdout,
+                _codex_error_diagnostic_text(proc.stdout, proc.stderr),
                 harness="codex",
                 default_code="invalid_output",
                 output_artifact=process_output,
@@ -1826,7 +2018,7 @@ class ClaudeHarness:
         process_output = _process_output(proc)
         if provider == "openrouter":
             try:
-                payload, usage = _extract_json_from_claude_stream(proc.stdout, provider=provider)
+                payload, usage = _extract_json_from_claude_stream(proc.stdout, provider=provider, schema=schema)
             except HarnessError as exc:
                 raise _harness_error_with_output(exc, process_output) from exc
             except json.JSONDecodeError as exc:

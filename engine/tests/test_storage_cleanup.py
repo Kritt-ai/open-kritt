@@ -70,4 +70,6 @@ def test_stopped_container_prune_is_scoped_to_scan_runner_label(monkeypatch):
         "--force",
         "--filter",
         "label=open-kritt.scan-runner=1",
+        "--filter",
+        "until=10m",
     ]

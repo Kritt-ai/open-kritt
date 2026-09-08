@@ -60,6 +60,7 @@ from .prompting import (
 )
 from .provider_credentials import provider_environment
 from .queue import build_pending_jobs, configured_step_ids
+from .runner_resources import evict_newest_scan_runner
 from .runtime_config import runtime_bool, runtime_config_path, runtime_float, runtime_int, runtime_value
 from .schema import OutputValidationError, output_schema, validate_payload
 from .storage_cleanup import prune_docker_build_cache, prune_stopped_scan_containers, prune_unused_docker_images
@@ -101,6 +102,7 @@ RATE_LIMIT_RETRY_AFTER_MAX_SECONDS = 300.0
 RATE_LIMIT_RESUME_DELAY_SECONDS = 60.0
 ARTIFACT_CLEANUP_INTERVAL_SECONDS = 5 * 60.0
 ARTIFACT_CLEANUP_GRACE_SECONDS = 5 * 60.0
+MEMORY_PRESSURE_EVICTION_COOLDOWN_SECONDS = 30.0
 
 
 class StepExecutionError(RuntimeError):
@@ -217,6 +219,7 @@ class Worker:
         self._artifact_cleanup_requested = False
         self._docker_storage_cleanup_lock = threading.Lock()
         self._next_docker_storage_cleanup = 0.0
+        self._next_memory_pressure_eviction = 0.0
 
     def run_forever(self):
         workers: dict[int, tuple[threading.Thread, threading.Event]] = {}
@@ -239,6 +242,7 @@ class Worker:
             self._schedule_artifact_cleanup()
             self._schedule_codex_update()
             self._schedule_model_catalog_refresh()
+            self._evict_runner_under_memory_pressure()
             for worker_id, (thread, _stop_event) in list(workers.items()):
                 if not thread.is_alive():
                     workers.pop(worker_id, None)
@@ -480,6 +484,45 @@ class Worker:
             LOGGER.info("resuming runner admission with %.1f GiB available", available_bytes / GIB)
         self._memory_admission_paused = not allowed
         return allowed
+
+    def runtime_memory_pressure_eviction_enabled(self) -> bool:
+        return runtime_bool(
+            "ENGINE_MEMORY_PRESSURE_EVICTION_ENABLED",
+            False,
+            data_dir=getattr(self.config, "data_dir", None),
+        )
+
+    def _evict_runner_under_memory_pressure(self) -> str | None:
+        """Evict one runner before Linux has to choose an OOM victim."""
+
+        if not self.runtime_memory_pressure_eviction_enabled():
+            return None
+        now = time.monotonic()
+        if now < getattr(self, "_next_memory_pressure_eviction", 0.0):
+            return None
+        available_reader = getattr(self, "_system_memory_available_bytes", system_memory_available_bytes)
+        available_bytes = available_reader()
+        if available_bytes is None:
+            return None
+        reserve_bytes = self.runtime_memory_reserve_bytes()
+        runner_bytes = self.runtime_scan_runner_memory_reservation_mb() * MIB
+        required_bytes = reserve_bytes + runner_bytes
+        if available_bytes >= required_bytes:
+            return None
+
+        runner_name = evict_newest_scan_runner()
+        if not runner_name:
+            return None
+        self._next_memory_pressure_eviction = now + MEMORY_PRESSURE_EVICTION_COOLDOWN_SECONDS
+        LOGGER.warning(
+            "evicted newest scan runner %s under memory pressure: %.1f GiB available, "
+            "%.1f GiB reserve plus %s MiB recovery margin required",
+            runner_name,
+            available_bytes / GIB,
+            reserve_bytes / GIB,
+            runner_bytes // MIB,
+        )
+        return runner_name
 
     def runtime_autoscale_scan_workers_on_provider_capacity(self) -> bool:
         return runtime_bool(

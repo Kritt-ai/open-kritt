@@ -91,6 +91,7 @@ services:
       dockerfile: Dockerfile
     image: ${ENGINE_IMAGE:-open-kritt-engine:local}
     container_name: open-kritt-engine
+    oom_score_adj: -500
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql://open_kritt:open_kritt_password@db:5432/open_kritt?schema=public}
       ENGINE_DATA_DIR: ${ENGINE_DATA_DIR:-/data}
@@ -114,6 +115,9 @@ services:
       ENGINE_MEMORY_RESERVE_GB: ${ENGINE_MEMORY_RESERVE_GB:-2}
       ENGINE_SCAN_RUNNER_MEMORY_MB: ${ENGINE_SCAN_RUNNER_MEMORY_MB:-1536}
       ENGINE_SCAN_RUNNER_MEMORY_RESERVATION_MB: ${ENGINE_SCAN_RUNNER_MEMORY_RESERVATION_MB:-${ENGINE_SCAN_RUNNER_MEMORY_MB:-1536}}
+      ENGINE_SCAN_RUNNER_CPUS: ${ENGINE_SCAN_RUNNER_CPUS:-0}
+      ENGINE_SCAN_RUNNER_OOM_SCORE_ADJ: ${ENGINE_SCAN_RUNNER_OOM_SCORE_ADJ:-500}
+      ENGINE_MEMORY_PRESSURE_EVICTION_ENABLED: ${ENGINE_MEMORY_PRESSURE_EVICTION_ENABLED:-false}
       EXECUTOR_VIEW_URL: http://executor-view:8090
       EXECUTOR_VIEW_INTERNAL_TOKEN_FILE: /executor-auth/internal-token
       ENGINE_WORKSPACE_SETUP_CONCURRENCY: ${ENGINE_WORKSPACE_SETUP_CONCURRENCY:-2}

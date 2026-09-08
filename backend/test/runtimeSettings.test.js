@@ -44,6 +44,9 @@ test('settings API exposes the whitelisted runtime settings', async () => {
       'memoryReserveGb',
       'scanRunnerMemoryMb',
       'scanRunnerMemoryReservationMb',
+      'scanRunnerCpus',
+      'scanRunnerOomScoreAdj',
+      'memoryPressureEvictionEnabled',
       'workspaceSetupConcurrency',
       'retryCount',
       'cyberSafetyRetryCount',
@@ -97,6 +100,11 @@ test('runtime settings expose only whitelisted effective values and their source
   assert.equal(result.settings.memoryReserveGb.value, 2);
   assert.equal(result.settings.scanRunnerMemoryMb.value, 1536);
   assert.equal(result.settings.scanRunnerMemoryReservationMb.value, 1536);
+  assert.equal(result.settings.scanRunnerCpus.value, 0);
+  assert.equal(result.settings.scanRunnerCpus.type, 'number');
+  assert.equal(result.settings.scanRunnerOomScoreAdj.value, 500);
+  assert.equal(result.settings.memoryPressureEvictionEnabled.value, false);
+  assert.equal(result.settings.memoryPressureEvictionEnabled.type, 'boolean');
   assert.equal(result.capabilities.perScanConcurrency.available, true);
   assert.doesNotMatch(JSON.stringify(result), /must-not-leak|secret\/account|GITHUB_TOKEN|OPENROUTER_API_KEY/);
 });
@@ -119,6 +127,9 @@ test('runtime setting updates apply live and persist without overwriting unrelat
       memoryReserveGb: 2.5,
       scanRunnerMemoryMb: 1792,
       scanRunnerMemoryReservationMb: 768,
+      scanRunnerCpus: 0.35,
+      scanRunnerOomScoreAdj: 500,
+      memoryPressureEvictionEnabled: true,
     },
     {
       ...paths,
@@ -141,6 +152,9 @@ test('runtime setting updates apply live and persist without overwriting unrelat
   assert.equal(runtimeValues.ENGINE_MEMORY_RESERVE_GB, '2.5');
   assert.equal(runtimeValues.ENGINE_SCAN_RUNNER_MEMORY_MB, '1792');
   assert.equal(runtimeValues.ENGINE_SCAN_RUNNER_MEMORY_RESERVATION_MB, '768');
+  assert.equal(runtimeValues.ENGINE_SCAN_RUNNER_CPUS, '0.35');
+  assert.equal(runtimeValues.ENGINE_SCAN_RUNNER_OOM_SCORE_ADJ, '500');
+  assert.equal(runtimeValues.ENGINE_MEMORY_PRESSURE_EVICTION_ENABLED, 'true');
   assert.equal(runtimeValues.ENGINE_CODEX_HOME, '/account');
   assert.equal(projectValues.ENGINE_WORKER_COUNT, '5');
   assert.equal(projectValues.ENGINE_WORKERS_PER_ACCOUNT, '12');
@@ -153,6 +167,9 @@ test('runtime setting updates apply live and persist without overwriting unrelat
   assert.equal(projectValues.ENGINE_MEMORY_RESERVE_GB, '2.5');
   assert.equal(projectValues.ENGINE_SCAN_RUNNER_MEMORY_MB, '1792');
   assert.equal(projectValues.ENGINE_SCAN_RUNNER_MEMORY_RESERVATION_MB, '768');
+  assert.equal(projectValues.ENGINE_SCAN_RUNNER_CPUS, '0.35');
+  assert.equal(projectValues.ENGINE_SCAN_RUNNER_OOM_SCORE_ADJ, '500');
+  assert.equal(projectValues.ENGINE_MEMORY_PRESSURE_EVICTION_ENABLED, 'true');
   assert.equal(projectValues.KEEP, 'value');
   assert.match(runtimeText, /^# live settings$/m);
   assert.match(projectText, /^# project settings$/m);
@@ -168,6 +185,9 @@ test('runtime setting updates apply live and persist without overwriting unrelat
   assert.equal(result.settings.memoryReserveGb.value, 2.5);
   assert.equal(result.settings.scanRunnerMemoryMb.value, 1792);
   assert.equal(result.settings.scanRunnerMemoryReservationMb.value, 768);
+  assert.equal(result.settings.scanRunnerCpus.value, 0.35);
+  assert.equal(result.settings.scanRunnerOomScoreAdj.value, 500);
+  assert.equal(result.settings.memoryPressureEvictionEnabled.value, true);
 });
 
 test('runtime setting validation rejects unknown, fractional, and out-of-range values', () => {
@@ -238,16 +258,25 @@ test('runtime setting validation rejects unknown, fractional, and out-of-range v
       memoryReserveGb: '2.5',
       scanRunnerMemoryMb: 1536,
       scanRunnerMemoryReservationMb: 768,
+      scanRunnerCpus: 0.35,
+      scanRunnerOomScoreAdj: 500,
+      memoryPressureEvictionEnabled: true,
     }),
     {
       memoryReserveGb: 2.5,
       scanRunnerMemoryMb: 1536,
       scanRunnerMemoryReservationMb: 768,
+      scanRunnerCpus: 0.35,
+      scanRunnerOomScoreAdj: 500,
+      memoryPressureEvictionEnabled: true,
     }
   );
   assert.throws(() => validateRuntimeSettingsPatch({ memoryReserveGb: -1 }), ValidationError);
   assert.throws(() => validateRuntimeSettingsPatch({ scanRunnerMemoryMb: 1.5 }), ValidationError);
   assert.throws(() => validateRuntimeSettingsPatch({ scanRunnerMemoryReservationMb: 1.5 }), ValidationError);
+  assert.throws(() => validateRuntimeSettingsPatch({ scanRunnerCpus: 64.1 }), ValidationError);
+  assert.throws(() => validateRuntimeSettingsPatch({ scanRunnerOomScoreAdj: 1.5 }), ValidationError);
+  assert.throws(() => validateRuntimeSettingsPatch({ memoryPressureEvictionEnabled: 'true' }), ValidationError);
 });
 
 test('invalid persisted values fall back safely and are flagged', async (t) => {
