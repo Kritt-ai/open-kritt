@@ -619,9 +619,7 @@ test('validateScan requires workflow and post-script ids to be positive database
       () => validateScan({ ...base, [field]: value }),
       (error) =>
         error instanceof ValidationError &&
-        error.errors.some(
-          (item) => item.field === field && item.message.includes('must be a positive integer ID')
-        )
+        error.errors.some((item) => item.field === field && item.message.includes('must be a positive integer ID'))
     );
   }
 });
