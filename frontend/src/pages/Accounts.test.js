@@ -5,9 +5,11 @@ import {
   AccountRateLimits,
   CodexSignInRequired,
   CodexWeeklyUsage,
+  ProviderCard,
   ProviderSignInRequired,
   codexWeeklyUsage,
   creditUsageNote,
+  formatResetExpiryDate,
   formatResetRemaining,
   providerActionLabel,
   providerReloginAccountId,
@@ -16,6 +18,7 @@ import {
   removeProviderFromOverview,
   replaceAccountProvider,
   startCodexWeeklyUsageUntilStarted,
+  updatePendingAccounts,
 } from './Accounts.jsx';
 
 describe('expired Codex login', () => {
@@ -74,6 +77,21 @@ describe('Claude usage bars', () => {
     expect(html).toContain('9%');
     expect(html).toContain('aria-valuenow="47"');
     expect(html).toContain('aria-valuenow="9"');
+  });
+
+  it('does not call usage unavailable when an unused window has no reset time yet', () => {
+    const html = renderToStaticMarkup(
+      createElement(AccountRateLimits, {
+        providerId: 'claude',
+        rateLimits: {
+          primary: { usedPercent: 0, windowMinutes: 300, resetsAt: null },
+          secondary: { usedPercent: 0, windowMinutes: 10080, resetsAt: null },
+        },
+      })
+    );
+
+    expect(html).toContain('aria-valuenow="0"');
+    expect(html).not.toContain('Usage unavailable');
   });
 });
 
@@ -138,7 +156,11 @@ describe('Codex weekly usage', () => {
           active: true,
           rateLimits: {
             observedAt: '2026-07-19T10:00:00Z',
-            manualResetCredits: { availableCount: 3, applicableAvailableCount: 1 },
+            manualResetCredits: {
+              availableCount: 3,
+              applicableAvailableCount: 1,
+              credits: [{ title: 'Full reset', expiresAt: '2026-08-12T18:07:27Z' }],
+            },
             primary: {
               usedPercent: 0,
               windowMinutes: 10080,
@@ -153,6 +175,7 @@ describe('Codex weekly usage', () => {
       resetRemaining: '7d 0h remaining',
       manualResetsAvailable: 3,
       manualResetsApplicable: 1,
+      manualResetCredits: [{ title: 'Full reset', expiresAt: '2026-08-12T18:07:27Z' }],
     });
   });
 
@@ -243,6 +266,17 @@ describe('Codex weekly usage', () => {
     expect(html).toContain('3 available');
   });
 
+  it('tracks concurrent quota starts independently', () => {
+    let pending = updatePendingAccounts(new Set(), 'reviewer', true);
+    pending = updatePendingAccounts(pending, 'researcher', true);
+
+    expect([...pending]).toEqual(['reviewer', 'researcher']);
+
+    pending = updatePendingAccounts(pending, 'reviewer', false);
+
+    expect([...pending]).toEqual(['researcher']);
+  });
+
   it('shows but disables reset use when no usage window is eligible', () => {
     const html = renderToStaticMarkup(
       createElement(CodexWeeklyUsage, {
@@ -259,6 +293,28 @@ describe('Codex weekly usage', () => {
     expect(html).toContain('Use reset');
     expect(html).toContain('disabled=""');
     expect(html).toContain('No current usage window is eligible');
+  });
+
+  it('shows the expiry date for each available manual reset', () => {
+    const html = renderToStaticMarkup(
+      createElement(CodexWeeklyUsage, {
+        usage: {
+          notStarted: false,
+          resetRemaining: '2d remaining',
+          manualResetsAvailable: 2,
+          manualResetsApplicable: 1,
+          manualResetCredits: [
+            { title: 'Full reset', expiresAt: '2026-08-12T18:07:27Z' },
+            { title: 'Full reset', expiresAt: '2026-08-13T18:07:27Z' },
+          ],
+        },
+        onReset: () => {},
+      })
+    );
+
+    expect(html).toContain('Full reset · Expires Aug 12, 2026');
+    expect(html).toContain('Full reset · Expires Aug 13, 2026');
+    expect(formatResetExpiryDate('2026-08-12T18:07:27Z', 'en-US')).toBe('Aug 12, 2026');
   });
 
   it('retries at most three times while the refreshed timestamp still shows an untouched window', async () => {
@@ -328,6 +384,140 @@ describe('creditUsageNote', () => {
       'Remaining amount unavailable · Does not reset'
     );
     expect(creditUsageNote({ limit: 100, remaining: 0, limitReset: 'monthly' })).toContain('$0.00 remaining');
+  });
+});
+
+describe('xAI login provider', () => {
+  it('uses Grok device-login action labels and relogin targets', () => {
+    expect(
+      providerActionLabel({
+        id: 'xai',
+        label: 'xAI',
+        management: 'login',
+        configured: false,
+        accounts: [],
+      })
+    ).toBe('Add Grok account');
+    expect(
+      providerActionLabel({
+        id: 'xai',
+        label: 'xAI',
+        management: 'login',
+        configured: true,
+        accounts: [{ id: 'primary', statusKind: 'expired' }],
+      })
+    ).toBe('Sign in to xAI again');
+    expect(
+      providerReloginAccountId({
+        id: 'xai',
+        accounts: [
+          { id: 'active', statusKind: 'available' },
+          { id: 'expired', statusKind: 'expired' },
+        ],
+      })
+    ).toBe('expired');
+    const html = renderToStaticMarkup(createElement(ProviderSignInRequired, { providerId: 'xai' }));
+    expect(html).toContain('Sign in to xAI again');
+  });
+
+  it('shows an expired account even when no usable xAI credential remains', () => {
+    const html = renderToStaticMarkup(
+      createElement(ProviderCard, {
+        provider: {
+          id: 'xai',
+          label: 'xAI',
+          description: 'Grok Build through an xAI device login or API key.',
+          management: 'login',
+          configured: false,
+          active: 0,
+          total: 1,
+          limited: 0,
+          accounts: [
+            {
+              id: 'reviewer',
+              label: 'reviewer',
+              path: '/grok-accounts/reviewer/.grok',
+              active: false,
+              canRemove: true,
+              status: 'sign-in required',
+              statusKind: 'expired',
+              authError: 'Grok rejected the saved login.',
+              details: [],
+            },
+          ],
+        },
+        onEdit: () => {},
+        onEditKey: null,
+        onRemove: () => {},
+        onRemoveAccount: () => {},
+        onStartWeeklyUsage: () => {},
+        onUseManualReset: () => {},
+        removingAccount: null,
+        startingUsage: new Set(),
+        resettingUsage: new Set(),
+        loading: false,
+        loadError: null,
+      })
+    );
+
+    expect(html).toContain('reviewer');
+    expect(html).toContain('Sign in to xAI again');
+    expect(html).not.toContain('No xAI account configured');
+  });
+});
+
+describe('api key providers', () => {
+  it('derives add-key labels from credential metadata', () => {
+    expect(
+      providerActionLabel({
+        id: 'openrouter',
+        label: 'OpenRouter',
+        management: 'api_key',
+        configured: false,
+        credentialLabel: 'OpenRouter API key',
+        accounts: [],
+      })
+    ).toBe('Add OpenRouter key');
+    expect(
+      providerActionLabel({
+        id: 'xai',
+        label: 'xAI',
+        management: 'api_key',
+        configured: false,
+        credentialLabel: 'xAI API key',
+        accounts: [],
+      })
+    ).toBe('Add xAI key');
+    expect(
+      providerActionLabel({
+        id: 'openrouter',
+        label: 'OpenRouter',
+        management: 'api_key',
+        configured: true,
+        credentialLabel: 'OpenRouter API key',
+        accounts: [{ id: 'openrouter-key', active: true, statusKind: 'available' }],
+      })
+    ).toBe('Add or replace key');
+  });
+
+  it('falls back to a generic label when credential metadata is missing', () => {
+    expect(
+      providerActionLabel({
+        id: 'custom',
+        label: 'Custom',
+        management: 'api_key',
+        configured: false,
+        accounts: [],
+      })
+    ).toBe('Add Custom key');
+    expect(
+      providerActionLabel({
+        id: 'custom',
+        management: 'api_key',
+        configured: false,
+        accounts: [],
+      })
+    ).toBe('Add API key');
   });
 });
 

@@ -6,6 +6,7 @@ const PROVIDER_CREDENTIALS = {
   codex: ['CODEX_API_KEY', 'OPENAI_API_KEY'],
   claude: ['ANTHROPIC_API_KEY'],
   openrouter: ['OPENROUTER_API_KEY'],
+  xai: ['XAI_API_KEY'],
 };
 
 function hasValue(value) {

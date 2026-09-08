@@ -11,6 +11,7 @@ between them per run, but a single working provider is enough to start.
 | **Codex** | ChatGPT/Codex login or an OpenAI Platform key | Account-specific picker |
 | **Claude** | Claude subscription login or `ANTHROPIC_API_KEY` | Subscription aliases or account-specific picker |
 | **OpenRouter** | `OPENROUTER_API_KEY` | Searchable authenticated catalog, with an exact-ID fallback |
+| **xAI** | Grok device login or `XAI_API_KEY` | Searchable authenticated catalog (with key), with an exact-ID fallback |
 
 <CardGroup cols={2}>
   <Card title="Codex" icon="terminal" href="/ai-provider-setup/codex">
@@ -21,6 +22,9 @@ between them per run, but a single working provider is enough to start.
   </Card>
   <Card title="OpenRouter" icon="route" href="/ai-provider-setup/openrouter">
     Use one key to access compatible models through OpenRouter.
+  </Card>
+  <Card title="xAI" icon="bolt" href="/ai-provider-setup/xai">
+    Use Grok device login or an xAI API key with the Grok Build harness.
   </Card>
 </CardGroup>
 
@@ -36,9 +40,10 @@ between them per run, but a single working provider is enough to start.
   </Step>
   <Step title="Choose one access method">
     Select **Codex login**, **OpenAI API key**, **Codex API key**, **Anthropic API key**,
-    or **OpenRouter API key**. Follow the provider guide above to obtain the correct
-    credential. The CLI configures keys and Codex login; Claude subscription login is
-    available from the running application's **Accounts** page.
+    **OpenRouter API key**, or **xAI API key**. Follow the provider guide above to obtain
+    the correct credential. The CLI configures keys and Codex login; Claude and xAI
+    device login, plus OpenRouter/xAI key management, are also available from the running
+    application's **Accounts** page.
   </Step>
   <Step title="Start or recreate the stack">
     ```bash
@@ -60,16 +65,18 @@ between them per run, but a single working provider is enough to start.
 API keys configured by the CLI are written to the repository's `.env` file. Codex logins
 are stored under `ENGINE_CODEX_ACCOUNTS_HOST`, which defaults to
 `./.data/codex-accounts`; a Claude login is stored under `ENGINE_CLAUDE_HOME`, which
-defaults to `./.data/claude`. The Accounts page keeps Codex account paths and its
-OpenRouter key synchronized with `.env`, and mirrors the OpenRouter key under
+defaults to `./.data/claude`; a Grok/xAI login is stored under
+`ENGINE_GROK_HOME_HOST` / `ENGINE_GROK_ACCOUNTS_HOST`, which default to `./.data/grok`
+and `./.data/grok-accounts`. The Accounts page keeps Codex/Claude/xAI account paths and
+its OpenRouter and xAI keys synchronized with `.env`, and mirrors those keys under
 `.data/engine/credentials` so running services see changes immediately. `.env` and
 `.data/` are ignored by Git.
 
 <Warning>
-  Treat `.env`, `./.data/codex`, `./.data/codex-accounts`, `./.data/claude`, and the
-  engine credential store as secrets. Never commit them, paste them into an issue, or
-  share them with another user. Revoke and replace a credential immediately if it is
-  exposed.
+  Treat `.env`, `./.data/codex`, `./.data/codex-accounts`, `./.data/claude`,
+  `./.data/grok`, `./.data/grok-accounts`, and the engine credential store as secrets.
+  Never commit them, paste them into an issue, or share them with another user. Revoke
+  and replace a credential immediately if it is exposed.
 </Warning>
 
 The backend has private write access to `.env` and the provider stores so Accounts can
@@ -83,4 +90,4 @@ engine receives the actual credential when it starts a model harness.
 
 Next: configure the recommended [Codex provider](/ai-provider-setup/codex),
 [Claude Code](/ai-provider-setup/claude-code), or
-[OpenRouter](/ai-provider-setup/openrouter).
+[OpenRouter](/ai-provider-setup/openrouter), or [xAI](/ai-provider-setup/xai).

@@ -65,7 +65,8 @@ mind when self-hosting:
   stores so changes persist. Scope tokens minimally and rotate them. Never commit
   secrets; the repo ships a `gitleaks` pre-commit hook to help.
 - **Data egress.** Scans send repository content to whichever model/provider endpoint
-  you configure. Understand where that data goes before scanning sensitive code.
+  you configure (Codex/OpenAI, Anthropic, OpenRouter, or xAI). Understand where that data
+  goes before scanning sensitive code.
 - **Network.** The backend API is unauthenticated by default; do not
   expose it to untrusted networks without putting your own auth/proxy in front.
 

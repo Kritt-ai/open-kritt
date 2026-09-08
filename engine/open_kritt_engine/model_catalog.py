@@ -24,6 +24,13 @@ LOGGER = logging.getLogger("open_kritt_engine")
 ANTHROPIC_MODELS_URL = "https://api.anthropic.com/v1/models"
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models/user"
 OPENROUTER_DEFAULT_MODEL_ID = "z-ai/glm-5.2"
+XAI_MODELS_URL = "https://api.x.ai/v1/language-models"
+XAI_DEFAULT_MODEL_ID = "grok-4.6"
+XAI_THINKING_EFFORTS = ("low", "medium", "high")
+XAI_GROK_46_THINKING_EFFORTS = (*XAI_THINKING_EFFORTS, "xhigh")
+OPENROUTER_MODEL_THINKING_EFFORTS = {
+    "stealth/ox-alpha": ("low", "high", "max"),
+}
 CATALOG_REFRESH_ERROR = "Unable to refresh the provider model catalog."
 MAX_CATALOG_MODELS = 500
 MAX_CATALOG_PAGES = 10
@@ -118,6 +125,24 @@ def _openrouter_is_text_model(entry: Mapping[str, Any]) -> bool:
     if not isinstance(output_modalities, list):
         return True
     return "text" in {_clean_text(modality).lower() for modality in output_modalities}
+
+
+def _xai_is_text_model(entry: Mapping[str, Any]) -> bool:
+    """Defensively reject a malformed language-catalog entry without text output."""
+
+    output_modalities = entry.get("output_modalities")
+    if not isinstance(output_modalities, list):
+        return True
+    return "text" in {_clean_text(modality).lower() for modality in output_modalities}
+
+
+def _xai_thinking_efforts(model_id: str) -> list[str]:
+    efforts = (
+        XAI_GROK_46_THINKING_EFFORTS
+        if model_id == XAI_DEFAULT_MODEL_ID or model_id.startswith(f"{XAI_DEFAULT_MODEL_ID}-")
+        else XAI_THINKING_EFFORTS
+    )
+    return list(efforts)
 
 
 def normalize_catalog_models(entries: Any) -> tuple[list[dict[str, Any]], str]:
@@ -421,11 +446,14 @@ def fetch_openrouter_models(api_key: str, timeout_seconds: float) -> tuple[list[
         if not model_id or model_id in seen_ids:
             continue
         seen_ids.add(model_id)
+        thinking_efforts = OPENROUTER_MODEL_THINKING_EFFORTS.get(model_id)
         entries.append(
             {
                 "model": model_id,
                 "displayName": raw.get("name"),
-                "supportedReasoningEfforts": _openrouter_thinking_efforts(raw),
+                "supportedReasoningEfforts": (
+                    list(thinking_efforts) if thinking_efforts else _openrouter_thinking_efforts(raw)
+                ),
                 "isDefault": model_id == OPENROUTER_DEFAULT_MODEL_ID,
             }
         )
@@ -438,6 +466,63 @@ def fetch_openrouter_models(api_key: str, timeout_seconds: float) -> tuple[list[
     if not models:
         raise ModelCatalogError("OpenRouter model catalog was empty")
     return models, default_model
+
+
+def fetch_xai_models(api_key: str, timeout_seconds: float) -> tuple[list[dict[str, Any]], str]:
+    """List models available under the configured xAI API key."""
+
+    request = Request(
+        XAI_MODELS_URL,
+        headers={"Authorization": f"Bearer {api_key}"},
+    )
+    try:
+        with urlopen(request, timeout=max(1.0, timeout_seconds)) as response:  # noqa: S310 - fixed provider URL
+            raw_payload = response.read(MAX_HTTP_CATALOG_BYTES + 1)
+        if len(raw_payload) > MAX_HTTP_CATALOG_BYTES:
+            raise ModelCatalogError("xAI model catalog response was too large")
+        payload = json.loads(raw_payload)
+    except (HTTPError, URLError, OSError, TimeoutError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ModelCatalogError("Could not read the xAI model catalog") from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("models"), list):
+        raise ModelCatalogError("xAI model catalog response was invalid")
+
+    entries: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for raw in payload["models"]:
+        if not isinstance(raw, Mapping) or not _xai_is_text_model(raw):
+            continue
+        model_id = _clean_text(raw.get("id"))
+        if not model_id or model_id in seen_ids:
+            continue
+        seen_ids.add(model_id)
+        entries.append(
+            {
+                "model": model_id,
+                "displayName": raw.get("name") or model_id,
+                "supportedReasoningEfforts": _xai_thinking_efforts(model_id),
+                "isDefault": model_id == XAI_DEFAULT_MODEL_ID,
+            }
+        )
+        if len(entries) > MAX_CATALOG_MODELS:
+            candidate = entries.pop()
+            if candidate["isDefault"] and not any(entry["isDefault"] for entry in entries):
+                entries[-1] = candidate
+
+    if not any(entry["isDefault"] for entry in entries):
+        entries.insert(
+            0,
+            {
+                "model": XAI_DEFAULT_MODEL_ID,
+                "displayName": XAI_DEFAULT_MODEL_ID,
+                "supportedReasoningEfforts": _xai_thinking_efforts(XAI_DEFAULT_MODEL_ID),
+                "isDefault": True,
+            },
+        )
+
+    models, default_model = normalize_catalog_models(entries)
+    if not models:
+        raise ModelCatalogError("xAI model catalog was empty")
+    return models, default_model or XAI_DEFAULT_MODEL_ID
 
 
 CatalogFetcher = Callable[[], tuple[list[dict[str, Any]], str]]
@@ -455,6 +540,7 @@ class ModelCatalogRefresher:
         fetch_codex: CatalogFetcher | None = None,
         fetch_anthropic: CatalogFetcher | None = None,
         fetch_openrouter: CatalogFetcher | None = None,
+        fetch_xai: CatalogFetcher | None = None,
         codex_cli_gate: Any | None = None,
     ):
         self.db = db
@@ -463,6 +549,7 @@ class ModelCatalogRefresher:
         self.fetch_codex = fetch_codex
         self.fetch_anthropic = fetch_anthropic
         self.fetch_openrouter = fetch_openrouter
+        self.fetch_xai = fetch_xai
         self.codex_cli_gate = codex_cli_gate
 
     def refresh(self, env: Mapping[str, str] | None = None) -> dict[str, bool]:
@@ -489,6 +576,9 @@ class ModelCatalogRefresher:
                 lambda: fetch_openrouter_models(env["OPENROUTER_API_KEY"], self.timeout_seconds)
             )
             outcomes["openrouter"] = self._refresh_provider("openrouter", fetch_openrouter)
+        if _clean_text(env.get("XAI_API_KEY")):
+            fetch_xai = self.fetch_xai or (lambda: fetch_xai_models(env["XAI_API_KEY"], self.timeout_seconds))
+            outcomes["xai"] = self._refresh_provider("xai", fetch_xai)
         return outcomes
 
     def _refresh_provider(self, provider: str, fetcher: CatalogFetcher) -> bool:

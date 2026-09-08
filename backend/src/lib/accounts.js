@@ -2,13 +2,14 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { renewClaudeCredential } from './claudeCredentials.js';
+import { probeGrokCredential } from './grokCredentials.js';
 import { providerCredentialStatuses } from './providerCredentials.js';
-import { CLAUDE_ACCOUNTS_ROOT, CLAUDE_HOME } from './providerLogins.js';
+import { CLAUDE_ACCOUNTS_ROOT, CLAUDE_HOME, GROK_ACCOUNTS_ROOT, GROK_PRIMARY_HOME } from './providerLogins.js';
 
 const EXECUTOR_VIEW_URL = process.env.EXECUTOR_VIEW_URL || 'http://executor-view:8090';
 const EXECUTOR_VIEW_INTERNAL_TOKEN_FILE =
   process.env.EXECUTOR_VIEW_INTERNAL_TOKEN_FILE || '/executor-auth/internal-token';
-const ACCOUNT_PROVIDER_IDS = ['codex', 'claude', 'openrouter'];
+const ACCOUNT_PROVIDER_IDS = ['codex', 'claude', 'openrouter', 'xai'];
 const EXECUTOR_ACCOUNT_TIMEOUT_MS = 180000;
 const ACCOUNT_STATUS_KINDS = new Set(['available', 'limited', 'stale', 'expired', 'warning', 'missing']);
 const ACCOUNT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -38,12 +39,28 @@ function safeManualResetCredits(credits) {
   if (!credits || typeof credits !== 'object') return null;
   const availableCount = safeNumber(credits.availableCount);
   const applicableAvailableCount = safeNumber(credits.applicableAvailableCount);
-  if (availableCount === null && applicableAvailableCount === null) return null;
-  return {
+  const sanitizedCredits = Array.isArray(credits.credits)
+    ? credits.credits
+        .map((credit) => {
+          if (!credit || typeof credit !== 'object') return null;
+          const expiresAt = safeText(credit.expiresAt, 100);
+          if (!expiresAt) return null;
+          return {
+            title: safeText(credit.title, 100) || 'Usage reset',
+            expiresAt,
+          };
+        })
+        .filter(Boolean)
+        .slice(0, 50)
+    : [];
+  if (availableCount === null && applicableAvailableCount === null && !sanitizedCredits.length) return null;
+  const result = {
     availableCount: availableCount === null ? null : Math.max(0, Math.trunc(availableCount)),
     applicableAvailableCount:
       applicableAvailableCount === null ? null : Math.max(0, Math.trunc(applicableAvailableCount)),
   };
+  if (sanitizedCredits.length) result.credits = sanitizedCredits;
+  return result;
 }
 
 function safeNumber(value) {
@@ -113,6 +130,37 @@ function accountActionError(message, statusCode = 502) {
   return Object.assign(new Error(message), { statusCode });
 }
 
+function grokAccountHome(account, primaryHome, accountsRoot) {
+  if (!account || account.path === 'XAI_API_KEY' || account.id === 'xai-api-key') return null;
+  if (account.id === 'primary') return primaryHome;
+  return ACCOUNT_ID_PATTERN.test(account.id || '') ? join(accountsRoot, account.id, '.grok') : null;
+}
+
+async function refreshGrokLoginStatuses(provider, { primaryHome, accountsRoot, probeLogin }) {
+  if (!Array.isArray(provider?.accounts)) return provider;
+  const accounts = await Promise.all(
+    provider.accounts.map(async (account) => {
+      const home = grokAccountHome(account, primaryHome, accountsRoot);
+      if (!home) return account;
+      let result;
+      try {
+        result = await probeLogin(home);
+      } catch {
+        return account;
+      }
+      if (result?.statusKind !== 'expired') return account;
+      return {
+        ...account,
+        active: false,
+        status: 'sign-in required',
+        statusKind: 'expired',
+        authError: 'Grok rejected the saved login.',
+      };
+    })
+  );
+  return { ...provider, accounts };
+}
+
 export async function consumeCodexManualReset(
   accountId,
   { executorViewUrl = EXECUTOR_VIEW_URL, internalToken, internalTokenFile } = {}
@@ -155,6 +203,9 @@ export async function fetchExecutorProvider(
     claudeHome = CLAUDE_HOME,
     claudeAccountsRoot = CLAUDE_ACCOUNTS_ROOT,
     renewClaudeLogin = renewClaudeCredential,
+    grokHome = GROK_PRIMARY_HOME,
+    grokAccountsRoot = GROK_ACCOUNTS_ROOT,
+    probeGrokLogin = probeGrokCredential,
   } = {}
 ) {
   if (!ACCOUNT_PROVIDER_IDS.includes(providerId)) return null;
@@ -197,6 +248,13 @@ export async function fetchExecutorProvider(
       }
       if (renewed) provider = await requestProvider();
     }
+    if (providerId === 'xai' && refresh && provider) {
+      provider = await refreshGrokLoginStatuses(provider, {
+        primaryHome: grokHome,
+        accountsRoot: grokAccountsRoot,
+        probeLogin: probeGrokLogin,
+      });
+    }
     return provider;
   } catch {
     return null;
@@ -211,6 +269,9 @@ export async function fetchExecutorAccounts({
   claudeHome,
   claudeAccountsRoot,
   renewClaudeLogin,
+  grokHome,
+  grokAccountsRoot,
+  probeGrokLogin,
 } = {}) {
   const providers = await Promise.all(
     ACCOUNT_PROVIDER_IDS.map((providerId) =>
@@ -222,6 +283,9 @@ export async function fetchExecutorAccounts({
         claudeHome,
         claudeAccountsRoot,
         renewClaudeLogin,
+        grokHome,
+        grokAccountsRoot,
+        probeGrokLogin,
       })
     )
   );

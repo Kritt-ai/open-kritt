@@ -15,6 +15,7 @@ from open_kritt_engine.model_catalog import (
     fetch_anthropic_models,
     fetch_codex_models,
     fetch_openrouter_models,
+    fetch_xai_models,
     normalize_catalog_models,
 )
 
@@ -325,6 +326,31 @@ def test_fetch_openrouter_models_uses_account_catalog_and_keeps_all_text_models(
     assert timeout == 2
 
 
+def test_fetch_openrouter_models_pins_ox_alpha_thinking_efforts(monkeypatch):
+    entries = [
+        _openrouter_model("z-ai/glm-5.2", name="Z.ai GLM 5.2"),
+        _openrouter_model(
+            "stealth/ox-alpha",
+            name="Ox Alpha",
+            reasoning={"mandatory": True, "supported_efforts": ["low", "high"]},
+        ),
+    ]
+    monkeypatch.setattr(
+        model_catalog,
+        "urlopen",
+        lambda *_args, **_kwargs: io.BytesIO(json.dumps({"data": entries}).encode("utf-8")),
+    )
+
+    models, _default_model = fetch_openrouter_models("openrouter-test-key", 2)
+
+    assert models[1] == {
+        "id": "stealth/ox-alpha",
+        "label": "Ox Alpha",
+        "thinkingEfforts": ["low", "high", "max"],
+        "isDefault": False,
+    }
+
+
 def test_fetch_openrouter_models_uses_provider_default_or_all_gateway_efforts(monkeypatch):
     entries = [
         _openrouter_model(
@@ -385,6 +411,50 @@ def test_fetch_openrouter_models_rejects_oversized_or_invalid_responses(monkeypa
         fetch_openrouter_models("openrouter-test-key", 2)
 
 
+def test_fetch_xai_models_uses_language_endpoint_and_model_efforts(monkeypatch):
+    requests = []
+
+    def fake_urlopen(request, timeout):
+        requests.append((request, timeout))
+        return io.BytesIO(
+            json.dumps(
+                {
+                    "models": [
+                        {"id": "grok-3", "name": "Grok 3", "output_modalities": ["text"]},
+                        {"id": "grok-4.5", "name": "Grok 4.5", "output_modalities": ["text"]},
+                        {"id": "grok-4.6", "name": "Grok 4.6", "output_modalities": ["text"]},
+                        {"id": "grok-code-fast-1", "name": "Grok Code Fast"},
+                        {"id": "grok-imagine-image", "output_modalities": ["image"]},
+                    ]
+                }
+            ).encode("utf-8")
+        )
+
+    monkeypatch.setattr(model_catalog, "urlopen", fake_urlopen)
+    models, default_model = fetch_xai_models("xai-test-key", 2)
+
+    assert [model["id"] for model in models] == ["grok-3", "grok-4.5", "grok-4.6", "grok-code-fast-1"]
+    assert default_model == "grok-4.6"
+    assert models[2]["isDefault"] is True
+    assert models[1]["thinkingEfforts"] == ["low", "medium", "high"]
+    assert models[2]["thinkingEfforts"] == ["low", "medium", "high", "xhigh"]
+    request, timeout = requests[0]
+    assert request.full_url == "https://api.x.ai/v1/language-models"
+    assert request.get_header("Authorization") == "Bearer xai-test-key"
+    assert timeout == 2
+
+
+def test_fetch_xai_models_injects_default_when_missing(monkeypatch):
+    monkeypatch.setattr(
+        model_catalog,
+        "urlopen",
+        lambda *_args, **_kwargs: io.BytesIO(json.dumps({"models": [{"id": "grok-3"}]}).encode("utf-8")),
+    )
+    models, default_model = fetch_xai_models("xai-test-key", 2)
+    assert default_model == "grok-4.6"
+    assert any(model["id"] == "grok-4.6" and model["isDefault"] for model in models)
+
+
 def test_refresher_persists_only_configured_provider_catalogs():
     db = FakeDatabase()
     codex_models = [{"id": "gpt-5-codex", "label": "GPT-5 Codex", "thinkingEfforts": [], "isDefault": True}]
@@ -392,26 +462,32 @@ def test_refresher_persists_only_configured_provider_catalogs():
     openrouter_models = [
         {"id": "vendor/code-model", "label": "Code Model", "thinkingEfforts": ["medium"], "isDefault": True}
     ]
+    xai_models = [
+        {"id": "grok-4.5", "label": "Grok 4.5", "thinkingEfforts": ["low", "medium", "high"], "isDefault": True}
+    ]
     refresher = ModelCatalogRefresher(
         db,
         env={
             "CODEX_API_KEY": "codex-key",
             "ANTHROPIC_API_KEY": "anthropic-key",
             "OPENROUTER_API_KEY": "openrouter-key",
+            "XAI_API_KEY": "xai-key",
         },
         fetch_codex=lambda: (codex_models, "gpt-5-codex"),
         fetch_anthropic=lambda: (claude_models, "claude-sonnet-4"),
         fetch_openrouter=lambda: (openrouter_models, "vendor/code-model"),
+        fetch_xai=lambda: (xai_models, "grok-4.5"),
     )
 
-    assert refresher.refresh() == {"codex": True, "claude": True, "openrouter": True}
+    assert refresher.refresh() == {"codex": True, "claude": True, "openrouter": True, "xai": True}
     assert db.catalogs == [
         {"provider": "codex", "models": codex_models, "default_model": "gpt-5-codex"},
         {"provider": "claude", "models": claude_models, "default_model": "claude-sonnet-4"},
         {"provider": "openrouter", "models": openrouter_models, "default_model": "vendor/code-model"},
+        {"provider": "xai", "models": xai_models, "default_model": "grok-4.5"},
     ]
     assert db.errors == []
-    assert [conn.commits for conn in db.connections] == [1, 1, 1]
+    assert [conn.commits for conn in db.connections] == [1, 1, 1, 1]
 
 
 def test_refresher_preserves_existing_catalog_on_provider_failure():

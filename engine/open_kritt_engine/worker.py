@@ -21,25 +21,46 @@ from .artifact_cleanup import (
 from .claude_auth import ClaudeCredentialRateLimited
 from .codex_updater import CodexCliGate, CodexUpdater
 from .config import EngineConfig
-from .db import Database, now_utc
+from .db import QUOTA_RETRY_MAX_SECONDS, Database, now_utc
 from .generation import GenerationRunner, GenerationValidationError
 from .harnesses import (
     CAPACITY_RATE_LIMIT_FAILURES,
     RETRYABLE_RATE_LIMIT_FAILURES,
     HarnessError,
     cleanup_stale_scan_sandboxes,
+    harness_failure_retry_count,
     harness_for,
     normalize_harness_name,
     scan_model_provider,
     validate_scan_runner_configuration,
 )
+from .memory_budget import (
+    GIB,
+    MIB,
+    MemoryCapacity,
+    calculate_memory_capacity,
+    system_memory_available_bytes,
+    system_memory_total_bytes,
+)
 from .model_catalog import ModelCatalogRefresher
 from .model_output_artifacts import record_model_error_output
-from .models import ModelSelection, model_selection_for_depth
+from .models import (
+    ModelSelection,
+    model_selection_for_depth,
+    post_processing_model_selection,
+    supplemental_post_script_model_selection,
+)
 from .post_processing import PostProcessor, PostProcessRateLimited
-from .prompting import harness_prompt, native_agent_skills_prompt, render_prompt, repeat_append_prompt
+from .prompting import (
+    harness_prompt,
+    native_agent_skills_prompt,
+    patched_since_prompt,
+    render_prompt,
+    repeat_append_prompt,
+)
 from .provider_credentials import provider_environment
-from .queue import build_pending_jobs
+from .queue import build_pending_jobs, configured_step_ids
+from .runner_resources import evict_newest_scan_runner
 from .runtime_config import runtime_bool, runtime_config_path, runtime_float, runtime_int, runtime_value
 from .schema import OutputValidationError, output_schema, validate_payload
 from .storage_cleanup import prune_docker_build_cache, prune_stopped_scan_containers, prune_unused_docker_images
@@ -78,10 +99,10 @@ GENERATION_PERSISTENCE_ERROR = "Generated draft could not be saved. Please try a
 RATE_LIMIT_BACKOFF_BASE_SECONDS = 5.0
 RATE_LIMIT_BACKOFF_MAX_SECONDS = 60.0
 RATE_LIMIT_RETRY_AFTER_MAX_SECONDS = 300.0
-QUOTA_RETRY_AFTER_MAX_SECONDS = 8 * 24 * 60 * 60.0
 RATE_LIMIT_RESUME_DELAY_SECONDS = 60.0
 ARTIFACT_CLEANUP_INTERVAL_SECONDS = 5 * 60.0
 ARTIFACT_CLEANUP_GRACE_SECONDS = 5 * 60.0
+MEMORY_PRESSURE_EVICTION_COOLDOWN_SECONDS = 30.0
 
 
 class StepExecutionError(RuntimeError):
@@ -106,12 +127,12 @@ class RateLimitExhausted(StepExecutionError):
 
 
 def _rate_limit_retry_delay(error: HarnessError, attempt: int) -> float:
+    if error.code == "account_quota_limited":
+        # Quota windows can be reset or replenished before the provider's
+        # advertised deadline, so let the persistent scan backoff probe again.
+        return RATE_LIMIT_RESUME_DELAY_SECONDS
     if error.retry_after_seconds is not None:
-        maximum = (
-            QUOTA_RETRY_AFTER_MAX_SECONDS
-            if error.code in {"account_quota_limited", "subagent_limited"}
-            else RATE_LIMIT_RETRY_AFTER_MAX_SECONDS
-        )
+        maximum = QUOTA_RETRY_MAX_SECONDS if error.code == "subagent_limited" else RATE_LIMIT_RETRY_AFTER_MAX_SECONDS
         return min(max(0.0, error.retry_after_seconds), maximum)
     base = min(RATE_LIMIT_BACKOFF_BASE_SECONDS * (2 ** max(0, attempt - 1)), RATE_LIMIT_BACKOFF_MAX_SECONDS)
     return base * random.uniform(0.8, 1.2)
@@ -168,6 +189,7 @@ class Worker:
         self._scan_last_dispatch: dict[int, int] = {}
         self._scan_no_work_until: dict[int, float] = {}
         self._scan_dispatch_sequence = 0
+        self._supplemental_dispatch_next: dict[int, bool] = {}
         self.codex_cli_gate = CodexCliGate()
         self.generation_runner = GenerationRunner(config, codex_cli_gate=self.codex_cli_gate)
         self.model_catalog_refresher = ModelCatalogRefresher(
@@ -197,11 +219,12 @@ class Worker:
         self._artifact_cleanup_requested = False
         self._docker_storage_cleanup_lock = threading.Lock()
         self._next_docker_storage_cleanup = 0.0
+        self._next_memory_pressure_eviction = 0.0
 
     def run_forever(self):
         workers: dict[int, tuple[threading.Thread, threading.Event]] = {}
         generation_worker: tuple[threading.Thread, threading.Event] | None = None
-        last_desired: int | None = None
+        last_capacity: MemoryCapacity | None = None
         LOGGER.info("open-kritt engine started; live config: %s", runtime_config_path(self.config.data_dir))
         cleanup_stale_scan_sandboxes()
         cleanup_stale_workspace_snapshot_builders()
@@ -219,16 +242,34 @@ class Worker:
             self._schedule_artifact_cleanup()
             self._schedule_codex_update()
             self._schedule_model_catalog_refresh()
+            self._evict_runner_under_memory_pressure()
             for worker_id, (thread, _stop_event) in list(workers.items()):
                 if not thread.is_alive():
                     workers.pop(worker_id, None)
             if generation_worker is not None and not generation_worker[0].is_alive():
                 generation_worker = None
 
-            desired = self.runtime_worker_count()
-            if desired != last_desired:
-                LOGGER.info("engine desired worker count is %s", desired)
-                last_desired = desired
+            capacity = self.runtime_memory_capacity()
+            desired = capacity.effective_workers
+            if capacity != last_capacity:
+                if capacity.total_bytes is None:
+                    LOGGER.warning(
+                        "engine worker capacity is %s; system memory is unavailable, so the configured ceiling "
+                        "cannot be memory-budgeted",
+                        desired,
+                    )
+                else:
+                    LOGGER.info(
+                        "engine worker capacity is %s of %s configured "
+                        "(%.1f GiB total, %.1f GiB reserve, %s MiB reservation per runner, %s MiB hard cap)",
+                        desired,
+                        capacity.configured_workers,
+                        capacity.total_bytes / GIB,
+                        capacity.reserve_bytes / GIB,
+                        capacity.runner_bytes // MIB,
+                        self.runtime_scan_runner_memory_mb(),
+                    )
+                last_capacity = capacity
 
             for worker_id in sorted(workers, reverse=True):
                 if worker_id > desired:
@@ -249,6 +290,10 @@ class Worker:
                 )
                 workers[worker_id] = (thread, stop_event)
                 thread.start()
+                # Ramp capacity one worker per supervisor pass. This prevents
+                # workspace setup and model subprocess startup from peaking
+                # simultaneously when capacity is raised or the engine restarts.
+                break
 
             if desired <= 0:
                 if generation_worker is not None:
@@ -353,6 +398,15 @@ class Worker:
             maximum=10,
         )
 
+    def runtime_cyber_safety_retry_count(self) -> int:
+        return runtime_int(
+            "ENGINE_CYBER_SAFETY_RETRY_COUNT",
+            0,
+            data_dir=getattr(self.config, "data_dir", None),
+            minimum=0,
+            maximum=10,
+        )
+
     def runtime_max_concurrent_scans(self) -> int:
         return runtime_int(
             "ENGINE_MAX_CONCURRENT_SCANS",
@@ -370,6 +424,105 @@ class Worker:
             minimum=0,
             maximum=128,
         )
+
+    def runtime_memory_reserve_bytes(self) -> int:
+        return int(
+            runtime_float(
+                "ENGINE_MEMORY_RESERVE_GB",
+                2.0,
+                data_dir=getattr(self.config, "data_dir", None),
+                minimum=0.0,
+                maximum=1024.0,
+            )
+            * GIB
+        )
+
+    def runtime_scan_runner_memory_mb(self) -> int:
+        return runtime_int(
+            "ENGINE_SCAN_RUNNER_MEMORY_MB",
+            1536,
+            data_dir=getattr(self.config, "data_dir", None),
+            minimum=0,
+            maximum=1024 * 1024,
+        )
+
+    def runtime_scan_runner_memory_reservation_mb(self) -> int:
+        return runtime_int(
+            "ENGINE_SCAN_RUNNER_MEMORY_RESERVATION_MB",
+            self.runtime_scan_runner_memory_mb(),
+            data_dir=getattr(self.config, "data_dir", None),
+            minimum=0,
+            maximum=1024 * 1024,
+        )
+
+    def runtime_memory_capacity(self) -> MemoryCapacity:
+        total_reader = getattr(self, "_system_memory_total_bytes", system_memory_total_bytes)
+        return calculate_memory_capacity(
+            self.runtime_worker_count(),
+            total_bytes=total_reader(),
+            reserve_bytes=self.runtime_memory_reserve_bytes(),
+            runner_bytes=self.runtime_scan_runner_memory_reservation_mb() * MIB,
+        )
+
+    def _memory_allows_new_runner(self) -> bool:
+        available_reader = getattr(self, "_system_memory_available_bytes", system_memory_available_bytes)
+        available_bytes = available_reader()
+        if available_bytes is None:
+            return True
+        reserve_bytes = self.runtime_memory_reserve_bytes()
+        runner_bytes = self.runtime_scan_runner_memory_reservation_mb() * MIB
+        allowed = available_bytes >= reserve_bytes + runner_bytes
+        was_paused = bool(getattr(self, "_memory_admission_paused", False))
+        if not allowed and not was_paused:
+            LOGGER.warning(
+                "pausing new runner admission: %.1f GiB available, %.1f GiB reserve plus %s MiB required",
+                available_bytes / GIB,
+                reserve_bytes / GIB,
+                runner_bytes // MIB,
+            )
+        elif allowed and was_paused:
+            LOGGER.info("resuming runner admission with %.1f GiB available", available_bytes / GIB)
+        self._memory_admission_paused = not allowed
+        return allowed
+
+    def runtime_memory_pressure_eviction_enabled(self) -> bool:
+        return runtime_bool(
+            "ENGINE_MEMORY_PRESSURE_EVICTION_ENABLED",
+            False,
+            data_dir=getattr(self.config, "data_dir", None),
+        )
+
+    def _evict_runner_under_memory_pressure(self) -> str | None:
+        """Evict one runner before Linux has to choose an OOM victim."""
+
+        if not self.runtime_memory_pressure_eviction_enabled():
+            return None
+        now = time.monotonic()
+        if now < getattr(self, "_next_memory_pressure_eviction", 0.0):
+            return None
+        available_reader = getattr(self, "_system_memory_available_bytes", system_memory_available_bytes)
+        available_bytes = available_reader()
+        if available_bytes is None:
+            return None
+        reserve_bytes = self.runtime_memory_reserve_bytes()
+        runner_bytes = self.runtime_scan_runner_memory_reservation_mb() * MIB
+        required_bytes = reserve_bytes + runner_bytes
+        if available_bytes >= required_bytes:
+            return None
+
+        runner_name = evict_newest_scan_runner()
+        if not runner_name:
+            return None
+        self._next_memory_pressure_eviction = now + MEMORY_PRESSURE_EVICTION_COOLDOWN_SECONDS
+        LOGGER.warning(
+            "evicted newest scan runner %s under memory pressure: %.1f GiB available, "
+            "%.1f GiB reserve plus %s MiB recovery margin required",
+            runner_name,
+            available_bytes / GIB,
+            reserve_bytes / GIB,
+            runner_bytes // MIB,
+        )
+        return runner_name
 
     def runtime_autoscale_scan_workers_on_provider_capacity(self) -> bool:
         return runtime_bool(
@@ -428,6 +581,8 @@ class Worker:
             codex_model_provider=getattr(self.config, "codex_model_provider", None),
             codex_cli_gate=self.codex_cli_gate,
             codex_max_subagents=self.runtime_codex_max_subagents(),
+            runner_memory_mb=self.runtime_scan_runner_memory_mb(),
+            runner_memory_reservation_mb=self.runtime_scan_runner_memory_reservation_mb(),
         )
 
     def recover_orphaned_metadata(self, engine_started_at):
@@ -710,9 +865,19 @@ class Worker:
     def run_scan_once(self, worker_id: int = 1) -> bool:
         if not self._worker_can_pick_job(worker_id):
             return False
+        if not hasattr(self, "_supplemental_dispatch_next"):
+            self._supplemental_dispatch_next = {}
+        supplemental_next = self._supplemental_dispatch_next.get(worker_id, True)
+        if supplemental_next and self.run_supplemental_post_script_once(worker_id=worker_id):
+            self._supplemental_dispatch_next[worker_id] = False
+            return True
         scan = self._reserve_scan()
         if not scan:
+            if not supplemental_next and self.run_supplemental_post_script_once(worker_id=worker_id):
+                self._supplemental_dispatch_next[worker_id] = False
+                return True
             return False
+        self._supplemental_dispatch_next[worker_id] = True
 
         task_finished = False
         try:
@@ -777,6 +942,105 @@ class Worker:
             self._release_scan(int(scan["id"]))
             if task_finished:
                 self._schedule_post_task_cleanup()
+
+    def run_supplemental_post_script_once(self, worker_id: int = 1) -> bool:
+        if not self._worker_can_pick_job(worker_id):
+            return False
+        claim = getattr(self.db, "claim_supplemental_post_script_target", None)
+        if not callable(claim):
+            return False
+        if not self._memory_allows_new_runner():
+            return False
+        with self.db.connect() as conn:
+            job = claim(conn)
+            conn.commit()
+        if not job:
+            return False
+
+        target_id = int(job["target"]["id"])
+        scan_id = int(job["scan"]["id"])
+        if not self._new_scan_container_allowed(scan_id):
+            with self.db.connect() as conn:
+                self.db.defer_supplemental_post_script_target(
+                    conn,
+                    target_id=target_id,
+                    error="Waiting for enough free storage to create the post-script workspace.",
+                    retry_after_seconds=max(1.0, float(getattr(self.config, "poll_seconds", 5.0) or 5.0)),
+                )
+                conn.commit()
+            return True
+
+        run = job["run"]
+        scan = job["scan"]
+        selection = supplemental_post_script_model_selection(scan, run)
+        prompt_template = run["post_script_content"]
+        if str(run.get("post_script_name") or "").strip().casefold() == "patched since":
+            prompt_template = patched_since_prompt(prompt_template)
+        metadata_id = None
+        try:
+            with self.db.connect() as conn:
+                metadata_id = self.db.create_supplemental_post_process_metadata(
+                    conn,
+                    target=job["target"],
+                    run=run,
+                    scan=scan,
+                    prompt_template=prompt_template,
+                    model=selection.model,
+                    harness=selection.harness,
+                    thinking_effort=selection.thinking_effort,
+                    model_provider=selection.model_provider,
+                    run_started_at=now_utc(),
+                )
+                conn.commit()
+            harness = self._harness_for_model_selection(selection)
+            return self.post_processor.process_supplemental_post_script_target(
+                job,
+                harness,
+                metadata_id=metadata_id,
+            )
+        except PostProcessRateLimited as exc:
+            provider = getattr(exc, "provider", None)
+            account_home = getattr(exc, "account_home", None)
+            limit_kind = getattr(exc, "limit_kind", "rate_limited")
+            retry_after_seconds = max(exc.retry_after_seconds, RATE_LIMIT_RESUME_DELAY_SECONDS)
+            if limit_kind not in CAPACITY_RATE_LIMIT_FAILURES:
+                mark_provider_account_rate_limited(provider, account_home)
+                if account_home and not provider_accounts_all_rate_limited(
+                    provider, data_dir=getattr(self.config, "data_dir", None)
+                ):
+                    retry_after_seconds = 0
+            with self.db.connect() as conn:
+                self.db.defer_supplemental_post_script_target(
+                    conn,
+                    target_id=target_id,
+                    error=str(exc),
+                    retry_after_seconds=retry_after_seconds,
+                )
+                conn.commit()
+            LOGGER.warning(
+                "supplemental post-script target %s for scan %s was rate limited and will retry",
+                target_id,
+                scan_id,
+            )
+            return True
+        except Exception as exc:
+            LOGGER.exception("supplemental post-script target %s for scan %s failed", target_id, scan_id)
+            with self.db.connect() as conn:
+                if metadata_id is not None:
+                    self.db.update_post_process_metadata(
+                        conn,
+                        metadata_id,
+                        status="failed",
+                        error=str(exc),
+                        run_time_ms=0,
+                        raw_token_usage=None,
+                        phase="failed",
+                    )
+                self.db.fail_supplemental_post_script_target(conn, target_id=target_id, error=str(exc))
+                conn.commit()
+            return True
+        finally:
+            self._schedule_post_task_cleanup()
 
     def _new_scan_container_allowed(self, scan_id: int) -> bool:
         required_bytes = self.runtime_min_free_storage_bytes()
@@ -845,6 +1109,8 @@ class Worker:
 
     def _reserve_scan(self) -> dict[str, Any] | None:
         with self._scheduler_state():
+            if not self._memory_allows_new_runner():
+                return None
             with self.db.connect() as conn:
                 claim_scans = getattr(self.db, "claim_scans", None)
                 if callable(claim_scans):
@@ -869,7 +1135,9 @@ class Worker:
                 scan_id: retry_at for scan_id, retry_at in self._scan_no_work_until.items() if scan_id in active_ids
             }
 
-            worker_limit = max(1, self.runtime_worker_count())
+            worker_limit = self.runtime_memory_capacity().effective_workers
+            if worker_limit <= 0:
+                return None
             if sum(self._scan_allocations.values()) >= worker_limit:
                 return None
             configured_cap = self.runtime_max_workers_per_scan()
@@ -1075,6 +1343,10 @@ class Worker:
                 else:
                     completed = self.db.load_completed_metadata(conn, scan_id)
                     claimed = self.db.load_claimed_metadata(conn, scan_id)
+                    skip_attempted_step_ids = configured_step_ids(current, "skip_attempted_step_ids")
+                    if skip_attempted_step_ids:
+                        attempted = self.db.load_attempted_metadata(conn, scan_id)
+                        claimed |= {key for key in attempted if key[0] in skip_attempted_step_ids}
                     step_results = self.db.load_step_results(conn, scan_id)
                     jobs = build_pending_jobs(
                         scan=current,
@@ -1105,7 +1377,7 @@ class Worker:
                     continue
                 if not self._worker_can_pick_job(worker_id):
                     return did_work
-                harness = self._harness_for_model_selection(model_selection_for_depth(current))
+                harness = self._harness_for_model_selection(post_processing_model_selection(current))
                 did_post_work = self.post_processor.process_once(current, harness)
                 if did_post_work:
                     return True
@@ -1292,10 +1564,13 @@ class Worker:
                         conn.commit()
                     raise StepExecutionError(f"workspace setup failed for step {step.id}: {exc}") from exc
 
-            max_attempts = self.runtime_retry_count() + 1
+            retry_count = self.runtime_retry_count()
+            cyber_safety_retry_count = self.runtime_cyber_safety_retry_count()
+            max_attempts = retry_count + cyber_safety_retry_count + 1
             last_error = None
             last_exception: Exception | None = None
             attempt_errors: list[str] = []
+            failure_counts = {"regular": 0, "cyber_safety_blocked": 0}
             last_attempt = 1
             for attempt in range(1, max_attempts + 1):
                 last_attempt = attempt
@@ -1354,6 +1629,7 @@ class Worker:
                             error=None,
                             run_time_ms=run_time_ms,
                             raw_token_usage=usage,
+                            output_json=result.payload,
                             codex_session_id=codex_session_id,
                             stub=payload_stub,
                             stub_explanation=stub_explanation,
@@ -1368,6 +1644,7 @@ class Worker:
                             error=None,
                             run_time_ms=run_time_ms,
                             raw_token_usage=usage,
+                            output_json=result.payload,
                             codex_session_id=codex_session_id,
                             stub=payload_stub,
                             stub_explanation=stub_explanation,
@@ -1475,14 +1752,25 @@ class Worker:
                                 )
                                 conn.commit()
                     LOGGER.warning("step %s failed attempt %s: %s", step.id, attempt, last_error)
-                    if isinstance(exc, HarnessError) and not exc.retryable:
-                        break
                     if isinstance(exc, HarnessError) and exc.code in RETRYABLE_RATE_LIMIT_FAILURES:
                         if exc.code not in CAPACITY_RATE_LIMIT_FAILURES:
                             mark_provider_account_rate_limited(
                                 getattr(prepared.workspace, "provider_account_provider", None),
                                 getattr(prepared.workspace, "provider_account_home", None),
                             )
+                        break
+                    allowed_retries = (
+                        harness_failure_retry_count(exc, retry_count, cyber_safety_retry_count)
+                        if isinstance(exc, HarnessError)
+                        else retry_count
+                    )
+                    failure_kind = (
+                        "cyber_safety_blocked"
+                        if isinstance(exc, HarnessError) and exc.code == "cyber_safety_blocked"
+                        else "regular"
+                    )
+                    failure_counts[failure_kind] += 1
+                    if failure_counts[failure_kind] > allowed_retries:
                         break
 
             run_time_ms = int((now_utc() - started).total_seconds() * 1000)

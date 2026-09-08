@@ -6,15 +6,18 @@ import shutil
 import subprocess
 import tempfile
 import time
-from contextlib import nullcontext
+from contextlib import nullcontext, suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
+from jsonschema import Draft202012Validator
+
 from .claude_auth import CLAUDE_OAUTH_EXPIRY_ENV, claude_oauth_timeout_seconds
 from .provider_credentials import provider_environment
+from .runtime_config import runtime_float, runtime_int
 from .schema import EXTRACTOR_HELPER_FIELD
 
 NON_RETRYABLE_HARNESS_FAILURES = frozenset(
@@ -30,7 +33,7 @@ NON_RETRYABLE_HARNESS_FAILURES = frozenset(
         "start_failed",
     }
 )
-CAPACITY_RATE_LIMIT_FAILURES = frozenset({"provider_throttled", "subagent_limited"})
+CAPACITY_RATE_LIMIT_FAILURES = frozenset({"provider_throttled", "subagent_limited", "runner_resource_limited"})
 RETRYABLE_RATE_LIMIT_FAILURES = frozenset({"rate_limited", "account_quota_limited", *CAPACITY_RATE_LIMIT_FAILURES})
 
 HARNESS_FAILURE_MESSAGES = {
@@ -81,6 +84,7 @@ HARNESS_FAILURE_MESSAGES = {
     "rate_limited": "The model provider is rate limiting generation requests. Wait and try again.",
     "start_failed": "The configured model harness could not be started. Rebuild or restart the engine and try again.",
     "timeout": "Generation timed out before the model provider returned a draft. Try again or choose a faster model.",
+    "runner_resource_limited": "The runner was terminated by the system. It will be retried with lower concurrency.",
 }
 
 
@@ -116,6 +120,20 @@ class HarnessError(RuntimeError):
         self.harness = harness
         self.retry_after_seconds = retry_after_seconds
         self.attempts: int | None = None
+
+
+def harness_failure_retry_count(
+    error: HarnessError,
+    retry_count: int,
+    cyber_safety_retry_count: int,
+) -> int:
+    """Return the configured inline retry allowance for one harness failure."""
+
+    if error.code == "cyber_safety_blocked":
+        return max(0, int(cyber_safety_retry_count))
+    if not error.retryable:
+        return 0
+    return max(0, int(retry_count))
 
 
 @dataclass(frozen=True)
@@ -164,12 +182,54 @@ OPENROUTER_MODEL_ALIASES = {
     "glm-5.2": "z-ai/glm-5.2",
     "grok-4.5": "x-ai/grok-4.5",
 }
+CLAUDE_OPENROUTER_MODEL_ENV_KEYS = (
+    "ANTHROPIC_MODEL",
+    "ANTHROPIC_DEFAULT_MODEL",
+    "ANTHROPIC_DEFAULT_FABLE_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "CLAUDE_CODE_SUBAGENT_MODEL",
+)
 CLAUDE_MODEL_ALIASES = {
     "opus-4.7": "claude-opus-4-7",
     "opus-4.8": "claude-opus-4-8",
 }
 DEFAULT_MODEL_PROVIDER = "openrouter"
-MODEL_PROVIDERS = {"codex", "claude", "openrouter"}
+MODEL_PROVIDERS = {"codex", "claude", "openrouter", "xai"}
+GROK_BUILD_THINKING_EFFORTS = frozenset({"low", "medium", "high", "xhigh"})
+DEFAULT_GROK_BUILD_MODEL = "grok-4.6"
+GROK_BUILD_RUNTIME_ENV = {
+    # A fresh per-job GROK_HOME prevents account-level configuration from
+    # leaking into scans. Keep the CLI's project-config trust gate enabled too,
+    # so an untrusted repository cannot start hooks, MCP servers, or LSPs.
+    "GROK_FOLDER_TRUST": "1",
+    "GROK_MEMORY": "0",
+    "GROK_WORKFLOWS": "0",
+    "GROK_LSP_TOOLS": "0",
+    # Scan inputs may be sensitive source code. Do not upload product telemetry,
+    # session traces, or feedback from the scanner process.
+    "GROK_TELEMETRY_ENABLED": "false",
+    "GROK_TELEMETRY_TRACE_UPLOAD": "false",
+    "GROK_TELEMETRY_MIXPANEL_ENABLED": "false",
+    "GROK_FEEDBACK_ENABLED": "false",
+    "GROK_TRACE_UPLOAD": "false",
+    "GROK_EXTERNAL_OTEL": "0",
+    # Do not discover ambient Claude/Cursor instructions, agents, MCP servers,
+    # hooks, or sessions from either the repository or mounted job home.
+    "GROK_CURSOR_SKILLS_ENABLED": "false",
+    "GROK_CURSOR_RULES_ENABLED": "false",
+    "GROK_CURSOR_AGENTS_ENABLED": "false",
+    "GROK_CURSOR_MCPS_ENABLED": "false",
+    "GROK_CURSOR_HOOKS_ENABLED": "false",
+    "GROK_CURSOR_SESSIONS_ENABLED": "false",
+    "GROK_CLAUDE_SKILLS_ENABLED": "false",
+    "GROK_CLAUDE_RULES_ENABLED": "false",
+    "GROK_CLAUDE_AGENTS_ENABLED": "false",
+    "GROK_CLAUDE_MCPS_ENABLED": "false",
+    "GROK_CLAUDE_HOOKS_ENABLED": "false",
+    "GROK_CLAUDE_SESSIONS_ENABLED": "false",
+}
 CLAUDE_WORKSPACE_SYSTEM_PROMPT = (
     "Use only files under the current working directory and dependency paths listed in WORKSPACE.json. "
     "Do not search from filesystem root (/), /data, /root, /home, or other global paths. "
@@ -286,6 +346,20 @@ def _docker_run_details(cmd: list[str]) -> tuple[str, str | None] | None:
     return name, network
 
 
+def _scan_network_fallback_subnets(network: str):
+    """Yield isolated /28 networks from RFC 2544's benchmarking range."""
+
+    subnet_count = 1 << 13  # 198.18.0.0/15 contains 8192 non-overlapping /28s.
+    seed = int.from_bytes(hashlib.sha256(network.encode()).digest()[:4], "big")
+    for attempt in range(8):
+        subnet_index = (seed + attempt * 811) % subnet_count
+        offset = subnet_index * 16
+        second_octet = 18 + (offset >> 16)
+        third_octet = (offset >> 8) & 0xFF
+        fourth_octet = offset & 0xFF
+        yield f"198.{second_octet}.{third_octet}.{fourth_octet}/28"
+
+
 def _prepare_docker_sandbox(cmd: list[str]):
     details = _docker_run_details(cmd)
     if details is None:
@@ -296,8 +370,32 @@ def _prepare_docker_sandbox(cmd: list[str]):
     create = _docker_control_run(
         [cmd[0], "network", "create", "--label", "open-kritt.scan-sandbox=1", network],
     )
-    if create.returncode != 0:
-        raise HarnessError("Could not create the scan network.", code="start_failed")
+    if create.returncode == 0:
+        return
+
+    create_error = f"{create.stdout}\n{create.stderr}".lower()
+    address_pool_exhausted = (
+        "available, non-overlapping ipv4 address pool" in create_error
+        or "all predefined address pools have been fully subnetted" in create_error
+    )
+    if address_pool_exhausted:
+        for subnet in _scan_network_fallback_subnets(network):
+            fallback = _docker_control_run(
+                [
+                    cmd[0],
+                    "network",
+                    "create",
+                    "--subnet",
+                    subnet,
+                    "--label",
+                    "open-kritt.scan-sandbox=1",
+                    network,
+                ],
+            )
+            if fallback.returncode == 0:
+                return
+
+    raise HarnessError("Could not create the scan network.", code="start_failed")
 
 
 def _cleanup_docker_run_container(cmd: list[str], env: dict[str, str] | None = None):
@@ -341,6 +439,8 @@ def _command_harness(cmd: list[str]) -> str:
         return "codex"
     if "claude" in executables:
         return "claude-code"
+    if "grok" in executables:
+        return "grok-build"
     return Path(str(cmd[0])).name if cmd else "model"
 
 
@@ -419,7 +519,9 @@ def _classify_harness_output(output: str, *, provider: str | None = None) -> str
             "authentication_error",
             "invalid_api_key",
             "invalid api key",
+            "incorrect api key",
             "not logged in",
+            "not signed in",
             "login required",
             "401 unauthorized",
         )
@@ -625,23 +727,46 @@ def _run_process(cmd, prompt, cwd, timeout, env=None):
     try:
         if docker_run:
             _prepare_docker_sandbox(process_cmd)
-        proc = subprocess.run(
-            process_cmd,
-            input=prompt,
-            cwd=cwd,
-            env=process_env,
-            text=True,
-            capture_output=True,
-            timeout=timeout,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise HarnessError(
-            "Harness timed out before returning a result.",
-            output=HarnessOutput(stdout=_output_text(exc.stdout), stderr=_output_text(exc.stderr)),
-            code="timeout",
-            harness=harness,
-        ) from exc
+        # Long Codex JSONL streams can be hundreds of MiB. Spool each process to
+        # disk while it runs instead of retaining every concurrent transcript in
+        # the coordinator's heap. The completed output is loaded only when that
+        # worker is ready to parse and persist it.
+        with (
+            tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stdout_file,
+            tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stderr_file,
+        ):
+            try:
+                completed = subprocess.run(
+                    process_cmd,
+                    input=prompt,
+                    cwd=cwd,
+                    env=process_env,
+                    text=True,
+                    stdout=stdout_file,
+                    stderr=stderr_file,
+                    timeout=timeout,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired as exc:
+                stdout_file.seek(0)
+                stderr_file.seek(0)
+                raise HarnessError(
+                    "Harness timed out before returning a result.",
+                    output=HarnessOutput(
+                        stdout=stdout_file.read() or _output_text(exc.stdout),
+                        stderr=stderr_file.read() or _output_text(exc.stderr),
+                    ),
+                    code="timeout",
+                    harness=harness,
+                ) from exc
+            stdout_file.seek(0)
+            stderr_file.seek(0)
+            proc = subprocess.CompletedProcess(
+                process_cmd,
+                completed.returncode,
+                getattr(completed, "stdout", None) or stdout_file.read(),
+                getattr(completed, "stderr", None) or stderr_file.read(),
+            )
     except OSError as exc:
         raise HarnessError(
             "Harness could not be started.",
@@ -651,6 +776,15 @@ def _run_process(cmd, prompt, cwd, timeout, env=None):
     finally:
         if docker_run:
             _cleanup_docker_run_container(process_cmd)
+    if docker_run and proc.returncode == 137:
+        raise HarnessError(
+            "Scan runner was terminated before completion (exit 137).",
+            output=_process_output(proc),
+            code="runner_resource_limited",
+            exit_code=proc.returncode,
+            harness=harness,
+            retry_after_seconds=60.0,
+        )
     if proc.returncode != 0:
         raise _classified_harness_error(
             _short_output(proc),
@@ -792,6 +926,8 @@ def _scan_docker_command(
     env: dict[str, str],
     *,
     runner_image: str | None = None,
+    memory_limit_mb: int = 0,
+    memory_reservation_mb: int = 0,
 ) -> list[str]:
     """Run a tool-enabled harness in a per-job network and mount namespace."""
 
@@ -816,12 +952,15 @@ def _scan_docker_command(
         "CODEX_HOME": f"{CLAUDE_RUNNER_HOME}/.codex",
         "CLAUDE_HOME": f"{CLAUDE_RUNNER_HOME}/.claude",
         "CLAUDE_CONFIG_DIR": f"{CLAUDE_RUNNER_HOME}/.claude",
+        "GROK_HOME": f"{CLAUDE_RUNNER_HOME}/.grok",
         "XDG_CONFIG_HOME": f"{CLAUDE_RUNNER_HOME}/.config",
         "XDG_CACHE_HOME": f"{CLAUDE_RUNNER_HOME}/.cache",
         "XDG_DATA_HOME": f"{CLAUDE_RUNNER_HOME}/.local/share",
         "NPM_CONFIG_CACHE": f"{CLAUDE_RUNNER_HOME}/.npm",
         "GIT_OPTIONAL_LOCKS": "0",
     }
+    if _command_harness(cmd) == "grok-build":
+        container_env.update(GROK_BUILD_RUNTIME_ENV)
     if Path(str(cmd[0])).name == "claude":
         # Claude Code refuses bypassPermissions as root unless the caller marks
         # the already-isolated container as a sandbox.
@@ -830,14 +969,17 @@ def _scan_docker_command(
         "CODEX_API_KEY",
         "OPENAI_API_KEY",
         "OPENROUTER_API_KEY",
+        "XAI_API_KEY",
         "ANTHROPIC_BASE_URL",
         "ANTHROPIC_AUTH_TOKEN",
         "ANTHROPIC_API_KEY",
+        *CLAUDE_OPENROUTER_MODEL_ENV_KEYS,
         "CODEX_MODEL_PROVIDER",
         "CLAUDE_CODE_MODEL_PROVIDER",
         "CURSOR_API_KEY",
         "CURSOR_AUTH_TOKEN",
         "CURSOR_AGENT_BIN",
+        "GROK_BIN",
         "SSL_CERT_FILE",
         "SSL_CERT_DIR",
         "NODE_EXTRA_CA_CERTS",
@@ -864,6 +1006,32 @@ def _scan_docker_command(
         "--pids-limit",
         "512",
     ]
+    data_dir = os.getenv("ENGINE_DATA_DIR")
+    runner_cpus = runtime_float(
+        "ENGINE_SCAN_RUNNER_CPUS",
+        0.0,
+        data_dir=data_dir,
+        minimum=0.0,
+        maximum=64.0,
+    )
+    if runner_cpus > 0:
+        docker_cmd.extend(["--cpus", f"{runner_cpus:g}"])
+    runner_oom_score_adj = runtime_int(
+        "ENGINE_SCAN_RUNNER_OOM_SCORE_ADJ",
+        500,
+        data_dir=data_dir,
+        minimum=-1000,
+        maximum=1000,
+    )
+    docker_cmd.extend(["--oom-score-adj", str(runner_oom_score_adj)])
+    if memory_limit_mb > 0:
+        memory = f"{int(memory_limit_mb)}m"
+        docker_cmd.extend(["--memory", memory, "--memory-swap", memory])
+    reservation_mb = max(0, int(memory_reservation_mb))
+    if memory_limit_mb > 0:
+        reservation_mb = min(reservation_mb, int(memory_limit_mb))
+    if reservation_mb > 0:
+        docker_cmd.extend(["--memory-reservation", f"{reservation_mb}m"])
     if workspace_host is not None:
         docker_cmd.extend(
             [
@@ -975,9 +1143,12 @@ def _claude_env(env: dict[str, str], model: str, model_provider: str | None = No
     if claude_model_provider(model, actual_env, model_provider) == "openrouter":
         if not actual_env.get("OPENROUTER_API_KEY"):
             raise HarnessError("OPENROUTER_API_KEY is required when model provider is openrouter")
+        routed_model = OPENROUTER_MODEL_ALIASES.get(model, model)
         actual_env["ANTHROPIC_BASE_URL"] = actual_env.get("ANTHROPIC_BASE_URL") or OPENROUTER_CLAUDE_BASE_URL
         actual_env["ANTHROPIC_AUTH_TOKEN"] = actual_env.get("ANTHROPIC_AUTH_TOKEN") or actual_env["OPENROUTER_API_KEY"]
         actual_env["ANTHROPIC_API_KEY"] = ""
+        for key in CLAUDE_OPENROUTER_MODEL_ENV_KEYS:
+            actual_env[key] = routed_model
     return actual_env
 
 
@@ -986,8 +1157,36 @@ def _claude_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in schema.items() if key != "$schema"}
 
 
-def _looks_like_structured_output(value: Any) -> bool:
-    return isinstance(value, dict) and any(key in value for key in ("results", "clusters", "rankings"))
+def _structured_output_candidate(
+    value: Any,
+    schema: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    if schema is None:
+        if any(key in value for key in ("results", "clusters", "rankings")):
+            return _with_extractor_marker(value)
+        return None
+
+    properties = schema.get("properties")
+    required = schema.get("required")
+    if not isinstance(properties, dict) or not properties or not isinstance(required, list):
+        # Very loose schemas are used by a few harness unit tests and external
+        # integrations. Preserve the historical key-based guard so a wrapper
+        # object such as {"result": ...} is not mistaken for the payload.
+        if any(key in value for key in ("results", "clusters", "rankings")):
+            return _with_extractor_marker(value)
+        return None
+
+    candidates = [value]
+    if EXTRACTOR_HELPER_FIELD in properties and EXTRACTOR_HELPER_FIELD not in value:
+        candidates.append(_with_extractor_marker(value))
+    validator = Draft202012Validator(schema)
+    return next((candidate for candidate in candidates if validator.is_valid(candidate)), None)
+
+
+def _looks_like_structured_output(value: Any, schema: dict[str, Any] | None = None) -> bool:
+    return _structured_output_candidate(value, schema) is not None
 
 
 def _with_extractor_marker(value: dict[str, Any]) -> dict[str, Any]:
@@ -1030,10 +1229,37 @@ def _balanced_json_objects(text: str):
                 start = None
 
 
-def _parse_json_text(text: str) -> dict[str, Any]:
+def _last_structured_json_object(text: str, schema: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """Find the terminal schema-valid object even after malformed prose.
+
+    Agent transcripts can contain unmatched braces in shell snippets or
+    explanatory text before the final answer. A forward balanced-brace scan
+    then treats the final JSON as part of one invalid outer fragment. Decode
+    from each opening brace in reverse order so the last complete structured
+    answer wins without requiring the preceding transcript to be balanced.
+    """
+
+    decoder = json.JSONDecoder()
+    for index in range(len(text) - 1, -1, -1):
+        if text[index] != "{":
+            continue
+        try:
+            parsed, _end = decoder.raw_decode(text, index)
+        except json.JSONDecodeError:
+            continue
+        structured = _structured_output_candidate(parsed, schema)
+        if structured is not None:
+            return structured
+    return None
+
+
+def _parse_json_text(text: str, schema: dict[str, Any] | None = None) -> dict[str, Any]:
     stripped = text.strip()
     if not stripped:
         raise json.JSONDecodeError("Expecting value", text, 0)
+    terminal = _last_structured_json_object(text, schema)
+    if terminal is not None:
+        return terminal
     candidates = [stripped]
     candidates.extend(match.strip() for match in FENCED_JSON_RE.findall(text) if match.strip())
     candidates.extend(_balanced_json_objects(text))
@@ -1049,8 +1275,11 @@ def _parse_json_text(text: str) -> dict[str, Any]:
         except json.JSONDecodeError as exc:
             last_error = exc
             continue
-        if _looks_like_structured_output(parsed):
-            parsed_structured.append(parsed)
+        structured = _structured_output_candidate(parsed, schema)
+        if structured is not None:
+            parsed_structured.append(structured)
+    if schema is not None and parsed_structured:
+        return parsed_structured[0]
     for parsed in parsed_structured:
         if parsed.get(EXTRACTOR_HELPER_FIELD) is True:
             return parsed
@@ -1064,47 +1293,56 @@ def _parse_json_text(text: str) -> dict[str, Any]:
     raise HarnessError("harness did not return the required JSON object")
 
 
-def _extract_json(value: Any) -> dict[str, Any]:
-    if _looks_like_structured_output(value):
-        return _with_extractor_marker(value)
+def _extract_json(value: Any, schema: dict[str, Any] | None = None) -> dict[str, Any]:
+    structured = _structured_output_candidate(value, schema)
+    if structured is not None:
+        return structured
     if isinstance(value, str):
-        return _parse_json_text(value)
+        return _parse_json_text(value, schema)
     if isinstance(value, dict):
-        structured_output = value.get("structured_output")
-        if isinstance(structured_output, dict):
-            return _with_extractor_marker(structured_output)
+        for key in ("structuredOutput", "structured_output"):
+            structured_output = value.get(key)
+            if isinstance(structured_output, dict):
+                if schema is None:
+                    return _with_extractor_marker(structured_output)
+                structured = _structured_output_candidate(structured_output, schema)
+                if structured is not None:
+                    return structured
         for key in ("output", "data"):
             nested = value.get(key)
-            if _looks_like_structured_output(nested):
-                return _with_extractor_marker(nested)
+            structured = _structured_output_candidate(nested, schema)
+            if structured is not None:
+                return structured
         result = value.get("result")
         if isinstance(result, dict):
-            if _looks_like_structured_output(result.get("structured_output")):
-                return _with_extractor_marker(result["structured_output"])
+            for key in ("structuredOutput", "structured_output"):
+                structured = _structured_output_candidate(result.get(key), schema)
+                if structured is not None:
+                    return structured
             content = result.get("content")
             if isinstance(content, list):
                 text = "".join(part.get("text", "") for part in content if isinstance(part, dict))
                 if text:
-                    return _parse_json_text(text)
+                    return _parse_json_text(text, schema)
         if isinstance(result, str):
-            return _parse_json_text(result)
+            return _parse_json_text(result, schema)
     raise HarnessError("harness did not return the required JSON object")
 
 
-def _extract_json_from_output_file(path: str) -> dict[str, Any]:
+def _extract_json_from_output_file(path: str, schema: dict[str, Any] | None = None) -> dict[str, Any]:
     text = _read_output_file(path)
     if text is None:
         raise HarnessError("codex did not write the output file")
     try:
-        return _extract_json(json.loads(text))
+        return _extract_json(json.loads(text), schema)
     except json.JSONDecodeError:
-        return _parse_json_text(text)
+        return _parse_json_text(text, schema)
 
 
 def _extract_json_from_claude_stream(
-    stdout: str, *, provider: str | None = None
+    stdout: str, *, provider: str | None = None, schema: dict[str, Any] | None = None
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    candidates: list[str] = []
+    candidates: list[Any] = []
     usage = None
     stream_error = None
     for line in stdout.splitlines():
@@ -1114,6 +1352,8 @@ def _extract_json_from_claude_stream(
             event = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if not isinstance(event, dict):
+            continue
         if event.get("type") == "assistant":
             content = (event.get("message") or {}).get("content") or []
             text = "".join(
@@ -1121,6 +1361,8 @@ def _extract_json_from_claude_stream(
             )
             if text:
                 candidates.append(text)
+        if event.get("type") == "error":
+            stream_error = event
         if event.get("type") == "result":
             usage = {
                 "usage": event.get("usage"),
@@ -1128,20 +1370,27 @@ def _extract_json_from_claude_stream(
                 "modelUsage": event.get("modelUsage"),
             }
             if event.get("is_error"):
-                stream_error = event.get("result") or "; ".join(event.get("errors") or [])
+                stream_error = event.get("result") or event.get("errors") or event
             if event.get("result"):
                 candidates.append(event["result"])
-        if event.get("type") == "error":
-            stream_error = json.dumps(event.get("error") or event)
+            if isinstance(event.get("structured_output"), dict):
+                candidates.append(event["structured_output"])
+
+    if stream_error:
+        error_text = stream_error if isinstance(stream_error, str) else json.dumps(stream_error)
+        raise _classified_harness_error(
+            error_text,
+            harness="claude-code",
+            default_code="provider_unavailable",
+            provider=provider,
+        )
 
     last_error = None
     for candidate in reversed(candidates):
         try:
-            return _parse_json_text(candidate), usage
-        except json.JSONDecodeError as exc:
+            return _extract_json(candidate, schema), usage
+        except (HarnessError, json.JSONDecodeError) as exc:
             last_error = exc
-    if stream_error:
-        raise _classified_harness_error(stream_error, harness="claude-code", provider=provider)
     raise HarnessError(
         "Claude did not return a usable structured response.",
         code="invalid_output",
@@ -1158,6 +1407,7 @@ def _collect_json_text_candidates(value: Any) -> list[str]:
             candidates.extend(_collect_json_text_candidates(item))
     elif isinstance(value, dict):
         for key in (
+            "structuredOutput",
             "structured_output",
             "result",
             "response",
@@ -1218,6 +1468,8 @@ def _usage_from_codex_jsonl(stdout: str) -> tuple[dict[str, Any] | None, str | N
             event = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if not isinstance(event, dict):
+            continue
         payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
         if event.get("type") == "thread.started":
             thread_id = event.get("thread_id")
@@ -1259,13 +1511,21 @@ def _count_subagent_event(event: dict[str, Any], subagents: dict[str, int]):
         subagents["taskCompleteEvents"] += 1
 
 
-def _extract_json_from_codex_jsonl(stdout: str) -> dict[str, Any] | None:
+def _extract_json_from_codex_jsonl(
+    stdout: str,
+    schema: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
     texts = []
     for line in stdout.splitlines():
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if not isinstance(event, dict):
+            continue
+        item = event.get("item") if isinstance(event.get("item"), dict) else {}
+        if item.get("type") == "agent_message" and isinstance(item.get("text"), str):
+            texts.append(item["text"])
         payload = event.get("payload") if isinstance(event, dict) else None
         if not isinstance(payload, dict):
             payload = event
@@ -1275,20 +1535,43 @@ def _extract_json_from_codex_jsonl(stdout: str) -> dict[str, Any] | None:
             texts.append(payload["last_agent_message"])
     for text in reversed(texts):
         try:
-            return _parse_json_text(text)
+            return _parse_json_text(text, schema)
         except (HarnessError, json.JSONDecodeError):
             continue
     return None
 
 
-def _jsonl_result(stdout: str) -> CodexJsonlResult:
+def _codex_error_diagnostic_text(stdout: str, stderr: str) -> str:
+    """Exclude repository command output from provider-error classification."""
+
+    diagnostics = [stderr] if stderr else []
+    for line in stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        item = event.get("item") if isinstance(event.get("item"), dict) else {}
+        if (
+            event.get("type") in {"error", "turn.failed"}
+            or payload.get("type") in {"error", "turn.failed"}
+            or item.get("type") == "error"
+        ):
+            diagnostics.append(line)
+    return "\n".join(diagnostics)
+
+
+def _jsonl_result(stdout: str, schema: dict[str, Any] | None = None) -> CodexJsonlResult:
     usage, thread_id = _usage_from_codex_jsonl(stdout)
-    return CodexJsonlResult(payload=_extract_json_from_codex_jsonl(stdout), usage=usage, thread_id=thread_id)
+    return CodexJsonlResult(payload=_extract_json_from_codex_jsonl(stdout, schema), usage=usage, thread_id=thread_id)
 
 
 def _extract_json_from_codex_session_files(
     codex_home: str | None,
     started_at: float,
+    schema: dict[str, Any] | None = None,
 ) -> CodexJsonlResult | None:
     if not codex_home:
         return None
@@ -1312,7 +1595,7 @@ def _extract_json_from_codex_session_files(
             stdout = path.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
-        result = _jsonl_result(stdout)
+        result = _jsonl_result(stdout, schema)
         if result.payload is not None or result.thread_id:
             return CodexJsonlResult(
                 payload=result.payload,
@@ -1414,12 +1697,16 @@ class CodexHarness:
         cli_gate=None,
         codex_model_provider: str | None = None,
         max_subagents: int = 5,
+        runner_memory_mb: int = 0,
+        runner_memory_reservation_mb: int = 0,
     ):
         self.timeout_seconds = timeout_seconds
         self.model_provider = model_provider
         self.codex_model_provider = codex_model_provider
         self.cli_gate = cli_gate
         self.max_subagents = max(1, min(int(max_subagents), 5))
+        self.runner_memory_mb = max(0, int(runner_memory_mb))
+        self.runner_memory_reservation_mb = max(0, int(runner_memory_reservation_mb))
 
     def run(
         self,
@@ -1470,10 +1757,13 @@ class CodexHarness:
                 max_subagents=self.max_subagents if allow_tools else None,
             )
             if allow_tools:
-                cmd = (
-                    _scan_docker_command(cmd, repo_dir, actual_env, runner_image=runner_image)
-                    if runner_image
-                    else _scan_docker_command(cmd, repo_dir, actual_env)
+                cmd = _scan_docker_command(
+                    cmd,
+                    repo_dir,
+                    actual_env,
+                    runner_image=runner_image,
+                    memory_limit_mb=self.runner_memory_mb,
+                    memory_reservation_mb=self.runner_memory_reservation_mb,
                 )
             started_at = time.time()
             proc = _run_process(cmd, prompt, repo_dir, self.timeout_seconds, env=actual_env)
@@ -1488,12 +1778,14 @@ class CodexHarness:
             try:
                 if not os.path.exists(output_path):
                     raise HarnessError("codex did not write the structured output file")
-                parsed_payload = _extract_json_from_output_file(output_path)
+                parsed_payload = _extract_json_from_output_file(output_path, schema)
             except (HarnessError, json.JSONDecodeError) as exc:
                 payload_error = _harness_error_with_output(exc, process_output)
-                parsed_payload = _extract_json_from_codex_jsonl(proc.stdout)
+                parsed_payload = _extract_json_from_codex_jsonl(proc.stdout, schema)
                 if parsed_payload is None and allow_tools:
-                    session_result = _extract_json_from_codex_session_files(actual_env.get("CODEX_HOME"), started_at)
+                    session_result = _extract_json_from_codex_session_files(
+                        actual_env.get("CODEX_HOME"), started_at, schema
+                    )
                     if session_result is not None:
                         parsed_payload = session_result.payload
                         usage = usage or session_result.usage
@@ -1541,7 +1833,7 @@ class CodexHarness:
                         )
             if parsed_payload is None:
                 raise _classified_harness_error(
-                    proc.stdout,
+                    _codex_error_diagnostic_text(proc.stdout, proc.stderr),
                     harness="codex",
                     default_code="invalid_output",
                     output_artifact=process_output,
@@ -1585,10 +1877,13 @@ class CodexHarness:
         if thinking_effort and thinking_effort != "default":
             cmd.extend(["-c", f'model_reasoning_effort="{thinking_effort}"'])
         cmd.extend([session_id, "-"])
-        cmd = (
-            _scan_docker_command(cmd, repo_dir, env, runner_image=runner_image)
-            if runner_image
-            else _scan_docker_command(cmd, repo_dir, env)
+        cmd = _scan_docker_command(
+            cmd,
+            repo_dir,
+            env,
+            runner_image=runner_image,
+            memory_limit_mb=self.runner_memory_mb,
+            memory_reservation_mb=self.runner_memory_reservation_mb,
         )
         started_at = time.time()
         proc = _run_process(cmd, _resume_json_prompt(schema), repo_dir, self.timeout_seconds, env=env)
@@ -1603,14 +1898,14 @@ class CodexHarness:
         try:
             if not os.path.exists(output_path):
                 raise HarnessError("codex resume did not write the structured output file")
-            parsed_payload = _extract_json_from_output_file(output_path)
+            parsed_payload = _extract_json_from_output_file(output_path, schema)
         except (HarnessError, json.JSONDecodeError) as exc:
             payload_error = _harness_error_with_output(exc, process_output)
             parsed_payload = None
         if parsed_payload is None:
-            parsed_payload = _extract_json_from_codex_jsonl(proc.stdout)
+            parsed_payload = _extract_json_from_codex_jsonl(proc.stdout, schema)
         if parsed_payload is None:
-            session_result = _extract_json_from_codex_session_files(env.get("CODEX_HOME"), started_at)
+            session_result = _extract_json_from_codex_session_files(env.get("CODEX_HOME"), started_at, schema)
             if session_result is not None:
                 parsed_payload = session_result.payload
                 usage = usage or session_result.usage
@@ -1620,7 +1915,7 @@ class CodexHarness:
                     process_output = _add_output_file(process_output, source_name, session_result.source_text)
         if parsed_payload is None:
             raise _classified_harness_error(
-                proc.stdout,
+                _codex_error_diagnostic_text(proc.stdout, proc.stderr),
                 harness="codex",
                 default_code="invalid_output",
                 output_artifact=process_output,
@@ -1634,9 +1929,17 @@ class CodexHarness:
 class ClaudeHarness:
     name = "claude-code"
 
-    def __init__(self, timeout_seconds: int, model_provider: str | None = None):
+    def __init__(
+        self,
+        timeout_seconds: int,
+        model_provider: str | None = None,
+        runner_memory_mb: int = 0,
+        runner_memory_reservation_mb: int = 0,
+    ):
         self.timeout_seconds = timeout_seconds
         self.model_provider = model_provider
+        self.runner_memory_mb = max(0, int(runner_memory_mb))
+        self.runner_memory_reservation_mb = max(0, int(runner_memory_reservation_mb))
 
     def run(
         self,
@@ -1668,23 +1971,39 @@ class ClaudeHarness:
             "--append-system-prompt",
             CLAUDE_WORKSPACE_SYSTEM_PROMPT if allow_tools else CLAUDE_GENERATION_SYSTEM_PROMPT,
         ]
+        if provider == "openrouter":
+            cmd.extend(
+                [
+                    "--settings",
+                    json.dumps(
+                        {
+                            "availableModels": [model],
+                            "enforceAvailableModels": True,
+                            "model": model,
+                        },
+                        separators=(",", ":"),
+                    ),
+                ]
+            )
         if allow_tools:
             cmd.extend(["--dangerously-skip-permissions", "--tools", "default"])
         else:
             # No tools, MCP configuration, or user/project settings are loaded for
             # untrusted generation requests. The response is schema-only text.
             cmd.extend(["--tools", "", "--permission-mode", "dontAsk", "--strict-mcp-config", "--setting-sources", ""])
-        if provider != "openrouter":
-            cmd.extend(["--json-schema", json.dumps(_claude_json_schema(schema))])
-        else:
+        cmd.extend(["--json-schema", json.dumps(_claude_json_schema(schema))])
+        if provider == "openrouter":
             cmd.extend(["--include-partial-messages", "--verbose"])
         if thinking_effort and thinking_effort != "default":
             cmd.extend(["--effort", thinking_effort])
         run_cmd = (
-            (
-                _scan_docker_command(cmd, repo_dir, actual_env, runner_image=runner_image)
-                if runner_image
-                else _scan_docker_command(cmd, repo_dir, actual_env)
+            _scan_docker_command(
+                cmd,
+                repo_dir,
+                actual_env,
+                runner_image=runner_image,
+                memory_limit_mb=self.runner_memory_mb,
+                memory_reservation_mb=self.runner_memory_reservation_mb,
             )
             if allow_tools
             else cmd
@@ -1699,7 +2018,7 @@ class ClaudeHarness:
         process_output = _process_output(proc)
         if provider == "openrouter":
             try:
-                payload, usage = _extract_json_from_claude_stream(proc.stdout, provider=provider)
+                payload, usage = _extract_json_from_claude_stream(proc.stdout, provider=provider, schema=schema)
             except HarnessError as exc:
                 raise _harness_error_with_output(exc, process_output) from exc
             except json.JSONDecodeError as exc:
@@ -1769,9 +2088,17 @@ def _cursor_model_name(model: str, model_provider: str | None = None, thinking_e
 class CursorHarness:
     name = "cursor"
 
-    def __init__(self, timeout_seconds: int, model_provider: str | None = None):
+    def __init__(
+        self,
+        timeout_seconds: int,
+        model_provider: str | None = None,
+        runner_memory_mb: int = 0,
+        runner_memory_reservation_mb: int = 0,
+    ):
         self.timeout_seconds = timeout_seconds
         self.model_provider = model_provider
+        self.runner_memory_mb = max(0, int(runner_memory_mb))
+        self.runner_memory_reservation_mb = max(0, int(runner_memory_reservation_mb))
 
     def run(
         self,
@@ -1809,10 +2136,13 @@ class CursorHarness:
             repo_dir,
             "Read the full task from standard input, complete it in this workspace, and return only the requested structured JSON.",
         ]
-        cmd = (
-            _scan_docker_command(cmd, repo_dir, actual_env, runner_image=runner_image)
-            if runner_image
-            else _scan_docker_command(cmd, repo_dir, actual_env)
+        cmd = _scan_docker_command(
+            cmd,
+            repo_dir,
+            actual_env,
+            runner_image=runner_image,
+            memory_limit_mb=self.runner_memory_mb,
+            memory_reservation_mb=self.runner_memory_reservation_mb,
         )
         proc = _run_process(cmd, prompt, repo_dir, self.timeout_seconds, env=actual_env)
         process_output = _process_output(proc)
@@ -1839,11 +2169,194 @@ class CursorHarness:
         return HarnessResult(payload=payload, usage=usage, output=process_output)
 
 
+def _grok_executable(env: dict[str, str]) -> str:
+    configured = env.get("GROK_BIN") or os.getenv("GROK_BIN")
+    if configured:
+        return configured
+    found = shutil.which("grok", path=env.get("PATH"))
+    if found:
+        return found
+    local_grok = Path(env.get("HOME") or str(Path.home())) / ".local/bin/grok"
+    if local_grok.exists():
+        return str(local_grok)
+    raise HarnessError(
+        "grok CLI is not available; install Grok Build 1.0.0 into the engine image.",
+        code="start_failed",
+        harness="grok-build",
+    )
+
+
+def _grok_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Drop dialect annotations that some CLIs try to resolve locally."""
+    return {key: value for key, value in schema.items() if key != "$schema"}
+
+
+def _extract_json_from_grok_json(stdout: str) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    try:
+        wrapper = json.loads(stdout)
+    except json.JSONDecodeError:
+        return _parse_json_text(stdout), None
+    if isinstance(wrapper, dict) and wrapper.get("type") == "error":
+        raise _classified_harness_error(
+            json.dumps(wrapper),
+            harness="grok-build",
+            default_code="auth_failed" if "sign" in str(wrapper.get("message", "")).lower() else "model_process_error",
+        )
+    usage = None
+    if isinstance(wrapper, dict):
+        usage = {
+            key: wrapper.get(key)
+            for key in ("usage", "modelUsage", "total_cost_usd", "cost", "sessionId", "stopReason", "num_turns")
+            if wrapper.get(key) is not None
+        } or None
+    try:
+        return _extract_json(wrapper), usage
+    except HarnessError as exc:
+        last_error: Exception = exc
+        for candidate in reversed(_collect_json_text_candidates(wrapper)):
+            try:
+                return _parse_json_text(candidate), usage
+            except (HarnessError, json.JSONDecodeError) as parse_exc:
+                last_error = parse_exc
+        raise HarnessError(
+            "Grok Build did not return a usable structured response.",
+            code="invalid_output",
+            harness="grok-build",
+        ) from last_error
+
+
+class GrokBuildHarness:
+    name = "grok-build"
+
+    def __init__(
+        self,
+        timeout_seconds: int,
+        model_provider: str | None = None,
+        runner_memory_mb: int = 0,
+        runner_memory_reservation_mb: int = 0,
+    ):
+        self.timeout_seconds = timeout_seconds
+        self.model_provider = model_provider
+        self.runner_memory_mb = max(0, int(runner_memory_mb))
+        self.runner_memory_reservation_mb = max(0, int(runner_memory_reservation_mb))
+
+    def run(
+        self,
+        *,
+        prompt: str,
+        schema: dict[str, Any],
+        repo_dir: str,
+        model: str,
+        thinking_effort: str | None = None,
+        env: dict[str, str] | None = None,
+        allow_tools: bool = True,
+        runner_image: str | None = None,
+    ) -> HarnessResult:
+        actual_env = dict(env if env is not None else _base_env())
+        # These are scanner-enforced settings, not user configuration: hostile
+        # repository content and ambient process variables must not relax them.
+        actual_env.update(GROK_BUILD_RUNTIME_ENV)
+        executable = _grok_executable(actual_env)
+        model_name = (model or DEFAULT_GROK_BUILD_MODEL).strip() or DEFAULT_GROK_BUILD_MODEL
+        workspace = Path(repo_dir)
+        workspace.mkdir(parents=True, exist_ok=True)
+        # Snapshot runners do not bind-mount the host workspace, but their
+        # per-job home is always mounted. Keep the prompt there so Grok can
+        # read a file created after the workspace image was committed.
+        prompt_dir = Path(actual_env.get("HOME") or workspace)
+        prompt_dir.mkdir(parents=True, exist_ok=True)
+        # Unique filenames avoid collisions when tool-free generation shares a home.
+        # --json-schema requires inline JSON (file paths are rejected by the CLI).
+        suffix = f"{os.getpid()}.{time.time_ns()}"
+        prompt_path = prompt_dir / f".open-kritt-grok-prompt.{suffix}.txt"
+        prompt_path.write_text(prompt, encoding="utf-8")
+        prompt_path.chmod(0o600)
+        schema_json = json.dumps(_grok_json_schema(schema))
+        try:
+            cmd = [
+                executable,
+                "--prompt-file",
+                str(prompt_path),
+                "--output-format",
+                "json",
+                "--json-schema",
+                schema_json,
+                "--model",
+                model_name,
+                "--cwd",
+                str(workspace),
+                "--no-auto-update",
+                "--no-plan",
+                "--disable-web-search",
+                "--no-subagents",
+                "--deny",
+                "MCPTool",
+            ]
+            effort = (thinking_effort or "").strip().lower()
+            if effort in GROK_BUILD_THINKING_EFFORTS:
+                cmd.extend(["--reasoning-effort", effort])
+            if allow_tools:
+                cmd.extend(["--always-approve", "--permission-mode", "bypassPermissions"])
+            else:
+                cmd.extend(
+                    [
+                        "--permission-mode",
+                        "dontAsk",
+                        "--tools",
+                        "",
+                    ]
+                )
+            run_cmd = (
+                _scan_docker_command(
+                    cmd,
+                    repo_dir,
+                    actual_env,
+                    runner_image=runner_image,
+                    memory_limit_mb=self.runner_memory_mb,
+                    memory_reservation_mb=self.runner_memory_reservation_mb,
+                )
+                if allow_tools
+                else cmd
+            )
+            # Prompt content is already on disk; do not also send it on stdin.
+            proc = _run_process(run_cmd, "", repo_dir, self.timeout_seconds, env=actual_env)
+            process_output = _process_output(
+                proc,
+                files={
+                    "grok-prompt.txt": prompt,
+                    "grok-schema.json": schema_json,
+                },
+            )
+            try:
+                payload, usage = _extract_json_from_grok_json(proc.stdout)
+            except HarnessError as exc:
+                raise _harness_error_with_output(exc, process_output) from exc
+            except json.JSONDecodeError as exc:
+                raise HarnessError(
+                    "Grok Build did not return a usable structured response.",
+                    output=process_output,
+                    code="invalid_output",
+                    harness="grok-build",
+                ) from exc
+            if usage is None and thinking_effort:
+                usage = {"thinking_effort": thinking_effort}
+            elif usage is not None and thinking_effort:
+                usage = {**usage, "thinking_effort": thinking_effort}
+            if normalize_model_provider(self.model_provider) == "xai":
+                usage = {**(usage or {}), "model_provider": "xai", "xai_model": model_name}
+            return HarnessResult(payload=payload, usage=usage, output=process_output)
+        finally:
+            with suppress(OSError):
+                prompt_path.unlink(missing_ok=True)
+
+
 def normalize_harness_name(name: str) -> str:
     if name == "codex-cli":
         return "codex"
     if name in {"cursor-cli", "cursor-agent"}:
         return "cursor"
+    if name == "grok":
+        return "grok-build"
     return name
 
 
@@ -1855,6 +2368,8 @@ def harness_for(
     codex_model_provider: str | None = None,
     codex_cli_gate=None,
     codex_max_subagents: int = 5,
+    runner_memory_mb: int = 0,
+    runner_memory_reservation_mb: int = 0,
 ):
     normalized = normalize_harness_name(name)
     provider = model_provider if model_provider is not None else codex_model_provider
@@ -1865,9 +2380,28 @@ def harness_for(
             cli_gate=codex_cli_gate,
             codex_model_provider=codex_model_provider,
             max_subagents=codex_max_subagents,
+            runner_memory_mb=runner_memory_mb,
+            runner_memory_reservation_mb=runner_memory_reservation_mb,
         )
     if normalized == "claude-code":
-        return ClaudeHarness(timeout_seconds, provider)
+        return ClaudeHarness(
+            timeout_seconds,
+            provider,
+            runner_memory_mb=runner_memory_mb,
+            runner_memory_reservation_mb=runner_memory_reservation_mb,
+        )
     if normalized == "cursor":
-        return CursorHarness(timeout_seconds, provider)
+        return CursorHarness(
+            timeout_seconds,
+            provider,
+            runner_memory_mb=runner_memory_mb,
+            runner_memory_reservation_mb=runner_memory_reservation_mb,
+        )
+    if normalized == "grok-build":
+        return GrokBuildHarness(
+            timeout_seconds,
+            provider,
+            runner_memory_mb=runner_memory_mb,
+            runner_memory_reservation_mb=runner_memory_reservation_mb,
+        )
     raise HarnessError(f"unsupported harness {name!r}")

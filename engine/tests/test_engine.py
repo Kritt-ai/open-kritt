@@ -1,3 +1,4 @@
+import errno
 import json
 import shutil
 import subprocess
@@ -25,17 +26,20 @@ from open_kritt_engine.harnesses import (
 )
 from open_kritt_engine.models import (
     Job,
+    ModelSelection,
     State,
     Step,
     StepResultRow,
     Workflow,
     model_selection_for_depth,
+    post_processing_model_selection,
     post_processing_thinking_effort,
 )
 from open_kritt_engine.post_processing import (
     PostProcessor,
     PostProcessRateLimited,
     build_dedupe_prompt,
+    build_ranker_prompt,
     configured_post_script_ids,
     dedupe_batch,
     dedupe_mapping_from_clusters,
@@ -54,7 +58,7 @@ from open_kritt_engine.prompting import (
     repeat_append_prompt,
     scan_context,
 )
-from open_kritt_engine.queue import build_pending_jobs, repeat_runs
+from open_kritt_engine.queue import build_pending_jobs, configured_step_ids, repeat_runs
 from open_kritt_engine.repository import github_clone_url, normalize_repo_full, safe_repo_dir
 from open_kritt_engine.runtime_config import ensure_runtime_config_file
 from open_kritt_engine.schema import EXTRACTOR_HELPER_FIELD, OutputValidationError, output_schema, validate_payload
@@ -87,12 +91,12 @@ def marked(payload):
 
 @pytest.fixture(autouse=True)
 def isolate_unit_tests_from_external_runners(monkeypatch):
-    monkeypatch.setattr(harnesses, "_scan_docker_command", lambda cmd, _repo_dir, _env: cmd)
+    monkeypatch.setattr(harnesses, "_scan_docker_command", lambda cmd, _repo_dir, _env, **_kwargs: cmd)
     monkeypatch.setattr(workspace_module, "resolve_scan_checkout_revisions", lambda scan, **_kwargs: scan)
     monkeypatch.setattr(worker_module, "resolve_scan_checkout_revisions", lambda scan, **_kwargs: scan)
 
 
-def step(step_id, depth, *, is_last=False, multi=False, output_format=None):
+def step(step_id, depth, *, is_last=False, multi=False, output_format=None, bound_source_step_id=None):
     return Step(
         id=step_id,
         content="Check {{repo_full}} {{thing}}",
@@ -103,6 +107,7 @@ def step(step_id, depth, *, is_last=False, multi=False, output_format=None):
         is_last_step=is_last,
         output_table="workflows.vulnerabilities" if is_last else "workflows.step_results",
         order=step_id,
+        bound_source_step_id=bound_source_step_id,
     )
 
 
@@ -152,6 +157,30 @@ def test_post_processing_thinking_effort_is_independent_from_workflow_effort():
     assert model_selection_for_depth(configured).thinking_effort == "high"
     assert post_processing_thinking_effort(configured) == "medium"
     assert post_processing_thinking_effort({**configured, "configuration": {}}) == "high"
+
+
+def test_post_processing_can_use_a_complete_independent_model_selection():
+    configured = {
+        **scan(
+            {
+                "post_processing_model": "gpt-5-codex",
+                "post_processing_model_provider": "codex",
+                "post_processing_harness": "codex",
+                "post_processing_thinking_effort": "xhigh",
+            }
+        ),
+        "model": "claude-sonnet",
+        "model_provider": "claude",
+        "harness": "claude-code",
+        "thinking_effort": "high",
+    }
+
+    assert post_processing_model_selection(configured) == ModelSelection(
+        model="gpt-5-codex",
+        model_provider="codex",
+        harness="codex",
+        thinking_effort="xhigh",
+    )
 
 
 def fake_cache_git_head(path):
@@ -372,6 +401,83 @@ def test_ranker_batch_uses_only_canonicals_and_next_50_unranked():
 
     assert [row["id"] for row in anchors] == [2]
     assert [row["id"] for row in targets] == list(range(3, 53))
+
+
+def test_ranker_prompt_applies_the_scan_severity_ranker_before_protocol_constraints():
+    configured_rules = """# Program ranking policy
+
+1. Unauthenticated loss of funds is Critical and ranks first.
+2. Findings requiring validator collusion are no higher than Medium."""
+    configured_scan = {**scan(), "severity_ranker": configured_rules}
+
+    prompt = build_ranker_prompt(configured_scan, [], [vuln(3, canonical=True, canonical_id=3)])
+
+    assert configured_rules in prompt
+    assert "Treat the configured severity ranking rules below as authoritative" in prompt
+    assert prompt.index(configured_rules) < prompt.index("Required ranking protocol:")
+    assert "Return every target id exactly once" in prompt
+    assert "Return only minified JSON matching the provided schema" in prompt
+
+
+def test_ranker_prompt_keeps_a_safe_fallback_for_legacy_scans_without_rules():
+    prompt = build_ranker_prompt(scan(), [], [vuln(3, canonical=True, canonical_id=3)])
+
+    assert "No additional scan-specific ranking rules were configured." in prompt
+    assert "Target findings JSON" in prompt
+
+
+def test_ranker_batch_sends_the_configured_severity_rules_to_the_harness():
+    configured_rules = "Rank public consensus-halting bugs above authenticated denial of service."
+    current = {
+        **scan(),
+        "status": "post_processing",
+        "model_provider": "codex",
+        "thinking_effort": "medium",
+        "severity_ranker": configured_rules,
+    }
+
+    class FakeRankerDb:
+        def __init__(self):
+            self.updates = []
+
+        @contextmanager
+        def connect(self):
+            yield FakeConn()
+
+        def count_running_post_process(self, _conn, _scan_id, _kind):
+            return 0
+
+        def load_scan(self, _conn, _scan_id):
+            return current
+
+        def load_vulnerabilities(self, _conn, _scan_id):
+            return [vuln(3, canonical=True, canonical_id=3)]
+
+        def next_post_process_batch_index(self, _conn, _scan_id, _kind):
+            return 0
+
+        def claim_post_process_metadata(self, _conn, **_kwargs):
+            return 9
+
+        def update_post_process_metadata(self, _conn, metadata_id, **kwargs):
+            self.updates.append({"metadata_id": metadata_id, **kwargs})
+
+    captured = {}
+    database = FakeRankerDb()
+    processor = PostProcessor(SimpleNamespace(data_dir="/tmp", github_token=None), database)
+
+    def capture_prompt(**kwargs):
+        captured.update(kwargs)
+        raise PostProcessRateLimited("stop after prompt capture", retry_after_seconds=1.0)
+
+    processor._run_harness_with_retries = capture_prompt
+
+    with pytest.raises(PostProcessRateLimited):
+        processor._run_next_ranker_batch(current, object())
+
+    assert configured_rules in captured["prompt"]
+    assert captured["kind"] == "ranker"
+    assert database.updates[-1]["status"] == "interrupted"
 
 
 def test_post_script_context_contains_only_scan_and_finding_fields():
@@ -616,6 +722,36 @@ def test_prewarm_scan_checkout_cache_only_populates_cache(monkeypatch, tmp_path)
     assert all(str(tmp_path / "cache") in call[2] for call in calls)
     assert manifest["primary"]["commit"] == "commit-repo"
     assert manifest["dependencies"][0]["commit"] == "commit-agave"
+
+
+def test_checkout_cache_falls_back_when_configured_cache_is_read_only(monkeypatch, tmp_path):
+    configured_cache = tmp_path / "configured-cache"
+    configured_cache.mkdir()
+    data_dir = tmp_path / "data"
+    monkeypatch.setenv("ENGINE_DATA_DIR", str(data_dir))
+    calls = []
+
+    def fake_checkout_repo(repo_full, commit_sha, base_dir, github_token=None):
+        base_path = Path(base_dir)
+        calls.append(base_path)
+        if configured_cache in base_path.parents:
+            raise OSError(errno.EROFS, "Read-only file system", base_path)
+        path = base_path / repo_full.replace("/", "__")
+        path.mkdir(parents=True)
+        (path / ".git").mkdir()
+        (path / "repo.txt").write_text(repo_full, encoding="utf-8")
+        return str(path), "commit-repo"
+
+    monkeypatch.setattr(workspace_module, "checkout_repo", fake_checkout_repo)
+    monkeypatch.setattr(workspace_module, "_git_head_commit", fake_cache_git_head)
+
+    manifest = prewarm_scan_checkout_cache(checkout_cache_dir=str(configured_cache), scan=scan())
+
+    fallback = data_dir / workspace_module.CHECKOUT_CACHE_FALLBACK_DIRNAME
+    assert calls[0] == configured_cache / "owner__repo@HEAD"
+    assert calls[1] == fallback / "owner__repo@HEAD"
+    assert Path(manifest["primary"]["cache_path"]).is_relative_to(fallback)
+    assert manifest["primary"]["commit"] == "commit-repo"
 
 
 def test_ready_checkout_cache_skips_fetch_and_uses_shared_clone(monkeypatch, tmp_path):
@@ -1240,6 +1376,7 @@ def test_claude_harness_uses_dangerous_permissions_and_default_tools(monkeypatch
 
 def test_claude_harness_can_route_glm_through_openrouter(monkeypatch, tmp_path):
     captured = {}
+    source_schema = output_schema('{"thing":"string"}', multi_output=False)
 
     def fake_run_process(cmd, prompt, cwd, timeout, env=None):
         captured["cmd"] = cmd
@@ -1273,7 +1410,7 @@ def test_claude_harness_can_route_glm_through_openrouter(monkeypatch, tmp_path):
 
     result = ClaudeHarness(timeout_seconds=5).run(
         prompt="prompt",
-        schema=output_schema('{"thing":"string"}', multi_output=False),
+        schema=source_schema,
         repo_dir="/tmp",
         model="glm-5.2",
         thinking_effort="medium",
@@ -1291,6 +1428,14 @@ def test_claude_harness_can_route_glm_through_openrouter(monkeypatch, tmp_path):
     assert captured["env"]["ANTHROPIC_BASE_URL"] == "https://openrouter.ai/api"
     assert captured["env"]["ANTHROPIC_AUTH_TOKEN"] == "or-key"
     assert captured["env"]["ANTHROPIC_API_KEY"] == ""
+    for key in harnesses.CLAUDE_OPENROUTER_MODEL_ENV_KEYS:
+        assert captured["env"][key] == "z-ai/glm-5.2"
+    settings = json.loads(captured["cmd"][captured["cmd"].index("--settings") + 1])
+    assert settings == {
+        "availableModels": ["z-ai/glm-5.2"],
+        "enforceAvailableModels": True,
+        "model": "z-ai/glm-5.2",
+    }
     # The subprocess environment is authoritative in both containers and local
     # development; credentials must never be serialized into process arguments.
     if captured["cmd"][:3] == ["runuser", "-u", "nobody"]:
@@ -1301,8 +1446,54 @@ def test_claude_harness_can_route_glm_through_openrouter(monkeypatch, tmp_path):
     assert "--verbose" in captured["cmd"]
     assert "--disallowedTools" not in captured["cmd"]
     assert "--append-system-prompt" in captured["cmd"]
-    assert "--json-schema" not in captured["cmd"]
+    claude_schema = json.loads(captured["cmd"][captured["cmd"].index("--json-schema") + 1])
+    assert "$schema" not in claude_schema
+    assert claude_schema["properties"] == harnesses._claude_json_schema(source_schema)["properties"]
     assert harnesses.claude_model_provider("glm-5.2", captured["env"]) == "openrouter"
+
+
+def test_claude_openrouter_terminal_stream_error_rejects_partial_json(monkeypatch, tmp_path):
+    payload = marked({"stub": True, "stub_explanation": "No matching records.", "results": []})
+    raw_stdout = "\n".join(
+        [
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {"content": [{"type": "text", "text": json.dumps(payload)}]},
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "result",
+                    "is_error": True,
+                    "result": "API returned an empty or malformed response (HTTP 200)",
+                }
+            ),
+        ]
+    )
+
+    def fake_run_process(cmd, prompt, cwd, timeout, env=None):
+        return SimpleNamespace(stdout=raw_stdout, stderr="", returncode=0)
+
+    monkeypatch.setattr(harnesses, "_run_process", fake_run_process)
+
+    with pytest.raises(HarnessError) as raised:
+        ClaudeHarness(timeout_seconds=5).run(
+            prompt="prompt",
+            schema=output_schema('{"thing":"string"}', multi_output=False),
+            repo_dir="/tmp",
+            model="glm-5.2",
+            env={
+                "HOME": str(tmp_path / "home"),
+                "CLAUDE_HOME": str(tmp_path / "home" / ".claude"),
+                "CLAUDE_CONFIG_DIR": str(tmp_path / "home" / ".claude"),
+                "OPENROUTER_API_KEY": "or-key",
+                "CODEX_MODEL_PROVIDER": "openrouter",
+            },
+        )
+
+    assert raised.value.code == "provider_unavailable"
+    assert raised.value.output.stdout == raw_stdout
 
 
 def test_claude_openrouter_parse_error_carries_raw_output(monkeypatch, tmp_path):
@@ -1468,7 +1659,11 @@ def test_tool_harness_docker_runner_is_root_writable_and_internet_enabled(monkey
 
     monkeypatch.setattr(harnesses, "_run_process", fake_run_process)
 
-    result = ClaudeHarness(timeout_seconds=5).run(
+    result = ClaudeHarness(
+        timeout_seconds=5,
+        runner_memory_mb=1536,
+        runner_memory_reservation_mb=768,
+    ).run(
         prompt="prompt",
         schema=output_schema('{"thing":"string"}', multi_output=False),
         repo_dir=str(repo_dir),
@@ -1498,6 +1693,9 @@ def test_tool_harness_docker_runner_is_root_writable_and_internet_enabled(monkey
     assert network.startswith(harnesses.SCAN_SANDBOX_NETWORK_PREFIX)
     assert "runner-image" in captured["cmd"]
     assert captured["cmd"][captured["cmd"].index("--workdir") + 1] == "/workspace"
+    assert captured["cmd"][captured["cmd"].index("--memory") + 1] == "1536m"
+    assert captured["cmd"][captured["cmd"].index("--memory-swap") + 1] == "1536m"
+    assert captured["cmd"][captured["cmd"].index("--memory-reservation") + 1] == "768m"
     assert "--env" in captured["cmd"]
     assert "HOME=/home/runner" in captured["cmd"]
     assert "CODEX_HOME=/home/runner/.codex" in captured["cmd"]
@@ -1798,6 +1996,43 @@ def test_job_workspace_rotates_between_configured_codex_homes(monkeypatch, tmp_p
     assert (Path(workspace_3.env["CODEX_HOME"]) / "auth.json").read_text(encoding="utf-8") == '{"account":"a"}'
 
 
+def test_job_workspace_copies_configured_grok_login_auth(monkeypatch, tmp_path):
+    monkeypatch.delenv("ENGINE_RUNTIME_CONFIG_PATH", raising=False)
+    from open_kritt_engine.workspace import _configured_grok_homes
+
+    home_a = tmp_path / "grok-accounts" / "primary" / ".grok"
+    home_b = tmp_path / "grok-accounts" / "secondary" / ".grok"
+    home_a.mkdir(parents=True)
+    home_b.mkdir(parents=True)
+    (home_a / "auth.json").write_text('{"email":"a@example.test"}', encoding="utf-8")
+    (home_b / "auth.json").write_text('{"email":"b@example.test"}', encoding="utf-8")
+    (home_a / "config.toml").write_text("[hooks]\nenabled = true\n", encoding="utf-8")
+    (home_a / "trusted_folders.toml").write_text('folders = ["/workspace"]\n', encoding="utf-8")
+    (home_a / "hooks").mkdir()
+    (home_a / "hooks" / "pre-tool.sh").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    monkeypatch.setenv("ENGINE_GROK_HOME", f"{home_a},{home_b}")
+
+    workspace_1 = prepare_job_workspace(str(tmp_path / "data"), 1, model_provider="xai", harness_name="grok-build")
+    workspace_2 = prepare_job_workspace(str(tmp_path / "data"), 2, model_provider="xai", harness_name="grok-build")
+
+    assert _configured_grok_homes() == [str(home_a), str(home_b)]
+    assert workspace_1.provider_account_provider == "xai"
+    assert workspace_1.provider_account_home == str(home_a)
+    assert workspace_1.provider_account_email == "a@example.test"
+    assert (Path(workspace_1.env["GROK_HOME"]) / "auth.json").read_text(encoding="utf-8") == (
+        '{"email":"a@example.test"}'
+    )
+    assert (Path(workspace_2.env["GROK_HOME"]) / "auth.json").read_text(encoding="utf-8") == (
+        '{"email":"b@example.test"}'
+    )
+    copied_files = {
+        path.relative_to(workspace_1.env["GROK_HOME"]).as_posix()
+        for path in Path(workspace_1.env["GROK_HOME"]).rglob("*")
+        if path.is_file()
+    }
+    assert copied_files == {"auth.json"}
+
+
 def test_claude_rotation_reloads_live_account_list_without_engine_restart(monkeypatch, tmp_path):
     monkeypatch.delenv("ENGINE_RUNTIME_CONFIG_PATH", raising=False)
     data_dir = tmp_path / "data"
@@ -1827,17 +2062,21 @@ def test_claude_rotation_reloads_live_account_list_without_engine_restart(monkey
     assert provider_home_for_job("claude", 4, data_dir=str(data_dir)) == str(home_b)
 
 
-@pytest.mark.parametrize("provider", ["codex", "claude"])
+@pytest.mark.parametrize("provider", ["codex", "claude", "xai"])
 def test_provider_rotation_skips_limited_accounts_until_all_are_limited(monkeypatch, tmp_path, provider):
     monkeypatch.delenv("ENGINE_RUNTIME_CONFIG_PATH", raising=False)
     home_a = tmp_path / provider / "account-a"
     home_b = tmp_path / provider / "account-b"
     home_a.mkdir(parents=True)
     home_b.mkdir(parents=True)
-    if provider == "codex":
+    if provider in {"codex", "xai"}:
         (home_a / "auth.json").write_text("{}", encoding="utf-8")
         (home_b / "auth.json").write_text("{}", encoding="utf-8")
-    setting = "ENGINE_CODEX_HOME" if provider == "codex" else "ENGINE_CLAUDE_HOME"
+    setting = {
+        "codex": "ENGINE_CODEX_HOME",
+        "claude": "ENGINE_CLAUDE_HOME",
+        "xai": "ENGINE_GROK_HOME",
+    }[provider]
     monkeypatch.setenv(setting, f"{home_a},{home_b}")
 
     first = provider_home_for_job(provider, 1)
@@ -2065,6 +2304,105 @@ def test_queue_repeats_each_task_before_feeding_accumulated_results_downstream()
     completed.add((2, 10, "workflows.step_results", 1))
     pending = build_pending_jobs(scan=sc, workflow=workflow, completed=completed, step_results=results)
     assert [(j.step.id, j.state.prev_id, j.state.repeat_run) for j in pending] == [(2, 11, 1), (2, 10, 2)]
+
+
+def test_queue_can_shuffle_one_steps_pending_lineages_without_changing_membership():
+    workflow = Workflow(
+        id=3,
+        name="wf",
+        steps=(
+            step(1, 0, multi=True),
+            step(2, 1, is_last=True),
+        ),
+    )
+    completed = {(1, 0, None, 1)}
+    results = {
+        (1, 0, None, 1): [
+            StepResultRow(
+                id=result_id,
+                step_id=1,
+                prev_id=0,
+                prev_table=None,
+                repeat_run=1,
+                json_answer={"item": result_id},
+            )
+            for result_id in range(10, 30)
+        ]
+    }
+    ordered = build_pending_jobs(
+        scan=scan(),
+        workflow=workflow,
+        completed=completed,
+        step_results=results,
+    )
+    shuffled_scan = scan(
+        {
+            "shuffle_pending_step_ids": [2],
+            "skip_attempted_step_ids": [2, "bad"],
+            "pending_shuffle_seed": "deterministic-test-seed",
+        }
+    )
+    shuffled = build_pending_jobs(
+        scan=shuffled_scan,
+        workflow=workflow,
+        completed=completed,
+        step_results=results,
+    )
+
+    assert configured_step_ids(shuffled_scan, "skip_attempted_step_ids") == {2}
+    assert {job.state.prev_id for job in shuffled} == {job.state.prev_id for job in ordered}
+    assert [job.state.prev_id for job in shuffled] != [job.state.prev_id for job in ordered]
+    assert [job.state.prev_id for job in shuffled] == [
+        job.state.prev_id
+        for job in build_pending_jobs(
+            scan=shuffled_scan,
+            workflow=workflow,
+            completed=completed,
+            step_results=results,
+        )
+    ]
+
+
+def test_queue_can_apply_an_explicit_pending_lineage_order_before_fallback_work():
+    workflow = Workflow(
+        id=3,
+        name="wf",
+        steps=(
+            step(1, 0, multi=True),
+            step(2, 1, is_last=True),
+        ),
+    )
+    completed = {(1, 0, None, 1)}
+    results = {
+        (1, 0, None, 1): [
+            StepResultRow(
+                id=result_id,
+                step_id=1,
+                prev_id=0,
+                prev_table=None,
+                repeat_run=1,
+                json_answer={"item": result_id},
+            )
+            for result_id in range(10, 15)
+        ]
+    }
+    prioritized_scan = scan(
+        {
+            "pending_lineage_order_by_step": {"2": [13, "11", "bad", 13]},
+            "shuffle_pending_step_ids": [2],
+            "pending_shuffle_seed": "fallback-only",
+        }
+    )
+
+    pending = build_pending_jobs(
+        scan=prioritized_scan,
+        workflow=workflow,
+        completed=completed,
+        step_results=results,
+    )
+
+    assert [job.state.prev_id for job in pending[:2]] == [13, 11]
+    assert {job.state.prev_id for job in pending} == set(range(10, 15))
 
 
 def test_database_load_prior_repeat_results_keeps_every_earlier_step_output():
@@ -2560,6 +2898,13 @@ def test_worker_retries_strict_validation_then_writes_results(monkeypatch, tmp_p
     assert fake_db.metadata[0]["harness"] == "claude-code"
     assert fake_db.metadata[0]["model_provider"] == "claude"
     assert fake_db.step_results[0]["json_answer"] == {"thing": "ok"}
+    assert fake_db.metadata[0]["output_json"] == marked(
+        {
+            "stub": False,
+            "stub_explanation": "",
+            "results": [{"thing": "ok"}],
+        }
+    )
     assert not root.exists()
 
 
@@ -2733,6 +3078,53 @@ def test_worker_does_not_retry_permanent_harness_failures(monkeypatch, tmp_path)
     assert not root.exists()
 
 
+def test_worker_uses_the_cyber_safety_retry_limit(monkeypatch, tmp_path):
+    monkeypatch.delenv("ENGINE_RUNTIME_CONFIG_PATH", raising=False)
+    root = tmp_path / "cyber-job"
+    root.mkdir()
+    (tmp_path / "engine-runtime.env").write_text("ENGINE_CYBER_SAFETY_RETRY_COUNT=3\n", encoding="utf-8")
+
+    class Workspace:
+        root_dir = str(root)
+        env = {"HOME": "/tmp/home"}
+
+    class CyberBlockedHarness:
+        def __init__(self):
+            self.calls = 0
+
+        def run(self, **_kwargs):
+            self.calls += 1
+            raise harnesses.HarnessError(
+                "provider response contained secret-value",
+                code="cyber_safety_blocked",
+                harness="codex",
+            )
+
+    prepared = SimpleNamespace(
+        workspace=Workspace(),
+        repo_dir="/tmp/repo",
+        checked_out_commit="abc",
+        layout="Dependency repositories are checked out as top-level directories inside the same workspace root.",
+        manifest_json='{"dependencies":[]}',
+    )
+    fake_db = FakeDb()
+    worker = Worker(SimpleNamespace(retry_count=0, data_dir=str(tmp_path), github_token=None), db=fake_db)
+    monkeypatch.setattr(worker_module, "prepare_dependency_workspace", lambda **_kwargs: prepared)
+    job = Job(
+        step=step(1, 0),
+        state=State(prev_id=0, prev_table=None, repeat_run=1, context={"repo_full": "owner/repo"}),
+    )
+    fake_harness = CyberBlockedHarness()
+
+    with pytest.raises(worker_module.StepExecutionError, match="failed after 4 attempts"):
+        worker.execute_job(scan=scan(), workflow_id=3, job=job, harness=fake_harness)
+
+    assert fake_harness.calls == 4
+    assert "Diagnostic: cyber_safety_blocked" in fake_db.metadata[0]["error"]
+    assert "secret-value" not in fake_db.metadata[0]["error"]
+    assert not root.exists()
+
+
 def test_worker_rotates_after_interrupting_a_rate_limited_step(monkeypatch, tmp_path):
     root = tmp_path / "job"
     root.mkdir()
@@ -2816,14 +3208,34 @@ def test_post_processing_harness_uses_dependency_workspace(monkeypatch, tmp_path
         def update_post_process_metadata(self, _conn, metadata_id, **kwargs):
             self.updates.append({"metadata_id": metadata_id, **kwargs})
 
-    monkeypatch.setattr(post_processing_module, "prepare_dependency_workspace", lambda **_kwargs: prepared)
+    workspace_arguments = {}
+
+    def prepare_workspace(**kwargs):
+        workspace_arguments.update(kwargs)
+        return prepared
+
+    monkeypatch.setattr(post_processing_module, "prepare_dependency_workspace", prepare_workspace)
     fake_db = FakePostDb()
     processor = PostProcessor(SimpleNamespace(retry_count=0, data_dir="/tmp", github_token=None), fake_db)
     fake_harness = FakeHarness([{"ok": True}])
+    post_scan = {
+        **scan(
+            {
+                "post_processing_model": "gpt-5-codex",
+                "post_processing_model_provider": "codex",
+                "post_processing_harness": "codex",
+                "post_processing_thinking_effort": "xhigh",
+            }
+        ),
+        "model": "claude-sonnet",
+        "model_provider": "claude",
+        "harness": "claude-code",
+        "thinking_effort": "high",
+    }
 
     payload, usage, _session, checked_out_commit = processor._run_harness_with_retries(
         metadata_id=9,
-        scan=scan(),
+        scan=post_scan,
         harness=fake_harness,
         prompt="Rank findings.",
         schema={},
@@ -2834,6 +3246,10 @@ def test_post_processing_harness_uses_dependency_workspace(monkeypatch, tmp_path
     assert usage == {"total_tokens": 3}
     assert checked_out_commit == "def"
     assert fake_harness.calls[0]["repo_dir"] == "/tmp/post-repo"
+    assert fake_harness.calls[0]["model"] == "gpt-5-codex"
+    assert fake_harness.calls[0]["thinking_effort"] == "xhigh"
+    assert workspace_arguments["harness_name"] == "codex"
+    assert workspace_arguments["model_provider"] == "codex"
     assert "Workspace context:" in fake_harness.calls[0]["prompt"]
     assert fake_db.updates[0]["prompt_filled"] == fake_harness.calls[0]["prompt"]
     assert not root.exists()
@@ -2894,6 +3310,67 @@ def test_post_processing_does_not_retry_permanent_harness_failures(monkeypatch, 
 
     assert fake_harness.calls == 1
     assert "account quota is exhausted" in fake_db.updates[-1]["error"]
+    assert "secret-value" not in fake_db.updates[-1]["error"]
+    assert not root.exists()
+
+
+def test_post_processing_uses_the_cyber_safety_retry_limit(monkeypatch, tmp_path):
+    monkeypatch.delenv("ENGINE_RUNTIME_CONFIG_PATH", raising=False)
+    root = tmp_path / "cyber-post-job"
+    root.mkdir()
+    (tmp_path / "engine-runtime.env").write_text("ENGINE_CYBER_SAFETY_RETRY_COUNT=3\n", encoding="utf-8")
+
+    class Workspace:
+        root_dir = str(root)
+        env = {"HOME": "/tmp/home"}
+
+    class FakePostDb:
+        def __init__(self):
+            self.updates = []
+
+        @contextmanager
+        def connect(self):
+            yield FakeConn()
+
+        def update_post_process_metadata(self, _conn, metadata_id, **kwargs):
+            self.updates.append({"metadata_id": metadata_id, **kwargs})
+
+    class CyberBlockedHarness:
+        def __init__(self):
+            self.calls = 0
+
+        def run(self, **_kwargs):
+            self.calls += 1
+            raise harnesses.HarnessError(
+                "provider response contained secret-value",
+                code="cyber_safety_blocked",
+                harness="codex",
+            )
+
+    prepared = SimpleNamespace(
+        workspace=Workspace(),
+        repo_dir="/tmp/post-repo",
+        checked_out_commit="def",
+        layout="Dependency repositories are checked out as top-level directories inside the same workspace root.",
+        manifest_json='{"dependencies":[]}',
+    )
+    monkeypatch.setattr(post_processing_module, "prepare_dependency_workspace", lambda **_kwargs: prepared)
+    fake_db = FakePostDb()
+    processor = PostProcessor(SimpleNamespace(retry_count=0, data_dir=str(tmp_path), github_token=None), fake_db)
+    fake_harness = CyberBlockedHarness()
+
+    with pytest.raises(post_processing_module.PostProcessExecutionError, match="cyber_safety_blocked"):
+        processor._run_harness_with_retries(
+            metadata_id=9,
+            scan=scan(),
+            harness=fake_harness,
+            prompt="Rank findings.",
+            schema={},
+            validator=lambda _payload: None,
+        )
+
+    assert fake_harness.calls == 4
+    assert "Diagnostic: cyber_safety_blocked" in fake_db.updates[-1]["error"]
     assert "secret-value" not in fake_db.updates[-1]["error"]
     assert not root.exists()
 

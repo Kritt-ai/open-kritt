@@ -7,6 +7,12 @@ const CONFIGURATION_RELATION_KEYS = [
   'agent_skills',
   'post_processing_thinking_effort',
   'postProcessingThinkingEffort',
+  'post_processing_model',
+  'postProcessingModel',
+  'post_processing_model_provider',
+  'postProcessingModelProvider',
+  'post_processing_harness',
+  'postProcessingHarness',
 ];
 
 function uniqueIds(values) {
@@ -75,6 +81,10 @@ export function scanConfigurationDraft(scan) {
     model_provider: `${scan.modelProvider ?? ''}`,
     harness: `${scan.harness ?? ''}`,
     thinking_effort: `${scan.thinkingEffort ?? ''}`,
+    post_processing_model_override: Boolean(scan.postProcessingModelOverride),
+    post_processing_model: `${scan.postProcessingModel ?? scan.model ?? ''}`,
+    post_processing_model_provider: `${scan.postProcessingModelProvider ?? scan.modelProvider ?? ''}`,
+    post_processing_harness: `${scan.postProcessingHarness ?? scan.harness ?? ''}`,
     post_processing_thinking_effort: `${scan.postProcessingThinkingEffort ?? scan.thinkingEffort ?? ''}`,
     model_overrides: modelOverridesDraft(scan.modelOverrides),
     extra: duplicateExtra(scan.extra),

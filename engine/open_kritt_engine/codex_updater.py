@@ -105,13 +105,15 @@ class CodexUpdater:
                 return CodexUpdateResult(True, False, False, before_version, None)
 
             after_version = self._version()
+            if not after_version:
+                LOGGER.warning("Codex CLI update completed but the installed CLI could not start")
+                return CodexUpdateResult(True, False, False, before_version, None)
+
             updated = before_version != after_version
-            if updated and after_version:
+            if updated:
                 LOGGER.info("updated Codex CLI from %s to %s", before_version or "unknown", after_version)
-            elif after_version:
-                LOGGER.info("Codex CLI is already up to date (%s)", after_version)
             else:
-                LOGGER.warning("Codex CLI update completed but its installed version could not be read")
+                LOGGER.info("Codex CLI is already up to date (%s)", after_version)
             return CodexUpdateResult(True, True, updated, before_version, after_version)
         finally:
             self.gate.end_update()

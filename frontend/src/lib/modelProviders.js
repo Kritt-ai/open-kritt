@@ -1,4 +1,4 @@
-export const MODEL_PROVIDER_IDS = ['codex', 'claude', 'openrouter'];
+export const MODEL_PROVIDER_IDS = ['codex', 'claude', 'openrouter', 'xai'];
 export const MODEL_CATALOG_STATUSES = ['ready', 'loading', 'unavailable'];
 const SAFE_MODEL_NOTE_URLS = new Set(['https://chatgpt.com/cyber']);
 
@@ -8,23 +8,27 @@ const PROVIDER_HARNESSES = {
   // Claude Code has first-class OpenRouter support. Codex remains available
   // for advanced installations with a matching Codex provider configuration.
   openrouter: ['claude-code', 'codex'],
+  xai: ['grok-build'],
 };
 
 const PROVIDER_DEFAULT_MODELS = {
   codex: 'gpt-5-codex',
   claude: 'claude-sonnet-5',
   openrouter: 'z-ai/glm-5.2',
+  xai: 'grok-4.6',
 };
 
 const PROVIDER_THINKING_EFFORTS = {
   codex: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
   claude: ['low', 'medium', 'high', 'xhigh', 'max'],
   openrouter: ['default', 'low', 'medium', 'high', 'xhigh', 'max'],
+  xai: ['low', 'medium', 'high', 'xhigh'],
 };
 
 const HARNESS_THINKING_EFFORTS = {
   codex: ['default', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
   'claude-code': ['default', 'low', 'medium', 'high', 'xhigh', 'max'],
+  'grok-build': ['low', 'medium', 'high', 'xhigh'],
 };
 
 function normalizedProviderId(provider) {
@@ -109,7 +113,10 @@ export function modelsForModelProvider(catalog, provider) {
 export function usesFreeTextModelInput(catalog, provider) {
   const normalizedProvider = normalizedProviderId(provider);
   const providerCatalog = modelCatalogForProvider(catalog, normalizedProvider);
-  return providerCatalog?.input === 'text' || (!providerCatalog && normalizedProvider === 'openrouter');
+  return (
+    providerCatalog?.input === 'text' ||
+    (!providerCatalog && (normalizedProvider === 'openrouter' || normalizedProvider === 'xai'))
+  );
 }
 
 export function modelCatalogIsReady(catalog, provider) {

@@ -13,11 +13,12 @@ from typing import Any
 from jsonschema import Draft202012Validator
 
 from .codex_auth import preserve_codex_auth_metadata
-from .harnesses import HarnessError, harness_for, normalize_harness_name
+from .harnesses import HarnessError, harness_failure_retry_count, harness_for, normalize_harness_name
 from .prompting import append_schema_prompt
 from .provider_credentials import provider_environment
+from .runtime_config import runtime_int
 from .schema import EXTRACTOR_HELPER_FIELD
-from .workspace import codex_home_for_job, provider_account_lease
+from .workspace import codex_home_for_job, grok_home_for_job, provider_account_lease
 
 BUILTIN_KEYS = (
     "repo_full",
@@ -49,7 +50,7 @@ POST_SCRIPT_MARKDOWN_OUTPUT_KEYS = frozenset({"_reserved_report", "_reserved_poc
 POST_SCRIPT_CHIP_PREFIX = "_chip_"
 WORKFLOW_FIELD_TYPES = ("string", "number", "boolean", "array", "object")
 POST_SCRIPT_FIELD_TYPES = WORKFLOW_FIELD_TYPES
-MODEL_PROVIDERS = frozenset({"codex", "claude", "openrouter"})
+MODEL_PROVIDERS = frozenset({"codex", "claude", "openrouter", "xai"})
 THINKING_EFFORTS = frozenset({"default", "low", "medium", "high", "xhigh", "max", "ultra"})
 GENERATION_REQUEST_MAX_LENGTH = 20_000
 MODEL_ID_MAX_LENGTH = 200
@@ -62,10 +63,12 @@ MODEL_PROVIDER_HARNESSES = {
     "codex": frozenset({"codex"}),
     "claude": frozenset({"claude-code"}),
     "openrouter": frozenset({"codex", "claude-code"}),
+    "xai": frozenset({"grok-build"}),
 }
 HARNESS_THINKING_EFFORTS = {
     "codex": frozenset({"default", "low", "medium", "high", "xhigh", "max", "ultra"}),
     "claude-code": frozenset({"default", "low", "medium", "high", "xhigh", "max"}),
+    "grok-build": frozenset({"low", "medium", "high", "xhigh"}),
 }
 
 IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
@@ -100,6 +103,7 @@ GENERATION_PROVIDER_ENV_KEYS = {
     "codex": frozenset({"CODEX_API_KEY", "OPENAI_API_KEY", "CODEX_HOME"}),
     "claude": frozenset({"ANTHROPIC_API_KEY"}),
     "openrouter": frozenset({"OPENROUTER_API_KEY"}),
+    "xai": frozenset({"XAI_API_KEY", "GROK_BIN", "GROK_HOME"}),
 }
 
 
@@ -250,6 +254,7 @@ def generation_environment(
     source: dict[str, str] | None = None,
     *,
     codex_home: str | None = None,
+    grok_home: str | None = None,
 ) -> dict[str, str]:
     """Return only the execution settings and credential for the selected provider."""
 
@@ -265,6 +270,13 @@ def generation_environment(
             configured_home = (source_env.get("ENGINE_CODEX_HOME") or "").split(",", 1)[0].strip()
             if configured_home:
                 env["CODEX_HOME"] = configured_home
+    if provider == "xai":
+        if grok_home:
+            env["GROK_HOME"] = grok_home
+        elif not env.get("GROK_HOME"):
+            configured_home = (source_env.get("ENGINE_GROK_HOME") or "").split(",", 1)[0].strip()
+            if configured_home:
+                env["GROK_HOME"] = configured_home
     return env
 
 
@@ -746,6 +758,15 @@ class GenerationRunner:
             )
         return max(0, min(int(configured), GENERATION_RETRY_COUNT_CAP))
 
+    def _cyber_safety_retry_count(self) -> int:
+        return runtime_int(
+            "ENGINE_CYBER_SAFETY_RETRY_COUNT",
+            0,
+            data_dir=getattr(self.config, "data_dir", None),
+            minimum=0,
+            maximum=10,
+        )
+
     def generate(self, job: dict[str, Any]) -> GenerationRunResult:
         request = validate_generation_job(job)
         schema = generation_response_schema(request["kind"])
@@ -757,20 +778,32 @@ class GenerationRunner:
             codex_model_provider=getattr(self.config, "codex_model_provider", None),
             codex_cli_gate=self.codex_cli_gate,
         )
-        attempts = self._retry_count() + 1
+        retry_count = self._retry_count()
+        cyber_safety_retry_count = self._cyber_safety_retry_count()
+        attempts = retry_count + cyber_safety_retry_count + 1
         selected_codex_home = (
             codex_home_for_job(0, data_dir=getattr(self.config, "data_dir", None))
             if request["model_provider"] == "codex"
             else None
         )
-        env = generation_environment(request["model_provider"], codex_home=selected_codex_home)
+        selected_grok_home = (
+            grok_home_for_job(0, data_dir=getattr(self.config, "data_dir", None))
+            if request["model_provider"] == "xai"
+            else None
+        )
+        env = generation_environment(
+            request["model_provider"],
+            codex_home=selected_codex_home,
+            grok_home=selected_grok_home,
+        )
         last_error: Exception | None = None
         feedback = ""
+        failure_counts = {"regular": 0, "cyber_safety_blocked": 0}
         for attempt in range(1, attempts + 1):
             try:
                 with provider_account_lease(
                     request["model_provider"],
-                    selected_codex_home,
+                    selected_codex_home or selected_grok_home,
                     data_dir=getattr(self.config, "data_dir", None),
                 ):
                     with preserve_codex_auth_metadata(env):
@@ -796,13 +829,25 @@ class GenerationRunner:
                     "\n\nYour previous JSON draft failed validation. Correct every issue below and return a new "
                     "complete JSON response that follows the original schema exactly:\n" + details
                 )
+                failure_counts["regular"] += 1
+                if failure_counts["regular"] > retry_count:
+                    break
             except HarnessError as exc:
                 exc.attempts = attempt
                 last_error = exc
-                if not exc.retryable:
+                failure_kind = "cyber_safety_blocked" if exc.code == "cyber_safety_blocked" else "regular"
+                failure_counts[failure_kind] += 1
+                if failure_counts[failure_kind] > harness_failure_retry_count(
+                    exc,
+                    retry_count,
+                    cyber_safety_retry_count,
+                ):
                     break
             except ValueError as exc:
                 last_error = exc
+                failure_counts["regular"] += 1
+                if failure_counts["regular"] > retry_count:
+                    break
         if last_error is not None:
             raise last_error
         raise RuntimeError("Generation did not produce a result.")

@@ -29,8 +29,12 @@ Closes #
 
 ## Checklist
 
+By submitting this pull request, you agree to the
+[Contribution Terms](https://github.com/Kritt-ai/open-kritt/blob/main/CONTRIBUTION_TERMS.md),
+including assignment of your rights in the contribution. No separate signature, form,
+or checkbox is required.
+
 - [ ] Commits use [Conventional Commits](https://www.conventionalcommits.org/) (no empty `()` scope)
-- [ ] Commits are **signed off** (`git commit -s`) — DCO
 - [ ] Lint & format pass (`npm run lint` / `ruff check .`)
 - [ ] Tests added/updated and passing where it makes sense
 - [ ] Docs updated if behavior or config changed

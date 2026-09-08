@@ -115,6 +115,10 @@ CODEX_HOME_RAW = os.getenv(
 CLAUDE_HOME_RAW = os.getenv(
     "EXECUTOR_VIEW_CLAUDE_HOME", os.getenv("CLAUDE_HOME", "/root/.claude")
 )
+GROK_HOME_RAW = os.getenv(
+    "EXECUTOR_VIEW_GROK_HOME",
+    os.getenv("ENGINE_GROK_HOME", os.getenv("GROK_HOME", "/root/.grok")),
+)
 CLAUDE_ACCOUNTS_ROOT = Path(
     os.getenv("EXECUTOR_VIEW_CLAUDE_ACCOUNTS_ROOT", "/claude-accounts")
 ).expanduser()
@@ -126,6 +130,12 @@ CODEX_ACCOUNTS_ROOT = Path(
 ).expanduser()
 CODEX_PRIMARY_HOME = Path(
     os.getenv("EXECUTOR_VIEW_CODEX_PRIMARY_HOME", "/root/.codex")
+).expanduser()
+GROK_ACCOUNTS_ROOT = Path(
+    os.getenv("EXECUTOR_VIEW_GROK_ACCOUNTS_ROOT", "/grok-accounts")
+).expanduser()
+GROK_PRIMARY_HOME = Path(
+    os.getenv("EXECUTOR_VIEW_GROK_PRIMARY_HOME", "/root/.grok")
 ).expanduser()
 PROVIDER_CREDENTIALS_PATH = Path(
     os.getenv("OPEN_KRITT_PROVIDER_CREDENTIALS_PATH", "/credentials/providers.json")
@@ -146,6 +156,10 @@ CODEX_ACCOUNT_CACHE_SECONDS = int(
 )
 CODEX_USAGE_URL = os.getenv(
     "EXECUTOR_VIEW_CODEX_USAGE_URL", "https://chatgpt.com/backend-api/wham/usage"
+)
+CODEX_RESET_CREDITS_URL = os.getenv(
+    "EXECUTOR_VIEW_CODEX_RESET_CREDITS_URL",
+    "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits",
 )
 CODEX_RESET_URL = os.getenv(
     "EXECUTOR_VIEW_CODEX_RESET_URL",
@@ -182,6 +196,16 @@ OPENROUTER_TIMEOUT_SECONDS = float(
 OPENROUTER_KEY_CACHE_SECONDS = int(
     os.getenv("EXECUTOR_VIEW_OPENROUTER_KEY_CACHE_SECONDS", "60")
 )
+XAI_MODELS_URL = os.getenv(
+    "EXECUTOR_VIEW_XAI_MODELS_URL", "https://api.x.ai/v1/models"
+)
+XAI_TIMEOUT_SECONDS = float(os.getenv("EXECUTOR_VIEW_XAI_TIMEOUT_SECONDS", "5"))
+XAI_KEY_CACHE_SECONDS = int(os.getenv("EXECUTOR_VIEW_XAI_KEY_CACHE_SECONDS", "60"))
+MANAGED_PROVIDER_ENV_KEYS = {
+    "openrouter": "OPENROUTER_API_KEY",
+    "xai": "XAI_API_KEY",
+}
+MANAGED_PROVIDERS = frozenset(MANAGED_PROVIDER_ENV_KEYS)
 DEEP_ACCOUNT_REFRESH = os.getenv("EXECUTOR_VIEW_DEEP_ACCOUNT_REFRESH", "0").lower() in (
     "1",
     "true",
@@ -209,6 +233,7 @@ CODEX_ACCOUNT_CACHE = {"expires_at": 0.0, "data": None}
 CODEX_USAGE_CACHE = {}
 CLAUDE_USAGE_CACHE = {}
 OPENROUTER_KEY_CACHE = {"expires_at": 0.0, "credential": None, "data": None}
+XAI_KEY_CACHE = {"expires_at": 0.0, "credential": None, "data": None}
 ACCOUNT_OVERVIEW_CACHE = {"expires_at": 0.0, "data": None}
 SCAN_STATUS_ACTIONS = {"pause": "paused", "resume": "running", "start": "running"}
 CYBER_RISK_FLAG_TEXT = (
@@ -311,7 +336,7 @@ def internal_request_path_allowed(method, path):
         method == "GET"
         and len(parts) == 3
         and parts[:2] == ["api", "accounts"]
-        and parts[2] in {"codex", "claude", "openrouter"}
+        and parts[2] in {"codex", "claude", "openrouter", "xai"}
     ):
         return True
     return (
@@ -737,6 +762,7 @@ def accounts_for_state(force=False):
         empty_codex_accounts(),
         empty_claude_accounts(),
         fetch_openrouter_accounts(force=False),
+        fetch_xai_accounts(force=False),
         fetched=False,
     )
 
@@ -1101,6 +1127,13 @@ def current_claude_home_raw():
     return CLAUDE_HOME_RAW
 
 
+def current_grok_home_raw():
+    runtime_config = read_runtime_config()
+    if "ENGINE_GROK_HOME" in runtime_config:
+        return runtime_config["ENGINE_GROK_HOME"]
+    return GROK_HOME_RAW
+
+
 def current_worker_count():
     raw = (
         read_runtime_config().get("ENGINE_WORKER_COUNT")
@@ -1161,6 +1194,40 @@ def configured_claude_homes():
     return homes
 
 
+def resolve_grok_home(path):
+    source = Path(path).expanduser()
+    if (source / "auth.json").exists() or source.name == ".grok":
+        return source
+    nested = source / ".grok"
+    if nested.exists():
+        return nested
+    return source
+
+
+def configured_grok_homes():
+    seen = set()
+    homes = []
+    for raw_path in split_home_list(current_grok_home_raw()):
+        source = Path(raw_path).expanduser()
+        if (
+            source.exists()
+            and source.name != ".grok"
+            and not (source / "auth.json").exists()
+            and not (source / ".grok").exists()
+        ):
+            candidates = sorted(
+                path for path in source.glob("*/.grok") if path.is_dir()
+            )
+        else:
+            candidates = [resolve_grok_home(raw_path)]
+        for candidate in candidates:
+            key = str(candidate)
+            if key not in seen:
+                seen.add(key)
+                homes.append(candidate)
+    return homes
+
+
 def fetch_codex_accounts(force=False):
     now = time.monotonic()
     if (
@@ -1216,14 +1283,16 @@ def fetch_accounts(force=False):
         codex = fetch_codex_accounts(force=True)
         claude = fetch_claude_accounts(force=True)
         openrouter = fetch_openrouter_accounts(force=True)
-        data = build_account_overview(codex, claude, openrouter, fetched=True)
+        xai = fetch_xai_accounts(force=True)
+        data = build_account_overview(codex, claude, openrouter, xai, fetched=True)
         ACCOUNT_OVERVIEW_CACHE["data"] = data
         ACCOUNT_OVERVIEW_CACHE["expires_at"] = now + ACCOUNT_OVERVIEW_CACHE_SECONDS
         return data
     codex = fetch_codex_accounts(force=force)
     claude = fetch_claude_accounts(force=force)
     openrouter = fetch_openrouter_accounts(force=force)
-    data = build_account_overview(codex, claude, openrouter, fetched=True)
+    xai = fetch_xai_accounts(force=force)
+    data = build_account_overview(codex, claude, openrouter, xai, fetched=True)
     ACCOUNT_OVERVIEW_CACHE["data"] = data
     ACCOUNT_OVERVIEW_CACHE["expires_at"] = now + ACCOUNT_OVERVIEW_CACHE_SECONDS
     return data
@@ -1234,6 +1303,7 @@ def fetch_account_provider(kind, force=False):
         "codex": fetch_codex_accounts,
         "claude": fetch_claude_accounts,
         "openrouter": fetch_openrouter_accounts,
+        "xai": fetch_xai_accounts,
     }
     fetcher = fetchers.get(kind)
     if not fetcher:
@@ -1255,6 +1325,10 @@ def build_account_provider(kind, data):
             "OpenRouter",
             "Verified OpenRouter key status, credit usage, limits, and masked metadata.",
         ),
+        "xai": (
+            "xAI",
+            "Grok device login homes and optional xAI API key status for Grok Build.",
+        ),
     }
     label, description = metadata[kind]
     return {
@@ -1264,17 +1338,18 @@ def build_account_provider(kind, data):
         "active": data.get("active", 0),
         "total": data.get("total", 0),
         "limited": data.get("limited", 0),
-        "stale": data.get("stale", 0) if kind != "openrouter" else 0,
+        "stale": data.get("stale", 0) if kind not in {"openrouter"} else 0,
         "accounts": data.get("accounts", []),
         "configuredRaw": data.get("configuredRaw"),
     }
 
 
-def build_account_overview(codex, claude, openrouter, fetched=True):
+def build_account_overview(codex, claude, openrouter, xai, fetched=True):
     providers = [
         build_account_provider("codex", codex),
         build_account_provider("claude", claude),
         build_account_provider("openrouter", openrouter),
+        build_account_provider("xai", xai),
     ]
     return {
         "generatedAt": datetime.now(timezone.utc),
@@ -1294,6 +1369,7 @@ def build_account_overview(codex, claude, openrouter, fetched=True):
         "codex": codex,
         "claude": claude,
         "openrouter": openrouter,
+        "xai": xai,
         "providers": providers,
     }
 
@@ -1958,13 +2034,293 @@ def fetch_openrouter_key_info(api_key):
         }
 
 
+def empty_xai_accounts():
+    return {
+        "generatedAt": datetime.now(timezone.utc),
+        "configuredRaw": current_grok_home_raw(),
+        "active": 0,
+        "total": 0,
+        "limited": 0,
+        "stale": 0,
+        "accounts": [],
+    }
+
+
+def fetch_xai_accounts(force=False):
+    api_key = configured_secret("XAI_API_KEY") or configured_secret(
+        "EXECUTOR_VIEW_XAI_API_KEY"
+    )
+    homes = configured_grok_homes()
+    login_accounts = []
+    for home in homes:
+        auth_path = Path(home) / "auth.json"
+        # Skip an empty default primary home when only an API key is configured.
+        if auth_path.exists() or (home.exists() and home != GROK_PRIMARY_HOME):
+            login_accounts.append(grok_account(home))
+    accounts = list(login_accounts)
+    if api_key or not accounts:
+        accounts.append(xai_api_key_account(api_key, force=force))
+    active = sum(1 for account in accounts if account["active"])
+    limited = sum(1 for account in accounts if account["statusKind"] == "limited")
+    stale = sum(1 for account in accounts if account["statusKind"] == "stale")
+    configured_parts = []
+    if login_accounts:
+        configured_parts.append(current_grok_home_raw())
+    if api_key:
+        configured_parts.append("XAI_API_KEY")
+    return {
+        "generatedAt": datetime.now(timezone.utc),
+        "configuredRaw": ",".join(configured_parts) if configured_parts else "XAI_API_KEY",
+        "active": active,
+        "total": len(accounts),
+        "limited": limited,
+        "stale": stale,
+        "accounts": accounts,
+    }
+
+
+def removable_grok_account_id(home):
+    home = Path(home).expanduser()
+    if home == GROK_PRIMARY_HOME:
+        return "primary"
+    try:
+        relative = home.relative_to(GROK_ACCOUNTS_ROOT)
+    except ValueError:
+        return None
+    if len(relative.parts) != 2 or relative.parts[1] != ".grok":
+        return None
+    account_id = relative.parts[0]
+    if not ACCOUNT_ID_PATTERN.fullmatch(account_id):
+        return None
+    return account_id
+
+
+def grok_account_label(home):
+    home = Path(home)
+    return home.parent.name if home.name == ".grok" else home.name
+
+
+def load_grok_auth(home):
+    auth_path = Path(home) / "auth.json"
+    out = {"exists": auth_path.exists()}
+    if not auth_path.exists():
+        return out
+    try:
+        auth = json.loads(auth_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return out
+    tokens = auth.get("tokens") if isinstance(auth.get("tokens"), dict) else {}
+    payload = decode_jwt_payload(
+        tokens.get("access_token") or tokens.get("id_token") or auth.get("access_token")
+    )
+    email = payload.get("email") or auth.get("email")
+    out.update(
+        {
+            "email": email if isinstance(email, str) else None,
+            "accountId": payload.get("sub")
+            or auth.get("user_id")
+            or auth.get("account_id")
+            or email,
+            "authMode": auth.get("auth_mode") or auth.get("authMode"),
+        }
+    )
+    return out
+
+
+def grok_account(home):
+    home = Path(home).expanduser()
+    auth = load_grok_auth(home)
+    account_id = removable_grok_account_id(home)
+    if auth.get("exists") and (auth.get("accountId") or auth.get("email")):
+        status_kind = "available"
+        status = "logged in"
+        active = True
+    elif auth.get("exists"):
+        status_kind = "available"
+        status = "logged in"
+        active = True
+    elif home.exists():
+        status_kind = "warning"
+        status = "no credentials found"
+        active = False
+    else:
+        status_kind = "missing"
+        status = "missing config"
+        active = False
+    details = []
+    add_detail(details, "Provider", "xAI")
+    add_detail(details, "Auth", "Grok device login")
+    email = auth.get("email")
+    return {
+        "id": account_id or str(home),
+        "provider": "xAI",
+        "label": email or grok_account_label(home),
+        "path": str(home),
+        "email": email,
+        "active": active,
+        "canRemove": account_id is not None,
+        "status": status,
+        "statusKind": status_kind,
+        "details": details,
+    }
+
+
+def xai_api_key_account(api_key, force=False):
+    if not api_key:
+        return {
+            "id": "xai-api-key",
+            "provider": "xAI",
+            "label": "xAI API key",
+            "path": "XAI_API_KEY",
+            "active": False,
+            "status": "missing key",
+            "statusKind": "missing",
+            "details": [],
+        }
+
+    remote_enabled = os.getenv("EXECUTOR_VIEW_XAI_REMOTE_CHECK", "1").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    remote = xai_key_verify_for_account(api_key, force=force) if remote_enabled else {}
+    status_code = remote.get("statusCode")
+    if status_code in (401, 403):
+        status_kind = "expired"
+        status = "key rejected"
+        active = False
+    elif remote.get("error"):
+        status_kind = "warning"
+        status = "check failed"
+        active = True
+    elif remote.get("verified"):
+        status_kind = "available"
+        status = "verified"
+        active = True
+    else:
+        status_kind = "available"
+        status = "key configured"
+        active = True
+
+    details = []
+    add_detail(details, "XAI_API_KEY", masked_secret(api_key), mono=True)
+    add_detail(details, "Key fingerprint", secret_fingerprint(api_key), mono=True)
+    model_count = remote.get("modelCount")
+    if model_count is not None:
+        add_detail(details, "Models accessible", str(model_count))
+    if remote.get("checkedAt"):
+        checked_at = parse_datetime(remote.get("checkedAt"))
+        add_detail(
+            details,
+            "Checked",
+            checked_at.strftime("%Y-%m-%d %H:%M UTC")
+            if checked_at
+            else remote.get("checkedAt"),
+        )
+    if remote.get("error"):
+        add_detail(details, "Last check", remote.get("error"))
+    if force and not remote_enabled:
+        add_detail(details, "Remote check", "disabled; local key configuration shown")
+
+    return {
+        "id": "xai-api-key",
+        "provider": "xAI",
+        "label": "xAI API key",
+        "path": "XAI_API_KEY",
+        "active": active,
+        "status": status,
+        "statusKind": status_kind,
+        "details": details,
+    }
+
+
+def xai_key_verify_for_account(api_key, force=False):
+    now = time.monotonic()
+    credential = secret_fingerprint(api_key)
+    cached = (
+        XAI_KEY_CACHE.get("data")
+        if XAI_KEY_CACHE.get("credential") == credential
+        else None
+    )
+    if cached and now < XAI_KEY_CACHE.get("expires_at", 0):
+        return cached
+    if not force:
+        if cached:
+            fallback = dict(cached)
+            fallback["stale"] = True
+            fallback["error"] = "xAI key data is waiting for refresh"
+            return fallback
+        return {}
+
+    result = fetch_xai_models(api_key)
+    if result.get("verified") or result.get("statusCode") in (401, 403):
+        XAI_KEY_CACHE["data"] = result
+        XAI_KEY_CACHE["credential"] = credential
+        XAI_KEY_CACHE["expires_at"] = now + XAI_KEY_CACHE_SECONDS
+        return result
+    if cached:
+        fallback = dict(result)
+        fallback["verified"] = cached.get("verified")
+        fallback["modelCount"] = cached.get("modelCount")
+        fallback["stale"] = True
+        XAI_KEY_CACHE["data"] = fallback
+        XAI_KEY_CACHE["credential"] = credential
+        XAI_KEY_CACHE["expires_at"] = now + XAI_KEY_CACHE_SECONDS
+        return fallback
+    XAI_KEY_CACHE["data"] = result
+    XAI_KEY_CACHE["credential"] = credential
+    XAI_KEY_CACHE["expires_at"] = now + XAI_KEY_CACHE_SECONDS
+    return result
+
+
+def fetch_xai_models(api_key):
+    checked_at = datetime.now(timezone.utc)
+    req = urlrequest.Request(
+        XAI_MODELS_URL,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "application/json",
+            "User-Agent": "open-kritt-executor-view",
+        },
+        method="GET",
+    )
+    try:
+        with urlrequest.urlopen(req, timeout=XAI_TIMEOUT_SECONDS) as response:
+            body = response.read(1024 * 256)
+            payload = json.loads(body.decode("utf-8"))
+            models = payload.get("data") if isinstance(payload, dict) else None
+            model_count = len(models) if isinstance(models, list) else None
+            return {
+                "checkedAt": checked_at.isoformat(),
+                "statusCode": response.status,
+                "verified": response.status == 200,
+                "modelCount": model_count,
+            }
+    except urlerror.HTTPError as exc:
+        return {
+            "checkedAt": checked_at.isoformat(),
+            "statusCode": exc.code,
+            "verified": False,
+            "error": f"xAI returned HTTP {exc.code}",
+        }
+    except (OSError, TimeoutError, json.JSONDecodeError) as exc:
+        return {
+            "checkedAt": checked_at.isoformat(),
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
 def configured_secret(name):
-    if name == "OPENROUTER_API_KEY":
+    provider = next(
+        (candidate for candidate, env_key in MANAGED_PROVIDER_ENV_KEYS.items() if env_key == name),
+        None,
+    )
+    if provider:
         state = managed_provider_credential_state()
-        managed = state["credentials"].get("openrouter")
+        managed = state["credentials"].get(provider)
         if managed:
             return managed
-        if "openrouter" in state["disabledEnvironmentProviders"]:
+        if provider in state["disabledEnvironmentProviders"]:
             return None
     value = os.getenv(name)
     value = value.strip() if isinstance(value, str) else ""
@@ -1985,16 +2341,17 @@ def managed_provider_credential_state():
     credentials = {}
     raw_credentials = payload.get("credentials")
     if isinstance(raw_credentials, dict):
-        value = raw_credentials.get("openrouter")
-        if isinstance(value, str) and value.strip():
-            credentials["openrouter"] = value.strip()
+        for provider in MANAGED_PROVIDERS:
+            value = raw_credentials.get(provider)
+            if isinstance(value, str) and value.strip():
+                credentials[provider] = value.strip()
 
     raw_disabled = payload.get("disabledEnvironmentProviders")
     disabled = (
         {
             provider
             for provider in raw_disabled
-            if isinstance(provider, str) and provider == "openrouter"
+            if isinstance(provider, str) and provider in MANAGED_PROVIDERS
         }
         if isinstance(raw_disabled, list)
         else set()
@@ -2371,6 +2728,20 @@ def fetch_codex_usage(access_token, account_id=""):
             reached = format_account_value(payload.get("rate_limit_reached_type"))
             if not reached and rate_limit.get("allowed") is False:
                 reached = "rate_limit"
+            manual_reset_credits = format_manual_reset_credits(
+                payload.get("rate_limit_reset_credits")
+            )
+            if (manual_reset_credits or {}).get("availableCount", 0) > 0:
+                detailed_credits = fetch_codex_reset_credits(access_token, account_id)
+                if detailed_credits:
+                    if detailed_credits.get("availableCount") is None:
+                        detailed_credits["availableCount"] = manual_reset_credits.get(
+                            "availableCount"
+                        )
+                    detailed_credits["applicableAvailableCount"] = (
+                        manual_reset_credits.get("applicableAvailableCount")
+                    )
+                    manual_reset_credits = detailed_credits
             return {
                 "checkedAt": checked_at,
                 "observedAt": checked_at,
@@ -2381,9 +2752,7 @@ def fetch_codex_usage(access_token, account_id=""):
                 "allowed": rate_limit.get("allowed"),
                 "primary": primary,
                 "secondary": secondary,
-                "manualResetCredits": format_manual_reset_credits(
-                    payload.get("rate_limit_reset_credits")
-                ),
+                "manualResetCredits": manual_reset_credits,
             }
     except urlerror.HTTPError as exc:
         return {
@@ -2402,6 +2771,33 @@ def fetch_codex_usage(access_token, account_id=""):
             "checkedAt": checked_at,
             "error": f"Codex usage check failed ({type(exc).__name__})",
         }
+
+
+def fetch_codex_reset_credits(access_token, account_id=""):
+    """Fetch the available reset expirations without exposing credit IDs."""
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json",
+        "User-Agent": "open-kritt-executor-view",
+    }
+    if account_id:
+        headers["ChatGPT-Account-ID"] = account_id
+    request = urlrequest.Request(CODEX_RESET_CREDITS_URL, headers=headers, method="GET")
+    try:
+        with urlrequest.urlopen(
+            request, timeout=CODEX_USAGE_TIMEOUT_SECONDS
+        ) as response:
+            payload = json.loads(response.read(1024 * 256).decode("utf-8"))
+            return format_manual_reset_credits(payload)
+    except (
+        OSError,
+        TimeoutError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        ValueError,
+    ):
+        return None
 
 
 def consume_codex_reset_credit(account_id):
@@ -2529,9 +2925,37 @@ def format_manual_reset_credits(raw):
 
     available = count("available_count", "availableCount")
     applicable = count("applicable_available_count", "applicableAvailableCount")
-    if available is None and applicable is None:
+    raw_credits = raw.get("credits")
+    raw_credits = raw_credits if isinstance(raw_credits, list) else []
+    credits = []
+    for credit in raw_credits:
+        if (
+            not isinstance(credit, dict)
+            or credit.get("status", "available") != "available"
+        ):
+            continue
+        expires_at = parse_datetime(credit.get("expires_at", credit.get("expiresAt")))
+        if expires_at is None:
+            continue
+        title = credit.get("title")
+        title = (
+            title.strip()[:100]
+            if isinstance(title, str) and title.strip()
+            else "Usage reset"
+        )
+        credits.append({"title": title, "expiresAt": expires_at})
+        if len(credits) >= 50:
+            break
+    credits.sort(key=lambda credit: credit["expiresAt"])
+    if available is None and applicable is None and not credits:
         return None
-    return {"availableCount": available, "applicableAvailableCount": applicable}
+    result = {
+        "availableCount": available,
+        "applicableAvailableCount": applicable,
+    }
+    if credits:
+        result["credits"] = credits
+    return result
 
 
 def codex_account_identity(auth, home):
@@ -4274,7 +4698,7 @@ class Handler(BaseHTTPRequestHandler):
         if (
             len(parts) == 3
             and parts[:2] == ["api", "accounts"]
-            and parts[2] in {"codex", "claude", "openrouter"}
+            and parts[2] in {"codex", "claude", "openrouter", "xai"}
         ):
             try:
                 query = parse_qs(parsed.query)

@@ -106,6 +106,7 @@ describe('modelConfigurationIsValid', () => {
 
     expect(markup).toContain('<option value="claude" disabled="">Claude — add in Accounts</option>');
     expect(markup).toContain('<option value="openrouter" disabled="">OpenRouter — add in Accounts</option>');
+    expect(markup).toContain('<option value="xai" disabled="">xAI — add in Accounts</option>');
     expect(markup).toContain('href="/accounts"');
   });
 

@@ -43,6 +43,37 @@ Use siblings when you want several distinct prompts to run at the same stage - f
 two different analysis angles on the same target - while producing the same shape of
 output.
 
+## Bind sibling transitions
+
+Broadcast is the default between depths. If depth 0 has two sibling steps and depth 1
+also has two, every depth-0 result normally starts both depth-1 steps.
+
+Turn on **bind** for the depth-0 to depth-1 transition when each source should feed only
+one selected destination:
+
+```text
+Depth 0: Map contracts  ->  Depth 1: Review contracts
+Depth 0: Map networking ->  Depth 1: Review networking
+```
+
+Bind routing is local to that transition. Depth 2 returns to normal broadcast behavior
+unless bind is enabled for the depth-1 to depth-2 transition too.
+
+The builder requires a complete one-to-one map:
+
+- both depths must have at least two sibling steps,
+- both depths must have the same number of sibling steps,
+- every source must map to exactly one destination,
+- every destination must have exactly one source, and
+- bind cannot be combined with **all at once** batching.
+
+Mappings use stable step IDs. Reordering sibling cards does not change an existing map.
+Each bound pair shares a numbered color marker. The source card's output edge and the
+destination card's input edge use the same marker, which is also shown in the routing
+controls.
+If removing a sibling makes the map invalid, the builder turns bind off and clears that
+transition's mappings automatically.
+
 <Frame caption="Depths 0–3 with sibling steps and a batched level.">
   <img src="/images/workflow-builder.png" alt="Workflow depths and siblings" />
 </Frame>

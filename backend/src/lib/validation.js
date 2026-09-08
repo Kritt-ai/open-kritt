@@ -138,6 +138,62 @@ export function validatePostProcessingThinkingEffort(value, { harness, fallback 
   return effort;
 }
 
+export function validatePostProcessingModelSelection(value = {}, fallback = {}) {
+  const selection = modelSelectionValidation({
+    model: value.model ?? fallback.model,
+    model_provider: value.modelProvider ?? value.model_provider ?? fallback.modelProvider ?? fallback.model_provider,
+    harness: value.harness ?? fallback.harness,
+    thinking_effort:
+      value.thinkingEffort ?? value.thinking_effort ?? fallback.thinkingEffort ?? fallback.thinking_effort,
+  });
+  if (selection.errors.length) {
+    const fields = {
+      model: 'post_processing_model',
+      model_provider: 'post_processing_model_provider',
+      harness: 'post_processing_harness',
+      thinking_effort: 'post_processing_thinking_effort',
+    };
+    throw new ValidationError(
+      selection.errors.map((item) => ({
+        ...item,
+        field: fields[item.field] || `post_processing_${item.field}`,
+      }))
+    );
+  }
+  return selection.normalized;
+}
+
+function postProcessingRuntimeInput(body = {}, configuration = {}) {
+  const config =
+    configuration && typeof configuration === 'object' && !Array.isArray(configuration) ? configuration : {};
+  return {
+    model:
+      body.post_processing_model ??
+      body.postProcessingModel ??
+      config.post_processing_model ??
+      config.postProcessingModel,
+    modelProvider:
+      body.post_processing_model_provider ??
+      body.postProcessingModelProvider ??
+      config.post_processing_model_provider ??
+      config.postProcessingModelProvider,
+    harness:
+      body.post_processing_harness ??
+      body.postProcessingHarness ??
+      config.post_processing_harness ??
+      config.postProcessingHarness,
+    thinkingEffort:
+      body.post_processing_thinking_effort ??
+      body.postProcessingThinkingEffort ??
+      config.post_processing_thinking_effort ??
+      config.postProcessingThinkingEffort,
+  };
+}
+
+function hasPostProcessingModelOverride(value = {}) {
+  return [value.model, value.modelProvider, value.harness].some((item) => item !== undefined && item !== null);
+}
+
 export function validateModelOverrides(value, { allowedDepths = null, field = 'model_overrides' } = {}) {
   if (value === undefined || value === null) return {};
   if (!isObjectMap(value)) {
@@ -223,12 +279,52 @@ export function validateWorkflow(body) {
     } catch {
       push(`levels[${i}].outputFormat`, 'Output format is not valid JSON.');
     }
+    const rawSteps = Array.isArray(lvl?.steps) ? lvl.steps : [];
+    const steps = rawSteps.map((step, stepIndex) => {
+      const rawClientId = step?.clientId ?? step?.client_id ?? step?.id;
+      const hasClientId = rawClientId !== undefined && rawClientId !== null;
+      let clientId = `legacy:${i}:${stepIndex}`;
+      if (hasClientId) {
+        if (!['string', 'number'].includes(typeof rawClientId)) {
+          push(`levels[${i}].steps[${stepIndex}].clientId`, 'Step ID must be a string or number.');
+        } else {
+          clientId = String(rawClientId).trim();
+          if (!clientId) push(`levels[${i}].steps[${stepIndex}].clientId`, 'Step ID cannot be empty.');
+        }
+      }
+
+      const rawBoundSourceStepId = step?.boundSourceStepId ?? step?.bound_source_step_id;
+      let boundSourceStepId = null;
+      if (rawBoundSourceStepId !== undefined && rawBoundSourceStepId !== null) {
+        if (!['string', 'number'].includes(typeof rawBoundSourceStepId)) {
+          push(
+            `levels[${i}].steps[${stepIndex}].boundSourceStepId`,
+            'Bound source step ID must be a string or number.'
+          );
+        } else {
+          boundSourceStepId = String(rawBoundSourceStepId).trim();
+          if (!boundSourceStepId) {
+            push(`levels[${i}].steps[${stepIndex}].boundSourceStepId`, 'Bound source step ID cannot be empty.');
+          }
+        }
+      }
+      return { ...step, clientId, hasClientId, boundSourceStepId };
+    });
+
+    const rawBindPrevious = lvl?.bindPrevious ?? lvl?.bind_previous;
+    if (rawBindPrevious !== undefined && typeof rawBindPrevious !== 'boolean') {
+      push(`levels[${i}].bindPrevious`, 'Bind routing must be a boolean.');
+    }
+    const bindPrevious =
+      rawBindPrevious === undefined ? steps.some((step) => step.boundSourceStepId !== null) : rawBindPrevious === true;
+
     return {
       depth: Number(lvl?.depth),
       multiOutput: Boolean(lvl?.multiOutput),
       consumesAll: Boolean(lvl?.consumesAll ?? lvl?.consume_all_previous),
+      bindPrevious,
       outputFormat,
-      steps: Array.isArray(lvl?.steps) ? lvl.steps : [],
+      steps,
     };
   });
 
@@ -275,6 +371,96 @@ export function validateWorkflow(body) {
   }
   // Depth 0 may have sibling steps too; like any level they share its output
   // format and multi_output flag (enforced structurally by the level model).
+
+  // --- optional one-to-one routing between adjacent sibling depths ---
+  const clientIds = new Map();
+  for (const lvl of normLevels) {
+    lvl.steps.forEach((step, stepIndex) => {
+      if (!step.clientId) return;
+      if (clientIds.has(step.clientId)) {
+        push(
+          `levels[depth=${lvl.depth}].steps[${stepIndex}].clientId`,
+          `Step ID "${step.clientId}" is used more than once.`
+        );
+      } else {
+        clientIds.set(step.clientId, { depth: lvl.depth, stepIndex });
+      }
+    });
+  }
+
+  for (const lvl of normLevels) {
+    const boundSteps = lvl.steps.filter((step) => step.boundSourceStepId !== null);
+    if (!lvl.bindPrevious) {
+      if (boundSteps.length) {
+        push(`levels[depth=${lvl.depth}].bindPrevious`, 'Enable bind routing before assigning bound source steps.');
+      }
+      continue;
+    }
+
+    if (lvl.depth === 0) {
+      push(`levels[depth=${lvl.depth}].bindPrevious`, 'Depth 0 cannot bind to a previous depth.');
+      continue;
+    }
+    if (lvl.consumesAll) {
+      push(`levels[depth=${lvl.depth}].bindPrevious`, 'Bind routing cannot be combined with batch consumption.');
+    }
+
+    const previous = levelAt(lvl.depth - 1);
+    if (!previous) continue;
+    if (previous.steps.length < 2 || lvl.steps.length < 2) {
+      push(`levels[depth=${lvl.depth}].bindPrevious`, 'Bind routing requires at least two steps in both depths.');
+    }
+    if (previous.steps.length !== lvl.steps.length) {
+      push(
+        `levels[depth=${lvl.depth}].bindPrevious`,
+        `Bind routing requires the previous and current depths to have the same number of steps (${previous.steps.length} and ${lvl.steps.length}).`
+      );
+    }
+
+    for (const [sourceIndex, source] of previous.steps.entries()) {
+      if (!source.hasClientId) {
+        push(
+          `levels[depth=${previous.depth}].steps[${sourceIndex}].clientId`,
+          'A stable step ID is required when the next depth uses bind routing.'
+        );
+      }
+    }
+
+    const previousIds = new Set(previous.steps.map((step) => step.clientId));
+    const usedSourceIds = new Set();
+    lvl.steps.forEach((step, stepIndex) => {
+      const field = `levels[depth=${lvl.depth}].steps[${stepIndex}].boundSourceStepId`;
+      if (!step.hasClientId) {
+        push(
+          `levels[depth=${lvl.depth}].steps[${stepIndex}].clientId`,
+          'A stable step ID is required for a bound destination step.'
+        );
+      }
+      if (!step.boundSourceStepId) {
+        push(field, 'Every destination step needs a bound source step.');
+        return;
+      }
+      if (!previousIds.has(step.boundSourceStepId)) {
+        push(field, 'The bound source must be a step in the immediately previous depth.');
+        return;
+      }
+      if (usedSourceIds.has(step.boundSourceStepId)) {
+        push(field, 'Each source step can be bound to only one destination step.');
+        return;
+      }
+      usedSourceIds.add(step.boundSourceStepId);
+    });
+
+    for (const sourceId of previousIds) {
+      if (!usedSourceIds.has(sourceId)) {
+        push(
+          `levels[depth=${lvl.depth}].bindPrevious`,
+          'Every source step must be bound to exactly one destination step.'
+        );
+        break;
+      }
+    }
+  }
 
   // --- per-level output format + global key uniqueness ---
   const keyCount = {};
@@ -749,18 +935,14 @@ export function validateScan(body, { localNames = null } = {}) {
       push('configuration', 'Configuration is not valid JSON.');
     }
   }
-  let postProcessingThinkingEffort = selection.normalized.thinkingEffort;
+  const postProcessingInput = postProcessingRuntimeInput(body, configuration);
+  const postProcessingModelOverride = hasPostProcessingModelOverride(postProcessingInput);
+  let postProcessingSelection = {
+    ...selection.normalized,
+    thinkingEffort: postProcessingInput.thinkingEffort ?? selection.normalized.thinkingEffort,
+  };
   try {
-    const configuredPostProcessingThinkingEffort =
-      body?.post_processing_thinking_effort ??
-      body?.postProcessingThinkingEffort ??
-      (configuration && typeof configuration === 'object' && !Array.isArray(configuration)
-        ? (configuration.post_processing_thinking_effort ?? configuration.postProcessingThinkingEffort)
-        : undefined);
-    postProcessingThinkingEffort = validatePostProcessingThinkingEffort(configuredPostProcessingThinkingEffort, {
-      harness: selection.normalized.harness,
-      fallback: selection.normalized.thinkingEffort,
-    });
+    postProcessingSelection = validatePostProcessingModelSelection(postProcessingInput, selection.normalized);
   } catch (error) {
     if (error instanceof ValidationError) errors.push(...error.errors);
     else throw error;
@@ -794,7 +976,9 @@ export function validateScan(body, { localNames = null } = {}) {
     dependencies, // [{ kind, repoFull, commitSha }]
     configuration,
     ...selection.normalized,
-    postProcessingThinkingEffort,
+    postProcessingSelection,
+    postProcessingModelOverride,
+    postProcessingThinkingEffort: postProcessingSelection.thinkingEffort,
     modelOverrides,
     severityRanker,
     extra,
@@ -809,12 +993,22 @@ export function validateScanRuntimeSettings(body, current = {}, options = {}) {
 export function validateProspectiveScanRuntimeSettings(body, current = {}, { allowedDepths = null } = {}) {
   const data = {};
   const hasOwn = (key) => Object.prototype.hasOwnProperty.call(body || {}, key);
+  const bodyValue = (snakeKey, camelKey) => (hasOwn(snakeKey) ? body?.[snakeKey] : body?.[camelKey]);
   const hasModel = hasOwn('model');
   const hasProvider = hasOwn('model_provider') || hasOwn('modelProvider');
   const hasHarness = hasOwn('harness');
   const hasThinkingEffort = hasOwn('thinking_effort') || hasOwn('thinkingEffort');
+  const hasPostProcessingModel = hasOwn('post_processing_model') || hasOwn('postProcessingModel');
+  const hasPostProcessingModelProvider =
+    hasOwn('post_processing_model_provider') || hasOwn('postProcessingModelProvider');
+  const hasPostProcessingHarness = hasOwn('post_processing_harness') || hasOwn('postProcessingHarness');
   const hasPostProcessingThinkingEffort =
     hasOwn('post_processing_thinking_effort') || hasOwn('postProcessingThinkingEffort');
+  const hasPostProcessingRuntime =
+    hasPostProcessingModel ||
+    hasPostProcessingModelProvider ||
+    hasPostProcessingHarness ||
+    hasPostProcessingThinkingEffort;
   const hasModelOverrides = hasOwn('model_overrides') || hasOwn('modelOverrides');
 
   if (
@@ -822,7 +1016,7 @@ export function validateProspectiveScanRuntimeSettings(body, current = {}, { all
     !hasProvider &&
     !hasHarness &&
     !hasThinkingEffort &&
-    !hasPostProcessingThinkingEffort &&
+    !hasPostProcessingRuntime &&
     !hasModelOverrides
   ) {
     return { data, selection: null, postProcessingSelection: null, modelOverrides: null };
@@ -849,25 +1043,38 @@ export function validateProspectiveScanRuntimeSettings(body, current = {}, { all
     current.configuration && typeof current.configuration === 'object' && !Array.isArray(current.configuration)
       ? current.configuration
       : {};
-  const explicitCurrentPostProcessingThinkingEffort =
-    current.postProcessingThinkingEffort ??
-    currentConfiguration.post_processing_thinking_effort ??
-    currentConfiguration.postProcessingThinkingEffort;
-  const currentPostProcessingThinkingEffort =
-    explicitCurrentPostProcessingThinkingEffort ?? prospectiveSelection.thinkingEffort;
-  const postProcessingThinkingEffort = validatePostProcessingThinkingEffort(
-    hasPostProcessingThinkingEffort
-      ? (body?.post_processing_thinking_effort ?? body?.postProcessingThinkingEffort)
-      : currentPostProcessingThinkingEffort,
-    {
-      harness: prospectiveSelection.harness,
-      fallback: prospectiveSelection.thinkingEffort,
-    }
-  );
-  const postProcessingSelection =
-    selection || hasPostProcessingThinkingEffort
-      ? { ...prospectiveSelection, thinkingEffort: postProcessingThinkingEffort }
-      : null;
+  const currentPostProcessingInput = postProcessingRuntimeInput({}, currentConfiguration);
+  const clearPostProcessingModelOverride =
+    hasPostProcessingModel &&
+    hasPostProcessingModelProvider &&
+    hasPostProcessingHarness &&
+    [
+      bodyValue('post_processing_model', 'postProcessingModel'),
+      bodyValue('post_processing_model_provider', 'postProcessingModelProvider'),
+      bodyValue('post_processing_harness', 'postProcessingHarness'),
+    ].every((value) => value === null || value === '');
+  const nextPostProcessingInput = clearPostProcessingModelOverride
+    ? {
+        thinkingEffort: hasPostProcessingThinkingEffort
+          ? bodyValue('post_processing_thinking_effort', 'postProcessingThinkingEffort')
+          : currentPostProcessingInput.thinkingEffort,
+      }
+    : {
+        model: hasPostProcessingModel
+          ? bodyValue('post_processing_model', 'postProcessingModel')
+          : currentPostProcessingInput.model,
+        modelProvider: hasPostProcessingModelProvider
+          ? bodyValue('post_processing_model_provider', 'postProcessingModelProvider')
+          : currentPostProcessingInput.modelProvider,
+        harness: hasPostProcessingHarness
+          ? bodyValue('post_processing_harness', 'postProcessingHarness')
+          : currentPostProcessingInput.harness,
+        thinkingEffort: hasPostProcessingThinkingEffort
+          ? bodyValue('post_processing_thinking_effort', 'postProcessingThinkingEffort')
+          : currentPostProcessingInput.thinkingEffort,
+      };
+  const postProcessingSelection = validatePostProcessingModelSelection(nextPostProcessingInput, prospectiveSelection);
+  const postProcessingSelectionToCheck = selection || hasPostProcessingRuntime ? postProcessingSelection : null;
   const modelOverrides = hasModelOverrides
     ? validateModelOverrides(body?.model_overrides ?? body?.modelOverrides, { allowedDepths })
     : null;
@@ -876,8 +1083,13 @@ export function validateProspectiveScanRuntimeSettings(body, current = {}, { all
   if (hasProvider) data.modelProvider = selection.modelProvider;
   if (hasHarness) data.harness = selection.harness;
   if (hasThinkingEffort) data.thinkingEffort = selection.thinkingEffort;
-  if (hasPostProcessingThinkingEffort) data.postProcessingThinkingEffort = postProcessingThinkingEffort;
+  if (hasPostProcessingModel || hasPostProcessingModelProvider || hasPostProcessingHarness) {
+    data.postProcessingModel = clearPostProcessingModelOverride ? null : postProcessingSelection.model;
+    data.postProcessingModelProvider = clearPostProcessingModelOverride ? null : postProcessingSelection.modelProvider;
+    data.postProcessingHarness = clearPostProcessingModelOverride ? null : postProcessingSelection.harness;
+  }
+  if (hasPostProcessingThinkingEffort) data.postProcessingThinkingEffort = postProcessingSelection.thinkingEffort;
   if (hasModelOverrides) data.modelOverrides = modelOverrides;
 
-  return { data, selection, postProcessingSelection, modelOverrides };
+  return { data, selection, postProcessingSelection: postProcessingSelectionToCheck, modelOverrides };
 }

@@ -99,9 +99,11 @@ def cleanup_checkout_caches(
     retained_entry_prefixes = retained_entry_prefixes or set()
     return _cleanup_matching_children(
         Path(cache_dir),
-        matches=lambda path: path.name not in {".locks", _TRASH_DIR_NAME}
-        and path.name not in retained_entry_names
-        and not any(path.name.startswith(prefix) for prefix in retained_entry_prefixes),
+        matches=lambda path: (
+            path.name not in {".locks", _TRASH_DIR_NAME}
+            and path.name not in retained_entry_names
+            and not any(path.name.startswith(prefix) for prefix in retained_entry_prefixes)
+        ),
         minimum_age_seconds=minimum_age_seconds,
         now=now,
         quarantine=quarantine,

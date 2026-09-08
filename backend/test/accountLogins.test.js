@@ -9,9 +9,12 @@ import {
   AccountLoginManager,
   addClaudeRuntimeHome,
   addCodexRuntimeHome,
+  addGrokRuntimeHome,
   parseLoginInstructions,
   removeClaudeRuntimeHome,
   removeCodexRuntimeHome,
+  removeGrokRuntimeHome,
+  scopedLoginEnvironment,
   stripTerminalFormatting,
 } from '../src/lib/accountLogins.js';
 import { parseEnvironmentText } from '../src/lib/environmentFile.js';
@@ -28,6 +31,40 @@ test('login output parser extracts Codex device instructions without terminal fo
     requiresInput: false,
   });
   assert.equal(stripTerminalFormatting(output).includes('\u001b'), false);
+});
+
+test('login output parser extracts xAI Grok device-auth instructions', () => {
+  const output = [
+    'Visit https://accounts.x.ai/oauth2/device?user_code=RRD8-SN4G to authenticate',
+    'Your one-time code is RRD8-SN4G',
+  ].join('\n');
+  assert.deepEqual(parseLoginInstructions('xai', output), {
+    authorizationUrl: 'https://accounts.x.ai/oauth2/device?user_code=RRD8-SN4G',
+    deviceCode: 'RRD8-SN4G',
+    requiresInput: false,
+  });
+});
+
+test('Grok device login environment excludes backend and provider secrets', () => {
+  assert.deepEqual(
+    scopedLoginEnvironment({
+      PATH: '/usr/local/bin',
+      LANG: 'C.UTF-8',
+      HTTPS_PROXY: 'https://proxy.example.test',
+      DATABASE_URL: 'postgres-secret',
+      GITHUB_TOKEN: 'github-secret',
+      OPENROUTER_API_KEY: 'openrouter-secret',
+      XAI_API_KEY: 'xai-secret',
+      ANTHROPIC_API_KEY: 'anthropic-secret',
+    }),
+    {
+      NO_COLOR: '1',
+      TERM: 'dumb',
+      PATH: '/usr/local/bin',
+      LANG: 'C.UTF-8',
+      HTTPS_PROXY: 'https://proxy.example.test',
+    }
+  );
 });
 
 test('login output parser recognizes the Claude callback step', () => {
@@ -579,5 +616,136 @@ test('Claude sign-in again rejects an unknown target before creating a session',
   const manager = new AccountLoginManager();
 
   await assert.rejects(manager.start('claude', 'other'), { statusCode: 404 });
+  assert.equal(manager.sessions.size, 0);
+});
+
+test('Grok login is added to runtime homes atomically and idempotently', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'open-kritt-grok-runtime-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const runtimeConfigPath = join(directory, 'engine-runtime.env');
+  const environmentFilePath = join(directory, '.env');
+  await writeFile(runtimeConfigPath, 'ENGINE_WORKER_COUNT=4\nENGINE_GROK_HOME=/root/.grok\n');
+  await writeFile(environmentFilePath, 'KEEP=value\nENGINE_GROK_HOME=/root/.grok\nGROK_LOGIN_CONFIGURED=\n');
+
+  await addGrokRuntimeHome('/grok-accounts/reviewer/.grok', { runtimeConfigPath, environmentFilePath });
+  await addGrokRuntimeHome('/grok-accounts/reviewer/.grok', { runtimeConfigPath, environmentFilePath });
+
+  const text = await readFile(runtimeConfigPath, 'utf8');
+  assert.match(text, /^ENGINE_WORKER_COUNT=4$/m);
+  assert.match(text, /^ENGINE_GROK_HOME=\/root\/\.grok,\/grok-accounts\/reviewer\/\.grok$/m);
+  assert.equal((text.match(/\/grok-accounts\/reviewer\/\.grok/g) || []).length, 1);
+  assert.deepEqual(parseEnvironmentText(await readFile(environmentFilePath, 'utf8')), {
+    KEEP: 'value',
+    ENGINE_GROK_HOME: '/root/.grok,/grok-accounts/reviewer/.grok',
+    GROK_LOGIN_CONFIGURED: '1',
+  });
+  assert.equal(
+    await removeGrokRuntimeHome('/grok-accounts/missing/.grok', { runtimeConfigPath, environmentFilePath }),
+    false
+  );
+});
+
+test('xAI sign-in again reuses the selected Grok account home when credentials are missing', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'open-kritt-login-reuse-grok-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const accountsRoot = join(directory, 'grok-accounts');
+  const accountHome = join(accountsRoot, 'reviewer', '.grok');
+  const runtimeConfigPath = join(directory, 'engine-runtime.env');
+  const environmentFilePath = join(directory, '.env');
+  await mkdir(accountHome, { recursive: true });
+  await writeFile(runtimeConfigPath, 'ENGINE_GROK_HOME=/runtime-accounts/reviewer/.grok\n');
+  await writeFile(environmentFilePath, 'ENGINE_GROK_HOME=/runtime-accounts/reviewer/.grok\n');
+  let invocation;
+  const manager = new AccountLoginManager({
+    grokAccountsRoot: accountsRoot,
+    grokRuntimeAccountsRoot: '/runtime-accounts',
+    runtimeConfigPath,
+    environmentFilePath,
+    spawnProcess(command, args, options) {
+      invocation = { command, args, options };
+      const child = new EventEmitter();
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.stdin = {};
+      child.kill = () => {};
+      return child;
+    },
+  });
+
+  const publicSession = await manager.start('xai', 'reviewer');
+  const session = manager.sessions.get(publicSession.id);
+  await writeFile(join(accountHome, 'auth.json'), '{"tokens":{"access_token":"renewed"}}');
+  await manager.finish(session, 0);
+
+  assert.equal(invocation.command, 'grok');
+  assert.deepEqual(invocation.args, ['login', '--device-auth']);
+  assert.equal(invocation.options.env.GROK_HOME, accountHome);
+  assert.equal(invocation.options.env.HOME, join(accountsRoot, 'reviewer'));
+  assert.equal(invocation.options.env.DATABASE_URL, undefined);
+  assert.equal(invocation.options.env.GITHUB_TOKEN, undefined);
+  assert.equal(invocation.options.env.OPENROUTER_API_KEY, undefined);
+  assert.equal(invocation.options.env.ANTHROPIC_API_KEY, undefined);
+  assert.equal(invocation.options.env.XAI_API_KEY, undefined);
+  assert.equal(session.replacesAccountId, 'reviewer');
+  assert.equal(session.grokDirectory, undefined);
+  assert.equal(session.status, 'completed');
+  assert.deepEqual(await readdir(accountsRoot), ['reviewer']);
+});
+
+test('managed xAI account removal deletes only that Grok home and its runtime entry', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'open-kritt-login-remove-grok-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const accountsRoot = join(directory, 'grok-accounts');
+  const accountHome = join(accountsRoot, 'reviewer', '.grok');
+  const otherHome = join(accountsRoot, 'other', '.grok');
+  const runtimeConfigPath = join(directory, 'engine-runtime.env');
+  const environmentFilePath = join(directory, '.env');
+  await mkdir(accountHome, { recursive: true });
+  await mkdir(otherHome, { recursive: true });
+  await writeFile(join(accountHome, 'auth.json'), '{"tokens":{"access_token":"test"}}');
+  await writeFile(
+    runtimeConfigPath,
+    'ENGINE_GROK_HOME=/runtime-accounts/reviewer/.grok,/runtime-accounts/other/.grok\n'
+  );
+  await writeFile(
+    environmentFilePath,
+    'ENGINE_GROK_HOME=/runtime-accounts/reviewer/.grok,/runtime-accounts/other/.grok\nGROK_LOGIN_CONFIGURED=1\n'
+  );
+  const manager = new AccountLoginManager({
+    grokAccountsRoot: accountsRoot,
+    grokRuntimeAccountsRoot: '/runtime-accounts',
+    runtimeConfigPath,
+    environmentFilePath,
+  });
+
+  assert.deepEqual(await manager.removeAccount('xai', 'reviewer'), {
+    provider: 'xai',
+    accountId: 'reviewer',
+    removed: true,
+  });
+  await assert.rejects(stat(join(accountsRoot, 'reviewer')), { code: 'ENOENT' });
+  assert.equal((await stat(otherHome)).isDirectory(), true);
+  assert.match(await readFile(runtimeConfigPath, 'utf8'), /^ENGINE_GROK_HOME=\/runtime-accounts\/other\/\.grok$/m);
+});
+
+test('xAI sign-in again rejects an unknown target before creating a session', async () => {
+  const manager = new AccountLoginManager({ grokAccountsRoot: '/definitely/missing/grok-accounts' });
+
+  await assert.rejects(manager.start('xai', 'missing'), { statusCode: 404 });
+  assert.equal(manager.sessions.size, 0);
+});
+
+test('xAI sign-in again rejects a symbolic-link account home', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'open-kritt-login-grok-symlink-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const accountsRoot = join(directory, 'grok-accounts');
+  const accountDirectory = join(accountsRoot, 'reviewer');
+  const linkedHome = join(directory, 'linked-grok-home');
+  await mkdir(accountDirectory, { recursive: true });
+  await mkdir(linkedHome);
+  await symlink(linkedHome, join(accountDirectory, '.grok'));
+  const manager = new AccountLoginManager({ grokAccountsRoot: accountsRoot });
+
+  await assert.rejects(manager.start('xai', 'reviewer'), { statusCode: 404 });
   assert.equal(manager.sessions.size, 0);
 });

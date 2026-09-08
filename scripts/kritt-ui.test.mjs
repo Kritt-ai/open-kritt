@@ -6,10 +6,12 @@ import test from 'node:test';
 
 import { parseEnv } from './kritt-lib.mjs';
 import {
+  FullscreenTerminal,
   TerminalCancelledError,
   isInteractiveTerminal,
   keyToIntent,
   moveSelection,
+  renderDocumentScreen,
   renderInputScreen,
   renderMenuScreen,
   runInteractiveCli,
@@ -20,6 +22,7 @@ CODEX_API_KEY=
 OPENAI_API_KEY=
 ANTHROPIC_API_KEY=
 OPENROUTER_API_KEY=
+XAI_API_KEY=
 GITHUB_TOKEN=
 `;
 
@@ -83,6 +86,21 @@ class ScriptedTerminal {
   }
 }
 
+// Answers the Docker preflight probes as a healthy host, so these tests exercise the
+// interactive flow rather than the environment check covered in kritt.test.mjs.
+function dockerRunner(handler) {
+  return async (command, args, options) => {
+    if (command === 'docker' && args[0] === 'version') return { code: 0, stdout: '27.3.1\n', stderr: '' };
+    if (command === 'docker' && args[0] === 'compose' && args[1] === 'version') {
+      return { code: 0, stdout: '2.29.7\n', stderr: '' };
+    }
+    if (command === 'docker' && args[0] === 'compose' && args[1] === 'config') {
+      return { code: 0, stdout: '', stderr: '' };
+    }
+    return handler(command, args, options);
+  };
+}
+
 async function createProject(t) {
   const rootDir = await mkdtemp(join(tmpdir(), 'open-kritt-ui-'));
   const templateFile = join(rootDir, '.env.example');
@@ -132,7 +150,7 @@ test('screen renderers fill the requested terminal height and never reveal secre
   assert.match(input, /•+/);
 });
 
-test('menu options and footer stay visible on a short terminal even with many detail lines', () => {
+test('long menus keep the selection and footer visible on a short terminal', () => {
   const options = [
     { id: 'codex-login', label: 'Codex login', description: 'recommended - sign in with a device code' },
     { id: 'claude-login', label: 'Claude login', description: 'sign in with a Claude subscription' },
@@ -140,6 +158,7 @@ test('menu options and footer stay visible on a short terminal even with many de
     { id: 'OPENAI_API_KEY', label: 'OpenAI API key', description: 'not set' },
     { id: 'ANTHROPIC_API_KEY', label: 'Anthropic API key', description: 'not set' },
     { id: 'OPENROUTER_API_KEY', label: 'OpenRouter API key', description: 'not set' },
+    { id: 'XAI_API_KEY', label: 'xAI API key', description: 'not set' },
     { id: 'GITHUB_TOKEN', label: 'GitHub token', description: 'optional for private repositories' },
     { id: 'back', label: 'Back', description: 'Return to the main menu' },
   ];
@@ -150,6 +169,7 @@ test('menu options and footer stay visible on a short terminal even with many de
     '○ OpenAI API key not set',
     '○ Anthropic API key not set',
     '○ OpenRouter API key not set',
+    '○ xAI API key not set',
     '○ GitHub token not set (optional)',
   ];
 
@@ -164,7 +184,83 @@ test('menu options and footer stay visible on a short terminal even with many de
   });
 
   assert.match(screen, /› Claude login/);
-  for (const option of options) assert.match(screen, new RegExp(option.label));
+  assert.match(screen, /↑↓ navigate/);
+  assert.match(screen, /2\/9/);
+  assert.doesNotMatch(screen, /GitHub token/);
+
+  const bottomScreen = renderMenuScreen({
+    title: 'Setup',
+    subtitle: 'Choose one option to configure model access',
+    details,
+    options,
+    selected: 8,
+    rows: 14,
+    width: 90,
+  });
+
+  assert.match(bottomScreen, /› Back/);
+  assert.match(bottomScreen, /GitHub token/);
+  assert.match(bottomScreen, /9\/9/);
+});
+
+test('document screens fill the terminal, scroll, and retain semantic color', () => {
+  const screen = renderDocumentScreen({
+    title: 'Scan #12',
+    subtitle: 'acme/service',
+    lines: [
+      { text: 'Scan 12 · failed', tone: 'danger' },
+      ...Array.from({ length: 15 }, (_, index) => `Detail ${index + 1}`),
+    ],
+    offset: 4,
+    rows: 14,
+    width: 70,
+    colorEnabled: true,
+  });
+
+  assert.equal(screen.split('\n').length, 14);
+  assert.match(screen, /Detail 4/);
+  assert.match(screen, /5–10\/16/);
+  assert.match(screen, /↑↓ scroll/);
+
+  const topScreen = renderDocumentScreen({
+    title: 'Scan #12',
+    subtitle: 'acme/service',
+    lines: [{ text: 'Scan 12 · failed', tone: 'danger' }],
+    colorEnabled: true,
+  });
+  assert.match(topScreen, /\x1B\[38;5;196mScan 12 · failed/);
+});
+
+test('multi-select uses Space to toggle and explains required selections', async () => {
+  const screens = [];
+  const intents = [
+    { type: 'enter' },
+    { type: 'text', value: ' ' },
+    { type: 'down' },
+    { type: 'text', value: ' ' },
+    { type: 'enter' },
+  ];
+  const output = {
+    rows: 18,
+    columns: 70,
+    on() {},
+    off() {},
+    write() {},
+  };
+  const terminal = new FullscreenTerminal({ io: { input: {}, output, error: output }, colorEnabled: false });
+  terminal.render = (screen) => screens.push(screen);
+  terminal.nextIntent = async () => intents.shift();
+
+  const selected = await terminal.chooseMany({
+    title: 'Post-scripts',
+    subtitle: 'Create scan',
+    options: [{ label: 'Report' }, { label: 'PoC' }],
+    required: true,
+  });
+
+  assert.deepEqual(selected, [0, 1]);
+  assert.ok(screens.some((screen) => screen.includes('Select at least one item')));
+  assert.ok(screens.some((screen) => screen.includes('[✓] Report')));
 });
 
 test('menu details can carry semantic color without changing their text', () => {
@@ -196,6 +292,24 @@ test('interactive home can open setup and save a hidden credential', async (t) =
   assert.equal(parseEnv(await readFile(project.envFile, 'utf8')).CODEX_API_KEY, 'sk-hidden');
   assert.deepEqual(terminal.calls.slice(0, 3), ['enter', 'choose:Welcome', 'notice:Setup']);
   assert.equal(terminal.calls.at(-1), 'exit');
+});
+
+test('interactive setup saves xAI in .env and the shared managed store', async (t) => {
+  const project = await createProject(t);
+  const terminal = new ScriptedTerminal({
+    choices: ['setup', 'XAI_API_KEY', 'set', 'back', 'back', 'back'],
+    inputs: ['xai-hidden'],
+  });
+
+  const result = await runInteractiveCli({ ...project, terminal });
+  const env = parseEnv(await readFile(project.envFile, 'utf8'));
+  const store = JSON.parse(
+    await readFile(join(project.rootDir, '.data', 'engine', 'credentials', 'providers.json'), 'utf8')
+  );
+
+  assert.deepEqual(result, { code: 0 });
+  assert.equal(env.XAI_API_KEY, 'xai-hidden');
+  assert.equal(store.credentials.xai, 'xai-hidden');
 });
 
 test('interactive setup saves OpenRouter in .env and the shared managed store', async (t) => {
@@ -242,10 +356,10 @@ test('interactive Codex login reports a failed container run without crashing', 
   const result = await runInteractiveCli({
     ...project,
     terminal,
-    runner: async (command, args) => {
+    runner: dockerRunner(async (command, args) => {
       commands.push({ args, command });
       return { code: args[0] === 'compose' ? 1 : 0 };
-    },
+    }),
   });
 
   assert.deepEqual(result, { code: 0 });
@@ -282,4 +396,45 @@ test('TTY detection rejects piped and dumb terminals', () => {
   assert.equal(isInteractiveTerminal({ input, output }, 'xterm-256color'), true);
   assert.equal(isInteractiveTerminal({ input: {}, output }, 'xterm-256color'), false);
   assert.equal(isInteractiveTerminal({ input, output }, 'dumb'), false);
+});
+
+test('interactive Claude login reports a stopped Docker without suspending the terminal', async (t) => {
+  const project = await createProject(t);
+  const commands = [];
+  const terminal = new ScriptedTerminal({
+    choices: ['setup', 'claude-login', 'login', 'back', 'back', 'back'],
+  });
+
+  const result = await runInteractiveCli({
+    ...project,
+    terminal,
+    runner: async (command, args) => {
+      if (args[0] === 'version') {
+        return {
+          code: 1,
+          stdout: '',
+          stderr: 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?\n',
+        };
+      }
+      commands.push(args);
+      return { code: 0, stdout: '2.29.7\n', stderr: '' };
+    },
+  });
+
+  assert.deepEqual(result, { code: 0 });
+  const notice = terminal.notices.find((item) => item.title === 'Claude login');
+  assert.equal(notice.subtitle, 'Docker is not ready');
+  assert.match(notice.message, /The Docker daemon is not reachable/);
+  assert.doesNotMatch(notice.message, /unix:\/\/\/var\/run\/docker.sock/);
+  assert.equal(
+    terminal.calls.some((call) => call === 'suspend'),
+    false
+  );
+  assert.deepEqual(
+    commands.map((args) => args.slice(0, 2)),
+    [
+      ['compose', 'version'],
+      ['compose', 'config'],
+    ]
+  );
 });
