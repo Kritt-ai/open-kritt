@@ -74,6 +74,24 @@ const PRESENTATION = {
     description:
       'Soft memory reservation used for worker-capacity planning and live admission. It may be lower than the hard limit so idle runners share unused Docker memory.',
   },
+  scanRunnerCpus: {
+    label: 'Runner CPU limit',
+    unit: 'CPUs',
+    description:
+      'Maximum CPU capacity for each future scan runner. Fractional values let runners share CPU capacity; set 0 to leave CPU unlimited.',
+  },
+  scanRunnerOomScoreAdj: {
+    label: 'Runner OOM priority',
+    description:
+      'Linux out-of-memory priority for future runners. Positive values make a runner more likely to be terminated before the engine coordinator.',
+  },
+  memoryPressureEvictionEnabled: {
+    label: 'Evict one runner under memory pressure',
+    description:
+      'Disabled by default. When enabled, terminate the newest runner and retry it at reduced concurrency if free Docker memory falls below the engine reserve plus one runner reservation.',
+    enabledDescription: 'One newest runner is recycled before aggregate pressure can restart the engine.',
+    disabledDescription: 'Only admission control and Docker OOM handling protect the engine.',
+  },
   workspaceSetupConcurrency: {
     label: 'Workspace setup concurrency',
     unit: 'setups',

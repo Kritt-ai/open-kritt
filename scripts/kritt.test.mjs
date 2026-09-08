@@ -7,16 +7,19 @@ import { PassThrough } from 'node:stream';
 import test from 'node:test';
 
 import {
+  checkDockerEnvironment,
   createPrompter,
   ensureEnvFile,
   getSetupStatus,
   importCodexAuth,
+  MINIMUM_COMPOSE_VERSION,
   parseEnv,
   resolveHomePath,
   runCli,
   runCommand,
   runSetup,
   runStart,
+  saveDockerClaudeLogin,
   saveDockerCodexLogin,
   setEnvValue,
   syncCodexLoginStatus,
@@ -42,6 +45,33 @@ class BufferStream {
     this.text += value;
     return true;
   }
+}
+
+// The Docker preflight probes the daemon, the Compose plugin version, and whether Compose
+// can read the project. `dockerProbes` answers those three calls so flow assertions below
+// stay focused on the commands each flow runs itself.
+function dockerProbes({ daemon, compose, project } = {}) {
+  // A probe that fails prints its reason on stderr and nothing on stdout.
+  const answer = (override = {}, stdout = '') => ({
+    code: 0,
+    stderr: '',
+    stdout: override.code ? '' : stdout,
+    ...override,
+  });
+  return (command, args) => {
+    if (command !== 'docker') return null;
+    if (args[0] === 'version') return answer(daemon, '27.3.1\n');
+    if (args[0] === 'compose' && args[1] === 'version') return answer(compose, '2.29.7\n');
+    if (args[0] === 'compose' && args[1] === 'config') return answer(project);
+    return null;
+  };
+}
+
+function dockerRunner(handler, probes = dockerProbes()) {
+  return async (command, args, options) => {
+    const probe = probes(command, args);
+    return probe ?? handler(command, args, options);
+  };
 }
 
 function testIo() {
@@ -164,10 +194,10 @@ test('start treats a saved Claude subscription login as model access', async (t)
   const exitCode = await runStart({
     ...project,
     io: testIo(),
-    runner: async (command, args, options) => {
+    runner: dockerRunner(async (command, args, options) => {
       commands.push({ command, args, options });
       return { code: 0 };
-    },
+    }),
   });
 
   assert.equal(status.claudeLoginPresent, true);
@@ -336,13 +366,13 @@ test('guided Claude login uses the shared home monitored by Accounts', async (t)
   const project = await createProject(t);
   const io = testIo();
   const commands = [];
-  const runner = async (command, args, options) => {
+  const runner = dockerRunner(async (command, args, options) => {
     commands.push({ args, command, options });
     const home = join(project.rootDir, '.data', 'claude');
     await mkdir(home, { recursive: true });
     await writeFile(join(home, '.credentials.json'), '{"oauth":{"accessToken":"test"}}', 'utf8');
     return { code: 0 };
-  };
+  });
 
   await runSetup({
     ...project,
@@ -446,13 +476,13 @@ test('guided Docker login copies a host-owned auth file from an isolated contain
   const io = testIo();
   const commands = [];
   const targetPath = join(project.rootDir, '.data', 'codex-accounts', 'cli', '.codex', 'auth.json');
-  const runner = async (command, args, options) => {
+  const runner = dockerRunner(async (command, args, options) => {
     commands.push({ args, command, options });
     if (args[0] === 'cp') {
       await writeFile(args.at(-1), '{"tokens":{"access_token":"test"}}', { encoding: 'utf8', mode: 0o600 });
     }
     return { code: 0 };
-  };
+  });
 
   await runSetup({
     ...project,
@@ -522,10 +552,10 @@ test('guided Docker login cleans up its container when copied auth is missing', 
     io,
     rootDir: project.rootDir,
     targetPath: join(project.rootDir, '.data', 'codex', 'auth.json'),
-    runner: async (command, args, options) => {
+    runner: dockerRunner(async (command, args, options) => {
       commands.push({ args, command, options });
       return { code: args[0] === 'rm' ? 1 : 0 };
-    },
+    }),
   });
 
   assert.equal(result.ok, false);
@@ -551,7 +581,7 @@ for (const [interruptedSignal, exitCode] of [
         rootDir: project.rootDir,
         signalSource,
         targetPath: join(project.rootDir, '.data', 'codex', 'auth.json'),
-        runner: async (command, args, options) => {
+        runner: dockerRunner(async (command, args, options) => {
           commands.push({ args, command, options });
           if (args[0] === 'compose') {
             signalSource.emit(interruptedSignal);
@@ -560,7 +590,7 @@ for (const [interruptedSignal, exitCode] of [
             return { code: 1, signal: interruptedSignal };
           }
           return { code: 0 };
-        },
+        }),
       }),
       (error) => {
         assert.ok(error instanceof UserCancelledError);
@@ -612,10 +642,10 @@ test('start blocks GitHub-only configuration and launches Compose with model acc
   const exitCode = await runStart({
     ...project,
     io: testIo(),
-    runner: async (command, args, options) => {
+    runner: dockerRunner(async (command, args, options) => {
       commands.push({ args, command, options });
       return { code: 0 };
-    },
+    }),
   });
   assert.equal(exitCode, 0);
   assert.deepEqual(commands, [
@@ -686,7 +716,7 @@ test('start repairs the mode of a host-owned Codex home', async (t) => {
   const exitCode = await runStart({
     ...project,
     io: testIo(),
-    runner: async () => ({ code: 0 }),
+    runner: dockerRunner(async () => ({ code: 0 })),
   });
 
   assert.equal(exitCode, 0);
@@ -753,4 +783,275 @@ test('secret prompt keeps using hidden raw-mode input when it is available', asy
   assert.deepEqual(rawModes, [true, false]);
   assert.doesNotMatch(output.text, /visible as you type/);
   assert.doesNotMatch(output.text, new RegExp(apiKey));
+});
+
+test('Docker preflight reports the daemon, the Compose version, and the project as healthy', async (t) => {
+  const project = await createProject(t);
+  const probes = [];
+
+  const preflight = await checkDockerEnvironment({
+    rootDir: project.rootDir,
+    runner: dockerRunner(async (command, args) => {
+      probes.push(args);
+      return { code: 0 };
+    }),
+  });
+
+  assert.deepEqual(preflight, { ok: true, issues: [], serverVersion: '27.3.1', composeVersion: '2.29.7' });
+  assert.deepEqual(probes, []);
+});
+
+test('Docker preflight explains a missing docker executable', async (t) => {
+  const project = await createProject(t);
+
+  const preflight = await checkDockerEnvironment({
+    rootDir: project.rootDir,
+    runner: async () => {
+      throw new Error('Could not run docker: spawn docker ENOENT');
+    },
+  });
+
+  assert.equal(preflight.ok, false);
+  assert.deepEqual(
+    preflight.issues.map((issue) => issue.code),
+    ['docker_missing']
+  );
+  assert.match(preflight.issues[0].message, /Docker could not be started/);
+  assert.match(preflight.issues[0].message, /Install Docker Desktop/);
+});
+
+test('start stops before Compose when the Docker daemon is unreachable', async (t) => {
+  const project = await createProject(t);
+  const io = testIo();
+  await ensureEnvFile(project);
+  await setEnvValue(project.envFile, 'OPENAI_API_KEY', 'sk-example');
+  const commands = [];
+
+  const exitCode = await runStart({
+    ...project,
+    io,
+    runner: dockerRunner(
+      async (command, args) => {
+        commands.push(args);
+        return { code: 0 };
+      },
+      dockerProbes({
+        daemon: {
+          code: 1,
+          stderr: 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?\n',
+        },
+      })
+    ),
+  });
+
+  assert.equal(exitCode, 1);
+  assert.deepEqual(commands, []);
+  assert.match(io.error.text, /The Docker daemon is not reachable/);
+  assert.doesNotMatch(io.error.text, /unix:\/\/\/var\/run\/docker.sock/);
+  assert.match(io.error.text, /docker context ls/);
+});
+
+test('start stops before Compose when the Compose plugin predates the flags the CLI uses', async (t) => {
+  const project = await createProject(t);
+  const io = testIo();
+  await ensureEnvFile(project);
+  await setEnvValue(project.envFile, 'OPENAI_API_KEY', 'sk-example');
+  const commands = [];
+
+  const exitCode = await runStart({
+    ...project,
+    io,
+    runner: dockerRunner(
+      async (command, args) => {
+        commands.push(args);
+        return { code: 0 };
+      },
+      dockerProbes({ compose: { code: 0, stdout: 'v2.2.3\n' } })
+    ),
+  });
+
+  assert.equal(exitCode, 1);
+  assert.deepEqual(commands, []);
+  assert.match(io.error.text, new RegExp(`Docker Compose 2\\.2\\.3 is too old.*${MINIMUM_COMPOSE_VERSION} or newer`));
+  assert.match(io.error.text, /docker compose run --build/);
+});
+
+test('guided Claude login reports an unreadable Compose project instead of an empty login', async (t) => {
+  const project = await createProject(t);
+  const io = testIo();
+  const home = join(project.rootDir, '.data', 'claude');
+  const commands = [];
+
+  const saved = await saveDockerClaudeLogin({
+    io,
+    home,
+    rootDir: project.rootDir,
+    runner: dockerRunner(
+      async (command, args) => {
+        commands.push(args);
+        return { code: 0 };
+      },
+      dockerProbes({
+        project: {
+          code: 1,
+          stderr:
+            'invalid interpolation format for services.backend.environment.OPEN_KRITT_CODEX_LOGIN_CONFIGURED: "${CODEX_LOGIN_CONFIGURED:+1}".\n',
+        },
+      })
+    ),
+  });
+
+  assert.equal(saved, false);
+  assert.deepEqual(commands, []);
+  assert.match(io.error.text, /Docker Compose could not read this project/);
+  assert.doesNotMatch(io.error.text, /invalid interpolation format|CODEX_LOGIN_CONFIGURED/);
+  await assert.rejects(stat(home), { code: 'ENOENT' });
+});
+
+test('guided Codex login returns a Docker environment failure with its reason', async (t) => {
+  const project = await createProject(t);
+  const io = testIo();
+  const commands = [];
+
+  const result = await saveDockerCodexLogin({
+    io,
+    rootDir: project.rootDir,
+    targetPath: join(project.rootDir, '.data', 'codex', 'auth.json'),
+    runner: dockerRunner(
+      async (command, args) => {
+        commands.push(args);
+        return { code: 0 };
+      },
+      dockerProbes({ compose: { code: 1, stderr: "docker: 'compose' is not a docker command.\n" } })
+    ),
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'docker_unavailable');
+  assert.match(result.message, /The Docker Compose plugin is not available/);
+  assert.doesNotMatch(result.message, /is not a docker command/);
+  assert.deepEqual(commands, []);
+});
+
+test('Docker diagnostics use bounded commands with closed standard input', async () => {
+  const calls = [];
+  const probes = dockerProbes();
+  const result = await checkDockerEnvironment({
+    rootDir: '/example',
+    runner: async (command, args, options) => {
+      calls.push({ command, args, options });
+      return probes(command, args);
+    },
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(
+    calls.map(({ args }) => args),
+    [
+      ['version', '--format', '{{.Server.Version}}'],
+      ['compose', 'version', '--short'],
+      ['compose', 'config', '-q'],
+    ]
+  );
+  for (const { command, options } of calls) {
+    assert.equal(command, 'docker');
+    assert.equal(options.cwd, '/example');
+    assert.deepEqual(options.stdio, ['ignore', 'pipe', 'pipe']);
+    assert.equal(options.timeoutMs, 30_000);
+  }
+});
+
+test('Docker preflight checks the minimum version and accepts packaged version suffixes', async () => {
+  for (const [version, expected] of [
+    ['2.12.9', false],
+    ['2.13.0', true],
+    ['v2.13.0', true],
+    ['2.39.4-desktop.1', true],
+    ['5.5.1', true],
+  ]) {
+    const result = await checkDockerEnvironment({ runner: dockerProbes({ compose: { stdout: version } }) });
+    assert.equal(result.ok, expected, version);
+  }
+});
+
+test('Docker preflight stops when the Compose version cannot be verified', async () => {
+  for (const version of ['', 'development', '2.13', 'warning\n2.29.7']) {
+    let projectChecked = false;
+    const probes = dockerProbes({ compose: { stdout: version } });
+    const result = await checkDockerEnvironment({
+      runner: async (command, args) => {
+        if (args[1] === 'config') projectChecked = true;
+        return probes(command, args);
+      },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.issues[0].code, 'compose_version_unknown');
+    assert.equal(result.composeVersion, null);
+    assert.equal(projectChecked, false);
+  }
+});
+
+test('Docker preflight reports a diagnostic timeout and stops further probes', async () => {
+  let calls = 0;
+  const result = await checkDockerEnvironment({
+    runner: async () => {
+      calls += 1;
+      return { code: 1, timedOut: true, stdout: '', stderr: '' };
+    },
+  });
+  assert.equal(calls, 1);
+  assert.equal(result.ok, false);
+  assert.equal(result.issues[0].code, 'docker_timeout');
+  assert.match(result.issues[0].message, /30 seconds/);
+});
+
+test('Docker notices omit raw diagnostic and exception details', async () => {
+  const detail = 'example diagnostic detail';
+  for (const override of [
+    { daemon: { code: 1, stderr: detail } },
+    { compose: { code: 1, stderr: detail } },
+    { project: { code: 1, stderr: detail } },
+  ]) {
+    const result = await checkDockerEnvironment({ runner: dockerProbes(override) });
+    assert.equal(result.ok, false);
+    assert.equal(JSON.stringify(result).includes(detail), false);
+  }
+  const result = await checkDockerEnvironment({
+    runner: async () => {
+      throw new Error(detail);
+    },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(JSON.stringify(result).includes(detail), false);
+});
+
+test('runCommand bounds captured output without blocking a verbose process', async () => {
+  const result = await runCommand(
+    process.execPath,
+    ['-e', "process.stdout.write('x'.repeat(200000)); process.stderr.write('y'.repeat(200000));"],
+    { stdio: ['ignore', 'pipe', 'pipe'], timeoutMs: 5000 }
+  );
+  assert.equal(result.code, 0);
+  assert.equal(result.timedOut, false);
+  assert.equal(result.stdout, 'x'.repeat(65536));
+  assert.equal(result.stderr, 'y'.repeat(65536));
+});
+
+test('runCommand terminates a stalled diagnostic at its requested deadline', async () => {
+  const result = await runCommand(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeoutMs: 100,
+  });
+  assert.equal(result.timedOut, true);
+  assert.notEqual(result.code, 0);
+});
+
+test('a diagnostic deadline also closes a spawned helper on Unix', { skip: process.platform === 'win32' }, async () => {
+  const helper = "console.log('helper ready'); setInterval(() => {}, 1000);";
+  const parent = `require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(helper)}], { stdio: 'inherit' });`;
+  const result = await runCommand(process.execPath, ['-e', parent], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeoutMs: 1000,
+  });
+  assert.equal(result.timedOut, true);
+  assert.match(result.stdout, /helper ready/);
 });

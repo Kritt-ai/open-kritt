@@ -93,6 +93,28 @@ export const RUNTIME_SETTING_DEFINITIONS = Object.freeze({
     recommendedMax: 4096,
     apply: 'live',
   }),
+  scanRunnerCpus: Object.freeze({
+    envKey: 'ENGINE_SCAN_RUNNER_CPUS',
+    defaultValue: 0,
+    min: 0,
+    max: 64,
+    step: 0.05,
+    type: 'number',
+    apply: 'live',
+  }),
+  scanRunnerOomScoreAdj: Object.freeze({
+    envKey: 'ENGINE_SCAN_RUNNER_OOM_SCORE_ADJ',
+    defaultValue: 500,
+    min: -1000,
+    max: 1000,
+    apply: 'live',
+  }),
+  memoryPressureEvictionEnabled: Object.freeze({
+    envKey: 'ENGINE_MEMORY_PRESSURE_EVICTION_ENABLED',
+    defaultValue: false,
+    type: 'boolean',
+    apply: 'live',
+  }),
   workspaceSetupConcurrency: Object.freeze({
     envKey: 'ENGINE_WORKSPACE_SETUP_CONCURRENCY',
     defaultValue: 2,

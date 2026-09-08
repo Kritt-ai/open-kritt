@@ -77,6 +77,6 @@ def prune_stopped_scan_containers(*, timeout_seconds: float = 300.0) -> str | No
     if not docker:
         return None
     return _run_docker_cleanup(
-        [docker, "container", "prune", "--force", "--filter", f"label={SCAN_RUNNER_LABEL}"],
+        [docker, "container", "prune", "--force", "--filter", f"label={SCAN_RUNNER_LABEL}", "--filter", "until=10m"],
         timeout_seconds=timeout_seconds,
     )

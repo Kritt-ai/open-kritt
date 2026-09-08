@@ -105,15 +105,36 @@ def _snapshot_container_name(kind: str, key: str) -> str:
     return f"open-kritt-workspace-{kind}-{key[:24]}"
 
 
-def _image_snapshot_key(image: str) -> str | None:
+def _inspect_snapshot_image(image: str) -> dict[str, Any] | None:
     result = _run_docker(
-        ["image", "inspect", "--format", f'{{{{ index .Config.Labels "{SNAPSHOT_KEY_LABEL}" }}}}', image],
+        ["image", "inspect", "--format", "{{json .}}", image],
         timeout_seconds=30,
         check=False,
     )
     if result.returncode != 0:
         return None
-    return result.stdout.strip() or None
+    try:
+        inspected = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    return inspected if isinstance(inspected, dict) else None
+
+
+def _image_snapshot_key(image: str) -> str | None:
+    inspected = _inspect_snapshot_image(image)
+    if inspected is None:
+        return None
+    config = inspected.get("Config") if isinstance(inspected.get("Config"), dict) else {}
+    labels = config.get("Labels") if isinstance(config.get("Labels"), dict) else {}
+    entrypoint = config.get("Entrypoint")
+    if entrypoint not in (None, []):
+        LOGGER.warning("ignoring workspace snapshot with an unsafe entrypoint")
+        return None
+    if config.get("Cmd") != ["/bin/true"]:
+        LOGGER.warning("ignoring workspace snapshot with an unsafe default command")
+        return None
+    key = labels.get(SNAPSHOT_KEY_LABEL)
+    return str(key) if key else None
 
 
 def _remove_container(name: str):
@@ -122,12 +143,12 @@ def _remove_container(name: str):
 
 def _ensure_snapshot_lease(image: str, key: str):
     name = _snapshot_container_name("lease", key)
+    image_id = _base_image_id(image)
     inspected = _run_docker(
         ["container", "inspect", "--format", "{{.Image}}", name],
         timeout_seconds=30,
         check=False,
     )
-    image_id = _run_docker(["image", "inspect", "--format", "{{.Id}}", image], timeout_seconds=30).stdout.strip()
     if inspected.returncode == 0 and inspected.stdout.strip() == image_id:
         return
     if inspected.returncode == 0:
@@ -141,6 +162,10 @@ def _ensure_snapshot_lease(image: str, key: str):
             f"{SNAPSHOT_LEASE_LABEL}=1",
             "--label",
             f"{SNAPSHOT_KEY_LABEL}={key}",
+            "--label",
+            "open-kritt.scan-runner=0",
+            "--entrypoint",
+            "",
             image,
             "/bin/true",
         ],
@@ -181,6 +206,8 @@ def ensure_workspace_snapshot_image(
                 f"{SNAPSHOT_BUILDER_LABEL}=1",
                 "--label",
                 f"{SNAPSHOT_KEY_LABEL}={key}",
+                "--entrypoint",
+                "",
                 base_image,
                 "/bin/true",
             ]
@@ -210,6 +237,8 @@ def ensure_workspace_snapshot_image(
                 f"LABEL {SNAPSHOT_KEY_LABEL}={key}",
                 "--change",
                 f"LABEL {SNAPSHOT_BUILDER_LABEL}=0",
+                "--change",
+                'CMD ["/bin/true"]',
             ]
             if scan_id is not None:
                 changes.extend(["--change", f"LABEL open-kritt.workspace-scan-id={scan_id}"])
