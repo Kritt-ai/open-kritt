@@ -5,6 +5,8 @@ export const CODEX_PRIMARY_HOME = process.env.OPEN_KRITT_CODEX_HOME_DIR || '/pro
 export const CODEX_ACCOUNTS_ROOT = process.env.OPEN_KRITT_CODEX_ACCOUNTS_DIR || '/provider-homes/codex-accounts';
 export const CLAUDE_HOME = process.env.OPEN_KRITT_CLAUDE_HOME || '/provider-homes/claude';
 export const CLAUDE_ACCOUNTS_ROOT = process.env.OPEN_KRITT_CLAUDE_ACCOUNTS_DIR || '/provider-homes/claude-accounts';
+export const GROK_PRIMARY_HOME = process.env.OPEN_KRITT_GROK_HOME_DIR || '/provider-homes/grok';
+export const GROK_ACCOUNTS_ROOT = process.env.OPEN_KRITT_GROK_ACCOUNTS_DIR || '/provider-homes/grok-accounts';
 const ENGINE_RUNTIME_CONFIG_PATH =
   process.env.OPEN_KRITT_ENGINE_RUNTIME_CONFIG_PATH || '/engine-data/engine-runtime.env';
 const CODEX_RUNTIME_PRIMARY_HOME = process.env.OPEN_KRITT_CODEX_RUNTIME_PRIMARY_HOME || '/root/.codex';
@@ -13,6 +15,9 @@ const CODEX_INITIAL_HOME = process.env.OPEN_KRITT_CODEX_INITIAL_HOME || CODEX_RU
 export const CLAUDE_RUNTIME_PRIMARY_HOME = process.env.OPEN_KRITT_CLAUDE_RUNTIME_PRIMARY_HOME || '/root/.claude';
 export const CLAUDE_RUNTIME_ACCOUNTS_ROOT = process.env.OPEN_KRITT_CLAUDE_RUNTIME_ACCOUNTS_DIR || '/claude-accounts';
 const CLAUDE_INITIAL_HOME = process.env.OPEN_KRITT_CLAUDE_INITIAL_HOME || CLAUDE_RUNTIME_PRIMARY_HOME;
+export const GROK_RUNTIME_PRIMARY_HOME = process.env.OPEN_KRITT_GROK_RUNTIME_PRIMARY_HOME || '/root/.grok';
+export const GROK_RUNTIME_ACCOUNTS_ROOT = process.env.OPEN_KRITT_GROK_RUNTIME_ACCOUNTS_DIR || '/grok-accounts';
+const GROK_INITIAL_HOME = process.env.OPEN_KRITT_GROK_INITIAL_HOME || GROK_RUNTIME_PRIMARY_HOME;
 const ACCOUNT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 function readableJsonObject(path) {
@@ -98,10 +103,29 @@ export function claudeLoginIsConfigured({
     );
 }
 
+export function grokLoginIsConfigured({
+  primaryHome = GROK_PRIMARY_HOME,
+  accountsRoot = GROK_ACCOUNTS_ROOT,
+  runtimeConfigPath = ENGINE_RUNTIME_CONFIG_PATH,
+  runtimePrimaryHome = GROK_RUNTIME_PRIMARY_HOME,
+  runtimeAccountsRoot = GROK_RUNTIME_ACCOUNTS_ROOT,
+  initialHome = GROK_INITIAL_HOME,
+} = {}) {
+  const homes = configuredRuntimeHomes(runtimeConfigPath, 'ENGINE_GROK_HOME', initialHome).map((runtimeHome) => {
+    if (runtimeHome === runtimePrimaryHome) return primaryHome;
+    const accountPath = relative(runtimeAccountsRoot, runtimeHome);
+    const parts = accountPath.split(/[\\/]/);
+    if (parts.length !== 2 || parts[1] !== '.grok' || !ACCOUNT_ID_PATTERN.test(parts[0])) return null;
+    return join(accountsRoot, parts[0], '.grok');
+  });
+  return homes.filter(Boolean).some((home) => readableJsonObject(join(home, 'auth.json')));
+}
+
 export function providerLoginIsConfigured(provider, options = {}) {
   if (provider === 'codex') {
     return codexLoginIsConfigured(options.codex);
   }
   if (provider === 'claude') return claudeLoginIsConfigured(options.claude);
+  if (provider === 'xai') return grokLoginIsConfigured(options.grok || options.xai);
   return false;
 }

@@ -329,6 +329,16 @@ test('shared model availability enforces native catalogs and leaves OpenRouter u
     )
   );
 
+  await assert.doesNotReject(() =>
+    assertModelSelectionAvailable(
+      { modelProvider: 'xai', model: 'grok-4', thinkingEffort: 'high' },
+      {
+        providerConfigured: async () => true,
+        getCatalog: async () => null,
+      }
+    )
+  );
+
   await assert.rejects(
     () =>
       assertModelSelectionAvailable(

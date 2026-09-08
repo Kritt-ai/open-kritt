@@ -44,4 +44,14 @@ ranker and layer target-specific rules on top without editing the original.
   both - but the combined result can't be empty.
 </Note>
 
+## Move a ranker between installations
+
+Use **Export** on a severity-ranker card and **Import JSON** on the ranker list to move its
+name, description, and Markdown rules without installation-specific IDs or timestamps.
+For a terminal-only server:
+
+```bash
+./kritt-headless import ranker ./production-impact.severity-ranker.json
+```
+
 Next: [add and use skills](/skills/add-and-use).

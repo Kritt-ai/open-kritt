@@ -3,7 +3,8 @@ import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { api, ApiError, apiErrorMessages } from '../api/client.js';
 import { usePageChrome } from '../context/ui.jsx';
 import { useUnsavedChangesPrompt } from '../lib/useUnsavedChangesPrompt.js';
-import { ErrorState, Spinner, Toggle } from '../components/ui.jsx';
+import { useModalDialog } from '../lib/useModalDialog.js';
+import { Button, ErrorState, Spinner, Toggle } from '../components/ui.jsx';
 import { PromptEditor } from '../components/PromptEditor.jsx';
 import SchemaEditor from '../components/SchemaEditor.jsx';
 import { resultFromCompletedGeneration, workflowBuilderFromGeneration } from '../lib/generationDraft.js';
@@ -37,6 +38,7 @@ function blankBuilder() {
         depth: 0,
         multiOutput: true,
         consumesAll: false,
+        bindPrevious: false,
         schema: [{ key: 'entrypoints', type: 'array' }],
         steps: [
           {
@@ -44,6 +46,7 @@ function blankBuilder() {
             name: 'Map external entrypoints',
             content:
               'Analyze {{repo_full}} at commit {{commit_sha}}.\nScope: {{repo_scope}}. Dependencies: {{dependencies}}.',
+            boundSourceStepId: null,
           },
         ],
       },
@@ -57,6 +60,207 @@ function workflowSnapshot(builder) {
 
 export function workflowDraftIsDirty(builder, initialSnapshot, unsavedSource = false) {
   return !!builder && (unsavedSource || (initialSnapshot !== null && workflowSnapshot(builder) !== initialSnapshot));
+}
+
+export function workflowBindingErrors(levels) {
+  if (!Array.isArray(levels)) return ['Workflow levels are required'];
+  const errors = [];
+  const ordered = [...levels].sort((left, right) => left.depth - right.depth);
+  const stepIds = new Set();
+  for (const level of ordered) {
+    for (const step of level.steps || []) {
+      if (!step.id || stepIds.has(step.id)) errors.push('Every workflow step needs a unique stable ID');
+      else stepIds.add(step.id);
+    }
+  }
+
+  for (const level of ordered) {
+    const boundSteps = (level.steps || []).filter((step) => step.boundSourceStepId != null);
+    if (!level.bindPrevious) {
+      if (boundSteps.length) errors.push(`Depth ${level.depth}: enable bind routing or clear its bound sources`);
+      continue;
+    }
+    if (level.depth === 0) {
+      errors.push('Depth 0 cannot bind to a previous depth');
+      continue;
+    }
+    if (level.consumesAll) errors.push(`Depth ${level.depth}: bind routing cannot be combined with all-at-once input`);
+    const previous = ordered.find((candidate) => candidate.depth === level.depth - 1);
+    if (!previous) {
+      errors.push(`Depth ${level.depth}: the bound source depth is missing`);
+      continue;
+    }
+    if (previous.steps.length < 2 || level.steps.length < 2) {
+      errors.push(`Depth ${level.depth}: bind routing requires at least two steps in both depths`);
+    }
+    if (previous.steps.length !== level.steps.length) {
+      errors.push(
+        `Depth ${level.depth}: bind routing needs equal step counts (${previous.steps.length} and ${level.steps.length})`
+      );
+    }
+    const previousIds = new Set(previous.steps.map((step) => step.id));
+    const used = new Set();
+    for (const step of level.steps) {
+      if (!step.boundSourceStepId) {
+        errors.push(`Depth ${level.depth}: every destination needs a bound source`);
+      } else if (!previousIds.has(step.boundSourceStepId)) {
+        errors.push(`Depth ${level.depth}: bound sources must come from depth ${level.depth - 1}`);
+      } else if (used.has(step.boundSourceStepId)) {
+        errors.push(`Depth ${level.depth}: each source can be bound only once`);
+      } else {
+        used.add(step.boundSourceStepId);
+      }
+    }
+    if ([...previousIds].some((sourceId) => !used.has(sourceId))) {
+      errors.push(`Depth ${level.depth}: every source must be bound exactly once`);
+    }
+  }
+  return [...new Set(errors)];
+}
+
+function workflowLevelBindingIsValid(levels, level) {
+  if (!level.bindPrevious) return true;
+  if (level.depth === 0 || level.consumesAll) return false;
+
+  const previous = levels.find((candidate) => candidate.depth === level.depth - 1);
+  if (!previous || previous.steps.length < 2 || level.steps.length < 2) return false;
+  if (previous.steps.length !== level.steps.length) return false;
+
+  const previousIds = new Set(previous.steps.map((step) => step.id));
+  const boundSourceIds = level.steps.map((step) => step.boundSourceStepId);
+  return (
+    boundSourceIds.every((sourceId) => sourceId && previousIds.has(sourceId)) &&
+    new Set(boundSourceIds).size === boundSourceIds.length
+  );
+}
+
+export function clearInvalidWorkflowBindings(levels) {
+  if (!Array.isArray(levels)) return levels;
+  for (const level of levels) {
+    if (workflowLevelBindingIsValid(levels, level)) continue;
+    level.bindPrevious = false;
+    level.steps.forEach((step) => (step.boundSourceStepId = null));
+  }
+  return levels;
+}
+
+export function workflowCanShowBindRouting(sourceLevel, destinationLevel) {
+  return (sourceLevel?.steps?.length || 0) >= 2 && (destinationLevel?.steps?.length || 0) >= 2;
+}
+
+const BINDING_ROUTE_COLOR_COUNT = 6;
+
+export function workflowBindingRouteToken(sourceIndex) {
+  if (!Number.isInteger(sourceIndex) || sourceIndex < 0) return null;
+  const colorIndex = (sourceIndex + 1) % BINDING_ROUTE_COLOR_COUNT;
+  return {
+    number: sourceIndex + 1,
+    color: `var(--depth-${colorIndex})`,
+    background: `var(--depth-${colorIndex}-bg)`,
+  };
+}
+
+export function workflowStepBindingMarkers(levels, depth, stepId) {
+  if (!Array.isArray(levels)) return { incoming: null, outgoing: null };
+  const level = levels.find((candidate) => candidate.depth === depth);
+  const step = level?.steps?.find((candidate) => candidate.id === stepId);
+  if (!level || !step) return { incoming: null, outgoing: null };
+
+  let incoming = null;
+  if (level.bindPrevious && step.boundSourceStepId) {
+    const previous = levels.find((candidate) => candidate.depth === depth - 1);
+    const sourceIndex = previous?.steps?.findIndex((candidate) => candidate.id === step.boundSourceStepId) ?? -1;
+    if (sourceIndex >= 0) {
+      incoming = {
+        ...workflowBindingRouteToken(sourceIndex),
+        peer: previous.steps[sourceIndex],
+      };
+    }
+  }
+
+  let outgoing = null;
+  const destination = levels.find((candidate) => candidate.depth === depth + 1);
+  if (destination?.bindPrevious) {
+    const destinationStep = destination.steps.find((candidate) => candidate.boundSourceStepId === step.id);
+    const sourceIndex = level.steps.findIndex((candidate) => candidate.id === step.id);
+    if (destinationStep && sourceIndex >= 0) {
+      outgoing = {
+        ...workflowBindingRouteToken(sourceIndex),
+        peer: destinationStep,
+      };
+    }
+  }
+
+  return { incoming, outgoing };
+}
+
+export function setWorkflowDepthBinding(builder, sourceDepth, enabled) {
+  if (!builder || !Array.isArray(builder.levels)) throw new TypeError('A workflow builder is required.');
+  const next = JSON.parse(JSON.stringify(builder));
+  const source = next.levels.find((level) => level.depth === sourceDepth);
+  const destination = next.levels.find((level) => level.depth === sourceDepth + 1);
+  if (!source || !destination) throw new RangeError('Choose a depth that has a following depth.');
+
+  if (!enabled) {
+    destination.bindPrevious = false;
+    destination.steps.forEach((step) => (step.boundSourceStepId = null));
+    return next;
+  }
+  if (source.steps.length !== destination.steps.length) {
+    throw new RangeError('Bind routing requires the two depths to have the same number of steps.');
+  }
+  if (source.steps.length < 2) {
+    throw new RangeError('Bind routing requires at least two steps in both depths.');
+  }
+  destination.bindPrevious = true;
+  destination.consumesAll = false;
+  destination.steps.forEach((step, index) => (step.boundSourceStepId = source.steps[index].id));
+  return next;
+}
+
+export function setWorkflowStepBinding(builder, destinationDepth, destinationStepId, sourceStepId) {
+  if (!builder || !Array.isArray(builder.levels)) throw new TypeError('A workflow builder is required.');
+  const next = JSON.parse(JSON.stringify(builder));
+  const source = next.levels.find((level) => level.depth === destinationDepth - 1);
+  const destination = next.levels.find((level) => level.depth === destinationDepth);
+  if (!source || !destination?.bindPrevious) throw new RangeError('Enable bind routing for this transition first.');
+  if (!source.steps.some((step) => step.id === sourceStepId)) {
+    throw new RangeError('Choose a source step from the immediately previous depth.');
+  }
+  const selected = destination.steps.find((step) => step.id === destinationStepId);
+  if (!selected) throw new RangeError('Choose an existing destination step.');
+
+  const oldSourceId = selected.boundSourceStepId;
+  const occupied = destination.steps.find(
+    (step) => step.id !== destinationStepId && step.boundSourceStepId === sourceStepId
+  );
+  selected.boundSourceStepId = sourceStepId;
+  if (occupied) occupied.boundSourceStepId = oldSourceId;
+  return next;
+}
+
+export function workflowNeedsDuplicate(error) {
+  return error instanceof ApiError && error.status === 409 && error.code === 'workflow_in_use';
+}
+
+export function workflowDuplicatePrompt(error) {
+  const scanCount = error?.data?.scanCount;
+  const usage = Number.isInteger(scanCount)
+    ? `it is used by ${scanCount} ${scanCount === 1 ? 'scan' : 'scans'}`
+    : 'it is already used in scans';
+  return `This workflow cannot be edited because ${usage}.\n\nSave a duplicate with your changes instead?`;
+}
+
+export async function saveWorkflowDraft({ id, payload, updateWorkflow, createWorkflow, confirmDuplicate }) {
+  if (!id) return createWorkflow(payload);
+
+  try {
+    return await updateWorkflow(id, payload);
+  } catch (error) {
+    if (!workflowNeedsDuplicate(error)) throw error;
+    if (!(await confirmDuplicate(workflowDuplicatePrompt(error)))) return null;
+    return createWorkflow(payload);
+  }
 }
 
 const BATCH_DEPTH_REFERENCE = /(\{\{\s*)multi_output_depth_(\d+)(\s*\}\})/g;
@@ -99,8 +303,9 @@ export function insertWorkflowDepthBefore(builder, depth, newStepId) {
     depth,
     multiOutput: true,
     consumesAll: false,
+    bindPrevious: false,
     schema: [],
-    steps: [{ id: newStepId, name: 'New step', content: '' }],
+    steps: [{ id: newStepId, name: 'New step', content: '', boundSourceStepId: null }],
   });
   next.levels.sort((left, right) => left.depth - right.depth);
   next.selStepId = newStepId;
@@ -147,9 +352,15 @@ export function removeWorkflowStep(builder, stepId) {
       // Deleting depth 0 promotes the old depth 1 to the root. Root steps have
       // no upstream result set and therefore cannot consume all previous work.
       if (candidate.depth === 0) candidate.consumesAll = false;
+      if (candidate.depth === 0) {
+        candidate.bindPrevious = false;
+        candidate.steps.forEach((step) => (step.boundSourceStepId = null));
+      }
     });
     next.levels.sort((left, right) => left.depth - right.depth);
   }
+
+  clearInvalidWorkflowBindings(next.levels);
 
   const selectedStillExists = next.levels.some((candidate) =>
     candidate.steps.some((step) => step.id === next.selStepId)
@@ -163,7 +374,8 @@ export function removeWorkflowStep(builder, stepId) {
   return next;
 }
 
-function builderFromWorkflow(wf, { copy = false, selectedStepId = null } = {}) {
+export function builderFromWorkflow(wf, { copy = false, selectedStepId = null } = {}) {
+  const localIds = new Map(wf.steps.map((step) => [step.id, copy ? uid() : step.id]));
   const depths = [...new Set(wf.steps.map((s) => s.depth))].sort((a, b) => a - b);
   const levels = depths.map((depth) => {
     const steps = wf.steps.filter((s) => s.depth === depth);
@@ -171,10 +383,16 @@ function builderFromWorkflow(wf, { copy = false, selectedStepId = null } = {}) {
       depth,
       multiOutput: steps[0].multiOutput,
       consumesAll: !!steps[0].consumesAll,
+      bindPrevious: steps.some((step) => step.boundSourceStepId != null),
       schema: objectToRows(steps[0].outputFormat),
       // When duplicating into a brand-new workflow, give steps fresh local ids
       // so nothing is tied back to the source's DB rows.
-      steps: steps.map((s) => ({ id: copy ? uid() : s.id, name: s.name || '', content: s.content })),
+      steps: steps.map((s) => ({
+        id: localIds.get(s.id),
+        name: s.name || '',
+        content: s.content,
+        boundSourceStepId: s.boundSourceStepId ? localIds.get(s.boundSourceStepId) || null : null,
+      })),
     };
   });
   const name = copy ? `copy-of-${wf.name}` : wf.name;
@@ -202,6 +420,8 @@ export default function WorkflowBuilder() {
   const [loadError, setLoadError] = useState(null);
   const [saving, setSaving] = useState(false);
   const [serverErrors, setServerErrors] = useState([]);
+  const [duplicatePrompt, setDuplicatePrompt] = useState(null);
+  const duplicateConfirmationRef = useRef(null);
   const initialRef = useRef(b ? workflowSnapshot(b) : null);
 
   usePageChrome(
@@ -215,10 +435,13 @@ export default function WorkflowBuilder() {
 
   useEffect(() => {
     let active = true;
+    duplicateConfirmationRef.current?.(false);
+    duplicateConfirmationRef.current = null;
     initialRef.current = null;
     setLoadError(null);
     setServerErrors([]);
     setSaving(false);
+    setDuplicatePrompt(null);
     setB(null);
     if (generationId) {
       api
@@ -257,6 +480,14 @@ export default function WorkflowBuilder() {
       active = false;
     };
   }, [generationId, id, fromId, selectedStepId]);
+
+  useEffect(
+    () => () => {
+      duplicateConfirmationRef.current?.(false);
+      duplicateConfirmationRef.current = null;
+    },
+    []
+  );
 
   // Track unsaved changes by comparing the meaningful builder state (name,
   // description, levels) against the initial snapshot — ignoring UI-only state
@@ -342,7 +573,9 @@ export default function WorkflowBuilder() {
   const addSibling = (depth) =>
     mut((n) => {
       const id2 = uid();
-      n.levels.find((l) => l.depth === depth).steps.push({ id: id2, name: 'New sibling step', content: '' });
+      n.levels
+        .find((l) => l.depth === depth)
+        .steps.push({ id: id2, name: 'New sibling step', content: '', boundSourceStepId: null });
       n.selStepId = id2;
     });
   const addLevel = () =>
@@ -353,8 +586,9 @@ export default function WorkflowBuilder() {
         depth: nd,
         multiOutput: true,
         consumesAll: false,
+        bindPrevious: false,
         schema: [],
-        steps: [{ id: id2, name: 'New step', content: '' }],
+        steps: [{ id: id2, name: 'New step', content: '', boundSourceStepId: null }],
       });
       n.selStepId = id2;
     });
@@ -366,7 +600,15 @@ export default function WorkflowBuilder() {
     mut((n) => {
       const l = n.levels.find((x) => x.depth === depth);
       l.consumesAll = val;
+      if (val) {
+        l.bindPrevious = false;
+        l.steps.forEach((step) => (step.boundSourceStepId = null));
+      }
     });
+  const setDepthBinding = (sourceDepth, enabled) =>
+    setB((current) => setWorkflowDepthBinding(current, sourceDepth, enabled));
+  const setStepBinding = (destinationDepth, destinationStepId, sourceStepId) =>
+    setB((current) => setWorkflowStepBinding(current, destinationDepth, destinationStepId, sourceStepId));
   const removeStep = (sid) => setB((current) => removeWorkflowStep(current, sid));
   const toggleMulti = (depth) =>
     mut((n) => {
@@ -412,6 +654,7 @@ export default function WorkflowBuilder() {
       else if (!stepValid(l, s)) errors.push(`${s.name || 'Step'}: invalid template key reference`);
     });
   });
+  errors.push(...workflowBindingErrors(b.levels));
   const orderedDepths = [...b.levels].map((level) => level.depth).sort((left, right) => left - right);
   if (orderedDepths.some((depth, index) => depth !== index)) errors.push('Workflow depths must be contiguous from 0');
   const miss = lastMissing();
@@ -424,6 +667,24 @@ export default function WorkflowBuilder() {
   if (!b.name.trim()) errors.push('Name your workflow');
   const canSave = errors.length === 0 && !saving;
 
+  const requestDuplicateConfirmation = (message) => {
+    setSaving(false);
+    setDuplicatePrompt(message);
+    return new Promise((resolve) => {
+      duplicateConfirmationRef.current = resolve;
+    });
+  };
+
+  const answerDuplicateConfirmation = (confirmed) => {
+    if (saving) return;
+    const resolve = duplicateConfirmationRef.current;
+    if (!resolve) return;
+    duplicateConfirmationRef.current = null;
+    if (confirmed) setSaving(true);
+    else setDuplicatePrompt(null);
+    resolve(confirmed);
+  };
+
   const save = async () => {
     if (!canSave) return;
     setSaving(true);
@@ -435,15 +696,33 @@ export default function WorkflowBuilder() {
         depth: l.depth,
         multiOutput: l.multiOutput,
         consumesAll: !!l.consumesAll, // raw opt-in; backend computes the effective value
+        bindPrevious: !!l.bindPrevious,
         outputFormat: rowsToObject(l.schema.filter((f) => f.key)),
-        steps: l.steps.map((s) => ({ name: s.name, content: s.content })),
+        steps: l.steps.map((s) => ({
+          clientId: s.id,
+          name: s.name,
+          content: s.content,
+          boundSourceStepId: l.bindPrevious ? s.boundSourceStepId || null : null,
+        })),
       })),
     };
     try {
-      const wf = id ? await api.updateWorkflow(id, payload) : await api.createWorkflow(payload);
+      const wf = await saveWorkflowDraft({
+        id,
+        payload,
+        updateWorkflow: api.updateWorkflow,
+        createWorkflow: api.createWorkflow,
+        confirmDuplicate: requestDuplicateConfirmation,
+      });
+      if (!wf) {
+        setDuplicatePrompt(null);
+        setSaving(false);
+        return;
+      }
       allow(); // intentional navigation — don't prompt about unsaved changes
       navigate(`/workflows/${wf.id}`);
     } catch (e) {
+      setDuplicatePrompt(null);
       if (e instanceof ApiError) setServerErrors(apiErrorMessages(e, { includeField: false }));
       else setServerErrors([e.message]);
       setSaving(false);
@@ -565,6 +844,21 @@ export default function WorkflowBuilder() {
                         batched
                       </span>
                     )}
+                    {level.bindPrevious && (
+                      <span
+                        className="mono"
+                        style={{
+                          fontSize: 9.5,
+                          color: 'var(--accent)',
+                          background: 'var(--accent-subtle)',
+                          borderRadius: 5,
+                          padding: '2px 7px',
+                          letterSpacing: '0.04em',
+                        }}
+                      >
+                        bound 1:1
+                      </span>
+                    )}
                     <button
                       type="button"
                       onClick={() => insertLevelBefore(level.depth)}
@@ -601,22 +895,64 @@ export default function WorkflowBuilder() {
                     {level.steps.map((step) => {
                       const valid = stepValid(level, step);
                       const selected = b.selStepId === step.id;
+                      const bindingMarkers = workflowStepBindingMarkers(b.levels, level.depth, step.id);
+                      const primaryBindingMarker = bindingMarkers.incoming || bindingMarkers.outgoing;
                       return (
                         <div
                           key={step.id}
                           onClick={() => mut((n) => (n.selStepId = step.id))}
                           style={{
                             width: 268,
-                            border: `${valid ? 1.5 : 2}px solid ${valid ? (selected ? 'var(--accent)' : 'var(--border)') : 'var(--fail)'}`,
+                            position: 'relative',
+                            border: `${valid ? 1.5 : 2}px solid ${
+                              valid
+                                ? primaryBindingMarker
+                                  ? primaryBindingMarker.color
+                                  : selected
+                                    ? 'var(--accent)'
+                                    : 'var(--border)'
+                                : 'var(--fail)'
+                            }`,
                             borderRadius: 11,
-                            background: valid ? 'var(--surface)' : 'var(--fail-bg)',
+                            background:
+                              valid && primaryBindingMarker
+                                ? `color-mix(in srgb, ${primaryBindingMarker.background} 45%, var(--surface))`
+                                : valid
+                                  ? 'var(--surface)'
+                                  : 'var(--fail-bg)',
                             boxShadow: valid
-                              ? 'var(--shadow)'
+                              ? selected && primaryBindingMarker
+                                ? '0 0 0 2px var(--accent-subtle), var(--shadow)'
+                                : 'var(--shadow)'
                               : `0 0 0 2px ${selected ? 'var(--accent)' : 'transparent'}`,
                             cursor: 'pointer',
                             overflow: 'hidden',
                           }}
                         >
+                          {bindingMarkers.incoming && (
+                            <div
+                              aria-hidden="true"
+                              style={{
+                                position: 'absolute',
+                                inset: '0 0 auto',
+                                height: 4,
+                                background: bindingMarkers.incoming.color,
+                                zIndex: 2,
+                              }}
+                            />
+                          )}
+                          {bindingMarkers.outgoing && (
+                            <div
+                              aria-hidden="true"
+                              style={{
+                                position: 'absolute',
+                                inset: 'auto 0 0',
+                                height: 4,
+                                background: bindingMarkers.outgoing.color,
+                                zIndex: 2,
+                              }}
+                            />
+                          )}
                           {!valid && (
                             <div
                               style={{
@@ -632,7 +968,7 @@ export default function WorkflowBuilder() {
                               }}
                             >
                               <span style={{ fontSize: 11, lineHeight: 1 }}>⚠</span>
-                              <span>INVALID — template key reference</span>
+                              <span>INVALID - template key reference</span>
                             </div>
                           )}
                           <div style={{ padding: '12px 14px' }}>
@@ -686,6 +1022,24 @@ export default function WorkflowBuilder() {
                             >
                               {(step.content || 'No prompt yet').replace(/\{\{\s*|\s*\}\}/g, '').slice(0, 80)}
                             </div>
+                            {(bindingMarkers.incoming || bindingMarkers.outgoing) && (
+                              <div
+                                style={{
+                                  display: 'flex',
+                                  flexDirection: 'column',
+                                  alignItems: 'flex-start',
+                                  gap: 5,
+                                  marginTop: 7,
+                                }}
+                              >
+                                {bindingMarkers.incoming && (
+                                  <BindingRouteBadge marker={bindingMarkers.incoming} direction="incoming" />
+                                )}
+                                {bindingMarkers.outgoing && (
+                                  <BindingRouteBadge marker={bindingMarkers.outgoing} direction="outgoing" />
+                                )}
+                              </div>
+                            )}
                             <div className="mono" style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 8 }}>
                               {level.schema.filter((f) => f.key).length} keys
                             </div>
@@ -797,6 +1151,36 @@ export default function WorkflowBuilder() {
                   batched={levelConsumesAll(selLevel)}
                   onOne={() => setConsumesAll(selLevel.depth, false)}
                   onAll={() => setConsumesAll(selLevel.depth, true)}
+                />
+              )}
+              {selLevel.bindPrevious && (
+                <div
+                  style={{
+                    margin: '-8px 0 20px',
+                    padding: '8px 11px',
+                    borderRadius: 7,
+                    color: 'var(--accent)',
+                    background: 'var(--accent-subtle)',
+                    fontSize: 11.5,
+                    lineHeight: 1.45,
+                  }}
+                >
+                  This step receives results only from{' '}
+                  <span className="mono">
+                    {levelAt(selLevel.depth - 1)?.steps.find((candidate) => candidate.id === sel.boundSourceStepId)
+                      ?.name || 'its bound source'}
+                  </span>
+                  .
+                </div>
+              )}
+              {workflowCanShowBindRouting(selLevel, levelAt(selLevel.depth + 1)) && (
+                <BindRouting
+                  sourceLevel={selLevel}
+                  destinationLevel={levelAt(selLevel.depth + 1)}
+                  onToggle={(enabled) => setDepthBinding(selLevel.depth, enabled)}
+                  onChange={(destinationStepId, sourceStepId) =>
+                    setStepBinding(selLevel.depth + 1, destinationStepId, sourceStepId)
+                  }
                 />
               )}
               <Label>PROMPT CONTENT</Label>
@@ -979,6 +1363,78 @@ export default function WorkflowBuilder() {
               : `${errors.length} issue${errors.length > 1 ? 's' : ''} to fix`}
         </button>
       </div>
+
+      {duplicatePrompt && (
+        <WorkflowDuplicateDialog
+          message={duplicatePrompt}
+          saving={saving}
+          onConfirm={() => answerDuplicateConfirmation(true)}
+          onCancel={() => answerDuplicateConfirmation(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+export function WorkflowDuplicateDialog({ message, saving, onConfirm, onCancel }) {
+  const closeDialog = () => {
+    if (!saving) onCancel();
+  };
+  const dialogRef = useModalDialog(closeDialog);
+
+  return (
+    <div
+      onClick={closeDialog}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 80,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 20,
+        background: 'rgba(0,0,0,.38)',
+      }}
+    >
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="duplicate-workflow-title"
+        aria-describedby="duplicate-workflow-description"
+        tabIndex={-1}
+        onClick={(event) => event.stopPropagation()}
+        style={{
+          width: 440,
+          maxWidth: '100%',
+          padding: 22,
+          border: '1px solid var(--border)',
+          borderRadius: 12,
+          background: 'var(--surface)',
+          boxShadow: '0 18px 50px rgba(0,0,0,.28)',
+        }}
+      >
+        <div id="duplicate-workflow-title" style={{ fontSize: 17, fontWeight: 600 }}>
+          Workflow already in use
+        </div>
+        <div
+          id="duplicate-workflow-description"
+          style={{ marginTop: 10, color: 'var(--text-2)', fontSize: 13.5, lineHeight: 1.55, whiteSpace: 'pre-line' }}
+        >
+          {message}
+        </div>
+        <div style={{ marginTop: 10, color: 'var(--text-3)', fontSize: 12.5, lineHeight: 1.5 }}>
+          Existing scans will continue using the original workflow.
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 9, marginTop: 22 }}>
+          <Button variant="ghost" disabled={saving} onClick={onCancel}>
+            Keep editing
+          </Button>
+          <Button data-autofocus disabled={saving} onClick={onConfirm}>
+            {saving ? 'Saving duplicate…' : 'Save duplicate'}
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -990,6 +1446,174 @@ function Label({ children, style, inline }) {
       style={{ fontSize: 10, letterSpacing: '0.07em', color: 'var(--text-3)', marginBottom: inline ? 0 : 8, ...style }}
     >
       {children}
+    </div>
+  );
+}
+
+function BindingRouteBadge({ marker, direction }) {
+  const peerName = marker.peer.name || `step ${marker.peer.id}`;
+  const incoming = direction === 'incoming';
+  const label = incoming ? `R${marker.number} input from ${peerName}` : `R${marker.number} output to ${peerName}`;
+  return (
+    <span
+      className="mono"
+      title={label}
+      aria-label={label}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        maxWidth: '100%',
+        border: `1px solid color-mix(in srgb, ${marker.color} 45%, var(--border))`,
+        borderRadius: 5,
+        padding: '2px 6px',
+        background: marker.background,
+        color: marker.color,
+        fontSize: 9.5,
+        fontWeight: 600,
+        lineHeight: 1.35,
+      }}
+    >
+      <span
+        style={{
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {incoming ? `R${marker.number} input ← ${peerName}` : `R${marker.number} output → ${peerName}`}
+      </span>
+    </span>
+  );
+}
+
+function BindRouting({ sourceLevel, destinationLevel, onToggle, onChange }) {
+  const enabled = !!destinationLevel?.bindPrevious;
+  const countsMatch = sourceLevel.steps.length === destinationLevel?.steps.length;
+  return (
+    <div
+      style={{
+        marginBottom: 20,
+        padding: '11px 12px',
+        border: `1px solid ${enabled ? 'var(--accent)' : 'var(--border)'}`,
+        borderRadius: 8,
+        background: enabled ? 'var(--accent-subtle)' : 'var(--surface-2)',
+      }}
+    >
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+        <div>
+          <div className="mono" style={{ fontSize: 10, color: enabled ? 'var(--accent)' : 'var(--text-3)' }}>
+            ADVANCED OUTPUT ROUTING - DEPTH {sourceLevel.depth} TO {destinationLevel.depth}
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4, lineHeight: 1.45 }}>
+            Route each sibling only to one sibling in the next depth.
+          </div>
+        </div>
+        <button
+          type="button"
+          disabled={!enabled && !countsMatch}
+          onClick={() => onToggle(!enabled)}
+          aria-pressed={enabled}
+          title={
+            countsMatch
+              ? 'Toggle one-to-one routing for this transition'
+              : 'Both depths must have the same number of steps'
+          }
+          style={{
+            flex: 'none',
+            border: `1px solid ${enabled ? 'var(--accent)' : 'var(--border)'}`,
+            borderRadius: 6,
+            padding: '5px 9px',
+            background: enabled ? 'var(--accent)' : 'var(--surface)',
+            color: enabled ? 'var(--accent-fg)' : countsMatch ? 'var(--text-2)' : 'var(--text-3)',
+            cursor: enabled || countsMatch ? 'pointer' : 'not-allowed',
+            fontSize: 11,
+          }}
+        >
+          {enabled ? 'bind on' : 'bind off'}
+        </button>
+      </div>
+
+      {!countsMatch && (
+        <div style={{ color: 'var(--fail)', fontSize: 11, marginTop: 8 }}>
+          Add or remove siblings until both depths have{' '}
+          {Math.max(sourceLevel.steps.length, destinationLevel.steps.length)} steps, or turn bind off.
+        </div>
+      )}
+
+      {enabled && (
+        <div style={{ display: 'grid', gap: 7, marginTop: 11 }}>
+          {destinationLevel.steps.map((destinationStep) => {
+            const sourceIndex = sourceLevel.steps.findIndex(
+              (sourceStep) => sourceStep.id === destinationStep.boundSourceStepId
+            );
+            const route = workflowBindingRouteToken(sourceIndex);
+            return (
+              <label
+                key={destinationStep.id}
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: '28px minmax(0, 1fr) 18px minmax(0, 1fr)',
+                  alignItems: 'center',
+                  gap: 7,
+                  borderLeft: route ? `3px solid ${route.color}` : '3px solid transparent',
+                  borderRadius: 5,
+                  padding: '4px 6px',
+                  background: route ? route.background : 'transparent',
+                }}
+              >
+                <span
+                  className="mono"
+                  style={{
+                    color: route?.color || 'var(--text-3)',
+                    fontSize: 10,
+                    fontWeight: 700,
+                    textAlign: 'center',
+                  }}
+                >
+                  {route ? `R${route.number}` : '?'}
+                </span>
+                <select
+                  aria-label={`Bound source for ${destinationStep.name || `step ${destinationStep.id}`}`}
+                  value={destinationStep.boundSourceStepId || ''}
+                  onChange={(event) => onChange(destinationStep.id, event.target.value)}
+                  style={{
+                    minWidth: 0,
+                    border: '1px solid var(--border)',
+                    borderRadius: 5,
+                    background: 'var(--surface)',
+                    color: 'var(--text)',
+                    padding: '5px 7px',
+                    fontSize: 11,
+                  }}
+                >
+                  <option value="" disabled>
+                    choose source
+                  </option>
+                  {sourceLevel.steps.map((sourceStep) => (
+                    <option key={sourceStep.id} value={sourceStep.id}>
+                      {sourceStep.name || `Step ${sourceStep.id}`}
+                    </option>
+                  ))}
+                </select>
+                <span style={{ color: route?.color || 'var(--text-3)', textAlign: 'center' }}>→</span>
+                <span
+                  title={destinationStep.name || `Step ${destinationStep.id}`}
+                  style={{
+                    minWidth: 0,
+                    fontSize: 11,
+                    color: 'var(--text-2)',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {destinationStep.name || `Step ${destinationStep.id}`}
+                </span>
+              </label>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

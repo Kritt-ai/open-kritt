@@ -7,8 +7,15 @@ export const RUNTIME_SETTING_KEYS = [
   'codexMaxSubagentsPerSession',
   'minFreeStorageGb',
   'ignoreLowStorage',
+  'memoryReserveGb',
+  'scanRunnerMemoryMb',
+  'scanRunnerMemoryReservationMb',
+  'scanRunnerCpus',
+  'scanRunnerOomScoreAdj',
+  'memoryPressureEvictionEnabled',
   'workspaceSetupConcurrency',
   'retryCount',
+  'cyberSafetyRetryCount',
   'harnessTimeoutSeconds',
 ];
 

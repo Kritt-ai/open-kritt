@@ -1,23 +1,24 @@
 # Code owners — GitHub auto-requests a review from the listed owner(s) when a PR
 # touches matching paths. See https://docs.github.com/articles/about-code-owners
 #
-# NOTE: @Kritt-ai/maintainers must be a real GitHub team (with write access) for
-# auto-assignment to work. Create it and add the maintainers, or replace the team
-# reference below with individual @handles. Keep in sync with MAINTAINERS.md.
+# Keep this file in sync with MAINTAINERS.md. Project ownership is held jointly
+# and exclusively by @harel-coffee and @GabiCtrlZ. Maintainer or contributor
+# status does not confer project ownership.
 
 # Default owner for everything in the repo.
-*                       @Kritt-ai/maintainers
+*                       @harel-coffee @GabiCtrlZ
 
 # Components
-/frontend/              @Kritt-ai/maintainers
-/backend/               @Kritt-ai/maintainers
-/engine/                @Kritt-ai/maintainers
-/database/              @Kritt-ai/maintainers
-/executor-view/         @Kritt-ai/maintainers
+/frontend/              @harel-coffee @GabiCtrlZ
+/backend/               @harel-coffee @GabiCtrlZ
+/engine/                @harel-coffee @GabiCtrlZ
+/database/              @harel-coffee @GabiCtrlZ
+/executor-view/         @harel-coffee @GabiCtrlZ
 
 # CI / release / governance — change with extra care.
-/.github/               @Kritt-ai/maintainers
-/scripts/               @Kritt-ai/maintainers
-/RELEASE.md             @Kritt-ai/maintainers
-/SECURITY.md            @Kritt-ai/maintainers
-/VERSION                @Kritt-ai/maintainers
+/.github/               @harel-coffee @GabiCtrlZ
+/scripts/               @harel-coffee @GabiCtrlZ
+/CONTRIBUTION_TERMS.md  @harel-coffee @GabiCtrlZ
+/RELEASE.md             @harel-coffee @GabiCtrlZ
+/SECURITY.md            @harel-coffee @GabiCtrlZ
+/VERSION                @harel-coffee @GabiCtrlZ

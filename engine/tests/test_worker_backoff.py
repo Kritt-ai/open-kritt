@@ -301,7 +301,7 @@ def test_rate_limit_backoff_is_exponential_and_jitter_is_testable(monkeypatch):
         code="account_quota_limited",
         retry_after_seconds=2 * 24 * 60 * 60,
     )
-    assert worker_module._rate_limit_retry_delay(quota, 1) == 2 * 24 * 60 * 60
+    assert worker_module._rate_limit_retry_delay(quota, 1) == RATE_LIMIT_RESUME_DELAY_SECONDS
 
 
 class _QueryResult:
@@ -618,9 +618,67 @@ def _pool_worker(*, worker_count, max_per_scan, scans):
     worker.db = _PoolDatabase(scans)
     worker.config = SimpleNamespace(data_dir="/tmp")
     worker.runtime_worker_count = lambda: worker_count
+    worker.runtime_memory_capacity = lambda: worker_module.MemoryCapacity(
+        configured_workers=worker_count,
+        effective_workers=worker_count,
+        total_bytes=None,
+        reserve_bytes=0,
+        runner_bytes=0,
+    )
+    worker._memory_allows_new_runner = lambda: True
     worker.runtime_max_concurrent_scans = lambda: len(scans)
     worker.runtime_max_workers_per_scan = lambda: max_per_scan
     return worker
+
+
+def test_fair_scheduler_uses_the_memory_budget_as_its_global_worker_limit():
+    scans = [{"id": 1, "inserted_at": "1"}]
+    worker = _pool_worker(worker_count=15, max_per_scan=15, scans=scans)
+    worker.runtime_memory_capacity = lambda: worker_module.MemoryCapacity(
+        configured_workers=15,
+        effective_workers=4,
+        total_bytes=8 * 1024**3,
+        reserve_bytes=2 * 1024**3,
+        runner_bytes=1536 * 1024**2,
+    )
+
+    assert [worker._reserve_scan()["id"] for _ in range(4)] == [1, 1, 1, 1]
+    assert worker._reserve_scan() is None
+
+
+def test_fair_scheduler_pauses_admission_when_live_memory_is_low():
+    scans = [{"id": 1, "inserted_at": "1"}]
+    worker = _pool_worker(worker_count=8, max_per_scan=8, scans=scans)
+    worker._memory_allows_new_runner = lambda: False
+
+    assert worker._reserve_scan() is None
+
+
+def test_live_memory_gate_preserves_the_reserve_before_admitting_a_runner():
+    worker = Worker.__new__(Worker)
+    worker.runtime_memory_reserve_bytes = lambda: int(1.25 * 1024**3)
+    worker.runtime_scan_runner_memory_reservation_mb = lambda: 800
+    worker._system_memory_available_bytes = lambda: 2 * 1024**3
+
+    assert worker._memory_allows_new_runner() is False
+
+    worker._system_memory_available_bytes = lambda: 3 * 1024**3
+    assert worker._memory_allows_new_runner() is True
+
+
+def test_worker_capacity_uses_soft_reservation_instead_of_hard_limit():
+    worker = Worker.__new__(Worker)
+    worker.config = SimpleNamespace(data_dir="/tmp")
+    worker.runtime_worker_count = lambda: 10
+    worker.runtime_memory_reserve_bytes = lambda: int(2.5 * 1024**3)
+    worker.runtime_scan_runner_memory_mb = lambda: 2048
+    worker.runtime_scan_runner_memory_reservation_mb = lambda: 768
+    worker._system_memory_total_bytes = lambda: int(11.67 * 1024**3)
+
+    capacity = worker.runtime_memory_capacity()
+
+    assert capacity.effective_workers == 10
+    assert capacity.runner_bytes == 768 * 1024**2
 
 
 def test_fair_scheduler_divides_six_workers_evenly_between_two_scans():
@@ -734,6 +792,8 @@ def test_claim_scan_skips_deferred_rate_limits_and_clears_due_timestamp_on_claim
     assert "status = 'rate_limited'" in pending_query
     assert "reasoning->>'retry_after'" in pending_query
     assert "::timestamptz <= now()" in pending_query
+    assert "updated_at + make_interval" in pending_query
+    assert conn.calls[2][1] == (QUOTA_RETRY_MAX_SECONDS,)
     assert "reasoning - 'error' - 'retry_after'" in pending_query
     assert "last_resumed_at" in pending_query
 
@@ -890,8 +950,21 @@ def test_persistent_rate_limit_backoff_grows_and_caps_without_a_retry_limit():
             provider_retry_after_seconds=6 * 24 * 60 * 60,
             maximum_seconds=QUOTA_RETRY_MAX_SECONDS,
         )
-        == 6 * 24 * 60 * 60
+        == QUOTA_RETRY_MAX_SECONDS
     )
+
+
+def test_persistent_quota_backoff_retries_quickly_and_caps_at_thirty_minutes():
+    delays = [
+        rate_limit_retry_delay(
+            retry_count,
+            provider_retry_after_seconds=RATE_LIMIT_RESUME_DELAY_SECONDS,
+            maximum_seconds=QUOTA_RETRY_MAX_SECONDS,
+        )
+        for retry_count in range(1, 8)
+    ]
+
+    assert delays == [60, 2 * 60, 4 * 60, 8 * 60, 16 * 60, 30 * 60, 30 * 60]
 
 
 def test_completed_scan_clears_transient_rate_limit_reasoning_but_preserves_autoscale_history():

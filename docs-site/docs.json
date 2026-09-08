@@ -21,6 +21,7 @@
           "getting-started/welcome",
           "getting-started/self-hosted-vs-managed",
           "getting-started/installation-and-setup",
+          "getting-started/headless-cli",
           "getting-started/settings"
         ]
       },
@@ -30,7 +31,8 @@
           "ai-provider-setup/overview",
           "ai-provider-setup/codex",
           "ai-provider-setup/claude-code",
-          "ai-provider-setup/openrouter"
+          "ai-provider-setup/openrouter",
+          "ai-provider-setup/xai"
         ]
       },
       {

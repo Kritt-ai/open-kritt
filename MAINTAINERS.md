@@ -1,21 +1,30 @@
-# Maintainers
+# Project owners and maintainers
 
-Maintainers review and merge pull requests, triage issues, and steer the project.
-Reviews are auto-requested via [`.github/CODEOWNERS`](.github/CODEOWNERS).
+open·kritt is jointly and exclusively owned and governed by the two project owners
+listed below. Reviews are auto-requested from both owners via
+[`.github/CODEOWNERS`](.github/CODEOWNERS).
 
-## Current maintainers
+## Project owners
 
 | Name | GitHub | Areas |
 | ---- | ------ | ----- |
-| Gabi | `@<your-github-handle>` | Overall / all components |
+| Harel Rom | [`@harel-coffee`](https://github.com/harel-coffee) | Overall / all components |
+| Gabriel Balko | [`@GabiCtrlZ`](https://github.com/GabiCtrlZ) | Overall / all components |
 
-## Becoming a maintainer
+Project ownership is personal to Harel Rom and Gabriel Balko. Contributor, maintainer, team,
+or employment status does not confer any ownership interest in the project. No other
+person or organization may be presented as a project owner without the express written
+agreement of both owners.
 
-We're happy to grow the team. A good path:
+Copyright ownership is addressed separately in [OWNERSHIP.md](OWNERSHIP.md).
 
-1. Land a few meaningful PRs and help with reviews/issue triage.
-2. An existing maintainer nominates you; the current maintainers agree.
-3. You're added to the `@Kritt-ai/maintainers` team and to the table above.
+## Maintainers
+
+The owners may appoint maintainers to help review pull requests, triage issues, and
+operate releases. Appointment as a maintainer delegates responsibilities only; it does
+not transfer or share project ownership.
+
+There are no additional maintainers at this time.
 
 ## Responsibilities
 

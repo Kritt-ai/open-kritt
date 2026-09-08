@@ -41,6 +41,7 @@ class EngineConfig:
     worker_count: int
     workspace_setup_concurrency: int
     retry_count: int
+    cyber_safety_retry_count: int
     harness_timeout_seconds: int
     data_dir: str
     min_free_storage_bytes: int
@@ -89,6 +90,13 @@ class EngineConfig:
             worker_count=worker_count,
             workspace_setup_concurrency=setup_concurrency,
             retry_count=runtime_int("ENGINE_RETRY_COUNT", 2, data_dir=data_dir, minimum=0, maximum=10),
+            cyber_safety_retry_count=runtime_int(
+                "ENGINE_CYBER_SAFETY_RETRY_COUNT",
+                0,
+                data_dir=data_dir,
+                minimum=0,
+                maximum=10,
+            ),
             harness_timeout_seconds=runtime_int(
                 "ENGINE_HARNESS_TIMEOUT_SECONDS",
                 7200,

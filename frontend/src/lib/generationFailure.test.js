@@ -48,6 +48,26 @@ describe('generation failure presentation', () => {
     expect(view.duration).toBe('2m 4s');
   });
 
+  it('labels xAI Grok Build configuration in failure details', () => {
+    const view = generationFailureViewModel(
+      {
+        id: '21',
+        modelProvider: 'xai',
+        model: 'grok-4.5',
+        harness: 'grok-build',
+        thinkingEffort: 'medium',
+      },
+      'draft'
+    );
+
+    expect(view.configuration).toEqual([
+      { label: 'Provider', value: 'xAI' },
+      { label: 'Model', value: 'grok-4.5' },
+      { label: 'Harness', value: 'Grok Build' },
+      { label: 'Thinking', value: 'Medium' },
+    ]);
+  });
+
   it('normalizes string issues and supplies a useful fallback', () => {
     expect(
       normalizeGenerationValidationIssues(['Missing output fields', null, { field: '', message: 'Bad prompt' }])

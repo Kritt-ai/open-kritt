@@ -26,12 +26,15 @@ model Step {
   multiOutput  Boolean  @map("multi_output")
   // When true, depth runs one agent over the whole previous-depth output array.
   consumesAll  Boolean  @default(false) @map("consume_all_previous")
+  // Optional one-to-one route from an adjacent previous-depth sibling.
+  boundSourceStepId BigInt? @map("bound_source_step_id")
   isLastStep   Boolean  @map("is_last_step")
   outputTable  String   @default("workflows.step_results") @map("output_table")
   insertedAt   DateTime @default(now()) @map("inserted_at") @db.Timestamptz(6)
   updatedAt    DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@map("steps")
+  @@index([boundSourceStepId], map: "steps_bound_source_step_id_idx")
   @@schema("public")
 }
 
@@ -152,7 +155,7 @@ model Scan {
   agentSkillIds BigInt[] @default([]) @map("agent_skill_ids")
   configuration Json     @map("configuration")
   model         String
-  modelProvider String  @default("openrouter") @map("model_provider") // codex, claude, openrouter
+  modelProvider String  @default("openrouter") @map("model_provider") // codex, claude, openrouter, xai
   harness       String
   thinkingEffort String? @map("thinking_effort") // default, low, medium, high, xhigh, max, ultra
   // Optional depth-keyed model tuples. The top-level tuple remains the fallback
@@ -231,13 +234,65 @@ model VulnerabilityEnrichment {
   result          Json?
   stub            Boolean  @default(false)
   stubExplanation String?  @map("stub_explanation")
+  supplementalRunId BigInt? @map("supplemental_run_id")
   insertedAt      DateTime @default(now()) @map("inserted_at") @db.Timestamptz(6)
   updatedAt       DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  @@unique([vulnerabilityId, postScriptId], map: "vulnerability_enrichments_vulnerability_id_post_script_id_key")
   @@index([scanId], map: "vulnerability_enrichments_scan_idx")
   @@index([vulnerabilityId], map: "vulnerability_enrichments_vulnerability_idx")
   @@map("vulnerability_enrichments")
+  @@schema("workflows")
+}
+
+/// One user-requested post-script execution over a selected set of findings.
+model SupplementalPostScriptRun {
+  id                     BigInt    @id @default(autoincrement())
+  scanId                 BigInt    @map("scan_id")
+  postScriptId           BigInt    @map("post_script_id")
+  postScriptName         String    @map("post_script_name")
+  postScriptContent      String    @map("post_script_content")
+  postScriptOutputFormat String    @map("post_script_output_format")
+  model                  String?
+  modelProvider          String?   @map("model_provider")
+  harness                String?
+  thinkingEffort         String?   @map("thinking_effort")
+  retryOfRunId           BigInt?   @unique(map: "supplemental_post_script_runs_retry_of_run_id_key") @map("retry_of_run_id")
+  extra                  Json      @default("{}")
+  status                 String    @default("queued")
+  targetCount            Int       @default(0) @map("target_count")
+  completedCount         Int       @default(0) @map("completed_count")
+  failedCount            Int       @default(0) @map("failed_count")
+  startedAt              DateTime? @map("started_at") @db.Timestamptz(6)
+  completedAt            DateTime? @map("completed_at") @db.Timestamptz(6)
+  insertedAt             DateTime  @default(now()) @map("inserted_at") @db.Timestamptz(6)
+  updatedAt              DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([scanId, insertedAt(sort: Desc), id(sort: Desc)], map: "supplemental_post_script_runs_scan_idx")
+  @@index([status, insertedAt, id], map: "supplemental_post_script_runs_status_idx")
+  @@map("supplemental_post_script_runs")
+  @@schema("workflows")
+}
+/// Per-finding work item and durable progress for a supplemental run.
+model SupplementalPostScriptTarget {
+  id                    BigInt    @id @default(autoincrement())
+  runId                 BigInt    @map("run_id")
+  scanId                BigInt    @map("scan_id")
+  vulnerabilityId       BigInt    @map("vulnerability_id")
+  status                String    @default("pending")
+  attempts              Int       @default(0)
+  availableAt           DateTime  @default(now()) @map("available_at") @db.Timestamptz(6)
+  error                 String?
+  postProcessMetadataId BigInt?   @map("post_process_metadata_id")
+  enrichmentId          BigInt?   @map("enrichment_id")
+  startedAt             DateTime? @map("started_at") @db.Timestamptz(6)
+  completedAt           DateTime? @map("completed_at") @db.Timestamptz(6)
+  insertedAt            DateTime  @default(now()) @map("inserted_at") @db.Timestamptz(6)
+  updatedAt             DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([runId, vulnerabilityId], map: "supplemental_post_script_targets_run_vulnerability_key")
+  @@index([status, availableAt, runId, id], map: "supplemental_post_script_targets_queue_idx")
+  @@index([scanId, vulnerabilityId, id], map: "supplemental_post_script_targets_scan_idx")
+  @@map("supplemental_post_script_targets")
   @@schema("workflows")
 }
 
@@ -279,6 +334,7 @@ model StepMetadata {
   postScriptId              BigInt?   @map("post_script_id")
   postScriptName            String?   @map("post_script_name")
   vulnerabilityId           BigInt?   @map("vulnerability_id")
+  supplementalRunId         BigInt?   @map("supplemental_run_id")
   targetVulnerabilityIds    BigInt[]  @default([]) @map("target_vulnerability_ids")
   batchIndex                Int?      @map("batch_index")
   stub                      Boolean   @default(false)
@@ -319,6 +375,7 @@ model PostProcessMetadata {
   postScriptId              BigInt?   @map("post_script_id")
   postScriptName            String?   @map("post_script_name")
   vulnerabilityId           BigInt?   @map("vulnerability_id")
+  supplementalRunId         BigInt?   @map("supplemental_run_id")
   kind                      String
   batchIndex                Int?      @map("batch_index")
   targetVulnerabilityIds    BigInt[]  @default([]) @map("target_vulnerability_ids")

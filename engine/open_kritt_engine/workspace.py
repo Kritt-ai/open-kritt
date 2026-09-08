@@ -1,5 +1,6 @@
 import base64
 import copy
+import errno
 import fcntl
 import hashlib
 import json
@@ -57,6 +58,7 @@ JOB_UID_SPAN = 2_000_000_000
 _SHARED_WORKSPACE_LOCKS: dict[str, threading.Lock] = {}
 _SHARED_WORKSPACE_LOCKS_GUARD = threading.Lock()
 IMAGE_WORKSPACE_MODES = {"image", "snapshot", "snapshot_image"}
+CHECKOUT_CACHE_FALLBACK_DIRNAME = "checkout-cache-fallback"
 
 
 @dataclass(frozen=True)
@@ -142,9 +144,11 @@ def prepare_job_workspace(
     selected_provider = model_provider or "openrouter"
     codex_home = home / ".codex"
     claude_home = home / ".claude"
+    grok_home = home / ".grok"
     claude_oauth_expires_at_ms = None
     needs_codex_home = selected_harness == "codex"
     needs_claude_home = selected_harness == "claude-code"
+    needs_grok_home = selected_harness == "grok-build"
     codex_source = (
         provider_home_for_job("codex", metadata_id, data_dir=data_dir)
         if needs_codex_home and selected_provider == "codex"
@@ -155,11 +159,18 @@ def prepare_job_workspace(
         if needs_claude_home and selected_provider == "claude"
         else None
     )
+    grok_source = (
+        provider_home_for_job("xai", metadata_id, data_dir=data_dir)
+        if needs_grok_home and selected_provider == "xai"
+        else None
+    )
     provider_account = (
         _codex_account_info(codex_source)
         if codex_source
         else _claude_account_info(claude_source)
         if claude_source
+        else _grok_account_info(grok_source)
+        if grok_source
         else {}
     )
     if needs_codex_home and codex_source:
@@ -177,10 +188,16 @@ def prepare_job_workspace(
         # OpenRouter uses an API key and must not inherit Anthropic OAuth,
         # project settings, hooks, or MCP servers from the operator's profile.
         _prepare_claude_config(claude_home)
+    if needs_grok_home and grok_source:
+        _copy_credential_files(Path(grok_source), grok_home, ("auth.json",))
+    elif needs_grok_home:
+        grok_home.mkdir(parents=True, exist_ok=True)
     if needs_codex_home:
         _install_agent_skills(codex_home, agent_skills or [])
     if needs_claude_home:
         _install_agent_skills(claude_home, agent_skills or [])
+    if needs_grok_home:
+        _install_agent_skills(grok_home, agent_skills or [])
     job_uid, job_gid = _job_identity(metadata_id)
     env = job_environment(selected_provider, selected_harness)
     env.update(
@@ -189,6 +206,7 @@ def prepare_job_workspace(
             "CODEX_HOME": str(codex_home),
             "CLAUDE_HOME": str(claude_home),
             "CLAUDE_CONFIG_DIR": str(claude_home),
+            "GROK_HOME": str(grok_home),
             "XDG_CONFIG_HOME": str(home / ".config"),
             "XDG_CACHE_HOME": str(home / ".cache"),
             "XDG_DATA_HOME": str(home / ".local" / "share"),
@@ -208,8 +226,8 @@ def prepare_job_workspace(
         codex_source_home=codex_source,
         codex_account_id=provider_account.get("id") if codex_source else None,
         codex_account_email=provider_account.get("email") if codex_source else None,
-        provider_account_provider=selected_provider if selected_provider in {"codex", "claude"} else None,
-        provider_account_home=codex_source or claude_source,
+        provider_account_provider=(selected_provider if selected_provider in {"codex", "claude", "xai"} else None),
+        provider_account_home=codex_source or claude_source or grok_source,
         provider_account_id=provider_account.get("id"),
         provider_account_email=provider_account.get("email"),
     )
@@ -1159,21 +1177,57 @@ def _checkout_scan_repo_to_cache(
     commit_sha: str,
     github_token: str | None,
     scan_id: Any | None,
+    allow_fallback: bool = True,
 ) -> tuple[str, str]:
     cache_base = _checkout_cache_base(cache_dir, repo_full, commit_sha, kind=kind, scan_id=scan_id)
-    ready = _read_ready_cache_checkout(cache_base)
-    if ready is not None:
-        return ready
+    try:
+        ready = _read_ready_cache_checkout(cache_base)
+        if ready is not None:
+            return ready
 
-    if cache_base.exists():
-        shutil.rmtree(cache_base)
+        if cache_base.exists():
+            shutil.rmtree(cache_base)
 
-    if kind == "local":
-        repo_dir, checked_out = snapshot_local_repo(repo_full, str(cache_base), os.getenv("LOCAL_REPOS_PATH"))
-    else:
-        repo_dir, checked_out = checkout_repo(repo_full, commit_sha, str(cache_base), github_token)
-    _write_ready_cache_checkout(cache_base, repo_dir, checked_out, kind=kind)
-    return repo_dir, checked_out
+        if kind == "local":
+            repo_dir, checked_out = snapshot_local_repo(repo_full, str(cache_base), os.getenv("LOCAL_REPOS_PATH"))
+        else:
+            repo_dir, checked_out = checkout_repo(repo_full, commit_sha, str(cache_base), github_token)
+        _write_ready_cache_checkout(cache_base, repo_dir, checked_out, kind=kind)
+        return repo_dir, checked_out
+    except OSError as exc:
+        if not allow_fallback or exc.errno not in {errno.EACCES, errno.EPERM, errno.EROFS}:
+            raise
+        fallback_dir = _fallback_checkout_cache_dir(cache_dir)
+        if fallback_dir is None:
+            raise
+        shutil.rmtree(cache_base, ignore_errors=True)
+        LOGGER.warning(
+            "checkout cache %s is not writable; retrying %s at %s in fallback cache %s",
+            cache_dir,
+            repo_full,
+            commit_sha,
+            fallback_dir,
+        )
+        return _checkout_scan_repo_to_cache(
+            cache_dir=fallback_dir,
+            kind=kind,
+            repo_full=repo_full,
+            commit_sha=commit_sha,
+            github_token=github_token,
+            scan_id=scan_id,
+            allow_fallback=False,
+        )
+
+
+def _fallback_checkout_cache_dir(cache_dir: Path) -> Path | None:
+    fallback_dir = Path(os.getenv("ENGINE_DATA_DIR", "/data")) / CHECKOUT_CACHE_FALLBACK_DIRNAME
+    try:
+        if fallback_dir.resolve(strict=False) == cache_dir.resolve(strict=False):
+            return None
+    except (OSError, RuntimeError):
+        if fallback_dir == cache_dir:
+            return None
+    return _checkout_cache_dir(str(fallback_dir))
 
 
 def _read_ready_cache_checkout(cache_base: Path) -> tuple[str, str] | None:
@@ -1384,7 +1438,11 @@ def provider_home_for_job(provider: str, metadata_id: int, *, data_dir: str | No
     del metadata_id
     homes = _configured_provider_homes(provider, data_dir=data_dir)
     if not homes:
-        return "/root/.codex" if provider == "codex" else "/root/.claude"
+        if provider == "codex":
+            return "/root/.codex"
+        if provider == "xai":
+            return "/root/.grok"
+        return "/root/.claude"
     live_health = _provider_account_health(provider)
     key = tuple(homes)
     with _PROVIDER_HOME_LOCK:
@@ -1417,7 +1475,7 @@ def codex_home_for_job(metadata_id: int, *, data_dir: str | None = None) -> str:
 
 
 def mark_provider_account_rate_limited(provider: str | None, home: str | None) -> None:
-    if provider not in {"codex", "claude"} or not home:
+    if provider not in {"codex", "claude", "xai"} or not home:
         return
     with _PROVIDER_HOME_LOCK:
         _RATE_LIMITED_PROVIDER_HOMES.setdefault(provider, set()).add(home)
@@ -1425,7 +1483,7 @@ def mark_provider_account_rate_limited(provider: str | None, home: str | None) -
 
 
 def mark_provider_account_available(provider: str | None, home: str | None) -> None:
-    if provider not in {"codex", "claude"} or not home:
+    if provider not in {"codex", "claude", "xai"} or not home:
         return
     with _PROVIDER_HOME_LOCK:
         _RATE_LIMITED_PROVIDER_HOMES.setdefault(provider, set()).discard(home)
@@ -1471,7 +1529,7 @@ def _provider_account_worker_limit(data_dir: str | None = None) -> int:
 def provider_account_lease(provider: str | None, home: str | None, *, data_dir: str | None = None):
     """Limit concurrent root model calls assigned to one native provider account."""
 
-    if provider not in {"codex", "claude"} or not home:
+    if provider not in {"codex", "claude", "xai"} or not home:
         yield
         return
     key = (provider, home)
@@ -1490,7 +1548,7 @@ def provider_account_lease(provider: str | None, home: str | None, *, data_dir: 
 
 
 def provider_accounts_all_rate_limited(provider: str | None, *, data_dir: str | None = None) -> bool:
-    if provider not in {"codex", "claude"}:
+    if provider not in {"codex", "claude", "xai"}:
         return True
     homes = _configured_provider_homes(provider, data_dir=data_dir)
     if not homes:
@@ -1505,7 +1563,7 @@ def provider_accounts_all_rate_limited(provider: str | None, *, data_dir: str | 
 def _provider_account_health(provider: str) -> dict[str, _ProviderAccountHealth]:
     """Return authoritative account availability from the local account service."""
 
-    if provider not in {"codex", "claude"}:
+    if provider not in {"codex", "claude", "xai"}:
         return {}
     base_url = os.getenv("EXECUTOR_VIEW_URL", "").strip().rstrip("/")
     token_path = os.getenv("EXECUTOR_VIEW_INTERNAL_TOKEN_FILE", "").strip()
@@ -1574,6 +1632,8 @@ def _configured_provider_homes(provider: str, *, data_dir: str | None = None) ->
         return _configured_codex_homes(data_dir=data_dir)
     if provider == "claude":
         return _configured_claude_homes(data_dir=data_dir)
+    if provider == "xai":
+        return _configured_grok_homes(data_dir=data_dir)
     return []
 
 
@@ -1607,6 +1667,24 @@ def _configured_claude_homes(data_dir: str | None = None) -> list[str]:
     return homes
 
 
+def _configured_grok_homes(data_dir: str | None = None) -> list[str]:
+    raw = runtime_value("ENGINE_GROK_HOME", os.getenv("GROK_HOME") or "/root/.grok", data_dir=data_dir)
+    seen: set[str] = set()
+    homes: list[str] = []
+    for raw_path in _split_home_list(raw or ""):
+        source = Path(raw_path).expanduser()
+        if source.exists() and not (source / "auth.json").exists() and not (source / ".grok").exists():
+            candidates = sorted(path for path in source.glob("*/.grok") if path.is_dir())
+        else:
+            candidates = [Path(_resolve_grok_home(raw_path))]
+        for candidate in candidates:
+            home = str(candidate)
+            if home and home not in seen:
+                seen.add(home)
+                homes.append(home)
+    return homes
+
+
 def _split_home_list(raw: str) -> list[str]:
     raw = (raw or "").strip()
     if not raw:
@@ -1629,6 +1707,20 @@ def _resolve_codex_home(path: str) -> str:
     return str(source)
 
 
+def _resolve_grok_home(path: str) -> str:
+    source = Path(path).expanduser()
+    nested = source / ".grok"
+    if nested.exists():
+        return str(nested)
+    return str(source)
+
+
+def grok_home_for_job(metadata_id: int, *, data_dir: str | None = None) -> str:
+    """Select one currently configured Grok/xAI login for a new unit of work."""
+
+    return provider_home_for_job("xai", metadata_id, data_dir=data_dir)
+
+
 def _codex_account_info(home: str) -> dict[str, str | None]:
     auth_path = Path(home) / "auth.json"
     try:
@@ -1647,6 +1739,28 @@ def _codex_account_info(home: str) -> dict[str, str | None]:
         "id": auth_info.get("chatgpt_account_id") or payload.get("sub") or email or str(home),
         "email": email,
     }
+
+
+def _grok_account_info(home: str) -> dict[str, str | None]:
+    auth_path = Path(home) / "auth.json"
+    try:
+        auth = json.loads(auth_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"id": str(home), "email": None}
+    tokens = auth.get("tokens") if isinstance(auth.get("tokens"), dict) else {}
+    access_payload = _decode_jwt_payload(tokens.get("access_token") or tokens.get("id_token"))
+    email = access_payload.get("email") or _first_account_profile_value(
+        auth, {"email", "emailaddress", "useremail", "accountemail"}
+    )
+    account_id = (
+        access_payload.get("sub")
+        or auth.get("user_id")
+        or auth.get("account_id")
+        or _first_account_profile_value(auth, {"accountid", "accountuuid", "userid", "useruuid", "sub"})
+        or email
+        or str(home)
+    )
+    return {"id": str(account_id), "email": email if isinstance(email, str) else None}
 
 
 def _first_account_profile_value(value: Any, keys: set[str]) -> str | None:

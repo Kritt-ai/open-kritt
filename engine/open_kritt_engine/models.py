@@ -53,15 +53,51 @@ def model_selection_for_depth(scan: dict[str, Any], depth: int | None = None) ->
 
 
 def post_processing_thinking_effort(scan: dict[str, Any]) -> str:
+    return post_processing_model_selection(scan).thinking_effort
+
+
+def post_processing_model_selection(scan: dict[str, Any]) -> ModelSelection:
     configuration = scan.get("configuration")
     if not isinstance(configuration, dict):
         configuration = {}
-    fallback = _selection_value(scan, "thinking_effort", "thinkingEffort", "medium")
-    return _selection_value(
-        configuration,
-        "post_processing_thinking_effort",
-        "postProcessingThinkingEffort",
-        fallback,
+    default = model_selection_for_depth(scan)
+    return ModelSelection(
+        model=_selection_value(
+            configuration,
+            "post_processing_model",
+            "postProcessingModel",
+            default.model,
+        ),
+        model_provider=_selection_value(
+            configuration,
+            "post_processing_model_provider",
+            "postProcessingModelProvider",
+            default.model_provider,
+        ),
+        harness=_selection_value(
+            configuration,
+            "post_processing_harness",
+            "postProcessingHarness",
+            default.harness,
+        ),
+        thinking_effort=_selection_value(
+            configuration,
+            "post_processing_thinking_effort",
+            "postProcessingThinkingEffort",
+            default.thinking_effort,
+        ),
+    )
+
+
+def supplemental_post_script_model_selection(scan: dict[str, Any], run: dict[str, Any]) -> ModelSelection:
+    """Resolve a run's snapshotted model settings with legacy scan fallbacks."""
+
+    default = post_processing_model_selection(scan)
+    return ModelSelection(
+        model=_selection_value(run, "model", "model", default.model),
+        model_provider=_selection_value(run, "model_provider", "modelProvider", default.model_provider),
+        harness=_selection_value(run, "harness", "harness", default.harness),
+        thinking_effort=_selection_value(run, "thinking_effort", "thinkingEffort", default.thinking_effort),
     )
 
 
@@ -78,6 +114,8 @@ class Step:
     order: int
     # A non-root depth may run once over the full previous-depth result array.
     consumes_all: bool = False
+    # When set, only outputs from this adjacent previous-depth step are accepted.
+    bound_source_step_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -103,6 +141,8 @@ class State:
     # The immediate preceding step result. Batches aggregate this exact payload,
     # rather than every value accumulated in the rendered prompt context.
     output: dict[str, Any] | None = None
+    # The step that produced the immediate result represented by this state.
+    source_step_id: int | None = None
 
 
 @dataclass(frozen=True)

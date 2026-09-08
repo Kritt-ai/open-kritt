@@ -41,6 +41,12 @@ def codex_usage(primary=2, secondary=None):
         "manualResetCredits": {
             "availableCount": 3,
             "applicableAvailableCount": 0,
+            "credits": [
+                {
+                    "title": "Full reset",
+                    "expiresAt": "2026-08-12T18:07:27.165161Z",
+                }
+            ],
         },
         "primary": {
             "usedPercent": primary,
@@ -463,6 +469,13 @@ class ExecutorViewSummaryTests(unittest.TestCase):
             "accounts": [],
             "configuredRaw": None,
         }
+        xai = {
+            "active": 0,
+            "total": 0,
+            "limited": 0,
+            "accounts": [],
+            "configuredRaw": "XAI_API_KEY",
+        }
         server.ACCOUNT_OVERVIEW_CACHE = {"expires_at": 0.0, "data": None}
 
         with (
@@ -474,12 +487,15 @@ class ExecutorViewSummaryTests(unittest.TestCase):
             patch.object(
                 server, "fetch_openrouter_accounts", return_value=openrouter
             ) as fetch_openrouter,
+            patch.object(server, "fetch_xai_accounts", return_value=xai) as fetch_xai,
         ):
             overview = server.fetch_accounts(force=True)
 
         fetch_codex.assert_called_once_with(force=True)
         fetch_openrouter.assert_called_once_with(force=True)
+        fetch_xai.assert_called_once_with(force=True)
         self.assertEqual(overview["codex"]["total"], 1)
+        self.assertEqual(overview["xai"]["configuredRaw"], "XAI_API_KEY")
         self.assertEqual(overview["active"], 1)
 
     def test_account_provider_refresh_loads_only_the_requested_provider(self):
@@ -525,6 +541,9 @@ class ExecutorViewSummaryTests(unittest.TestCase):
         class Response:
             status = 200
 
+            def __init__(self, payload):
+                self.payload = payload
+
             def __enter__(self):
                 return self
 
@@ -532,52 +551,93 @@ class ExecutorViewSummaryTests(unittest.TestCase):
                 return False
 
             def read(self, _limit):
-                return json.dumps(
+                return json.dumps(self.payload).encode()
+
+        usage_response = Response(
+            {
+                "email": "researcher@example.test",
+                "plan_type": "pro",
+                "rate_limit_reached_type": None,
+                "rate_limit": {
+                    "allowed": True,
+                    "primary_window": {
+                        "used_percent": 2,
+                        "limit_window_seconds": 604800,
+                        "reset_at": 1784637600,
+                    },
+                    "secondary_window": None,
+                },
+                "rate_limit_reset_credits": {
+                    "available_count": 3,
+                    "applicable_available_count": 1,
+                    "secret": "aggregate-secret-must-not-leak",
+                },
+            }
+        )
+        credits_response = Response(
+            {
+                "available_count": 3,
+                "credits": [
                     {
-                        "email": "researcher@example.test",
-                        "plan_type": "pro",
-                        "rate_limit_reached_type": None,
-                        "rate_limit": {
-                            "allowed": True,
-                            "primary_window": {
-                                "used_percent": 2,
-                                "limit_window_seconds": 604800,
-                                "reset_at": 1784637600,
-                            },
-                            "secondary_window": None,
-                        },
-                        "rate_limit_reset_credits": {
-                            "available_count": 3,
-                            "applicable_available_count": 1,
-                            "secret": "must-not-leak",
-                        },
-                    }
-                ).encode()
+                        "id": "credit-id-must-not-leak",
+                        "title": "Full reset",
+                        "expires_at": "2026-08-12T18:07:27.165161Z",
+                        "status": "available",
+                        "secret": "credit-secret-must-not-leak",
+                    },
+                    {
+                        "id": "used-credit-id-must-not-leak",
+                        "title": "Used reset",
+                        "expires_at": "2026-08-10T18:07:27Z",
+                        "status": "redeemed",
+                    },
+                ],
+            }
+        )
 
         with patch.object(
-            server.urlrequest, "urlopen", return_value=Response()
+            server.urlrequest,
+            "urlopen",
+            side_effect=[usage_response, credits_response],
         ) as urlopen:
             usage = server.fetch_codex_usage(
                 "unit-test-access-token", "unit-test-account-id"
             )
 
-        request = urlopen.call_args.args[0]
-        self.assertEqual(
-            request.get_header("Authorization"), "Bearer unit-test-access-token"
-        )
-        self.assertEqual(
-            request.get_header("Chatgpt-account-id"), "unit-test-account-id"
-        )
+        usage_request = urlopen.call_args_list[0].args[0]
+        credits_request = urlopen.call_args_list[1].args[0]
+        self.assertEqual(usage_request.full_url, server.CODEX_USAGE_URL)
+        self.assertEqual(credits_request.full_url, server.CODEX_RESET_CREDITS_URL)
+        for request in (usage_request, credits_request):
+            self.assertEqual(
+                request.get_header("Authorization"),
+                "Bearer unit-test-access-token",
+            )
+            self.assertEqual(
+                request.get_header("Chatgpt-account-id"),
+                "unit-test-account-id",
+            )
         self.assertEqual(usage["primary"]["usedPercent"], 2)
         self.assertEqual(usage["primary"]["windowMinutes"], 10080)
         self.assertEqual(usage["planType"], "pro")
         self.assertEqual(
             usage["manualResetCredits"],
-            {"availableCount": 3, "applicableAvailableCount": 1},
+            {
+                "availableCount": 3,
+                "applicableAvailableCount": 1,
+                "credits": [
+                    {
+                        "title": "Full reset",
+                        "expiresAt": server.parse_datetime(
+                            "2026-08-12T18:07:27.165161Z"
+                        ),
+                    }
+                ],
+            },
         )
-        self.assertNotIn(
-            "unit-test-access-token", json.dumps(usage, default=server.encode)
-        )
+        serialized = json.dumps(usage, default=server.encode)
+        self.assertNotIn("unit-test-access-token", serialized)
+        self.assertNotIn("must-not-leak", serialized)
 
     def test_forced_codex_usage_refresh_bypasses_a_fresh_cache_entry(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -740,7 +800,18 @@ class ExecutorViewSummaryTests(unittest.TestCase):
         self.assertEqual(account["rateLimits"]["source"], "Codex account usage API")
         self.assertEqual(
             account["rateLimits"]["manualResetCredits"],
-            {"availableCount": 3, "applicableAvailableCount": 0},
+            {
+                "availableCount": 3,
+                "applicableAvailableCount": 0,
+                "credits": [
+                    {
+                        "title": "Full reset",
+                        "expiresAt": server.parse_datetime(
+                            "2026-08-12T18:07:27.165161Z"
+                        ),
+                    }
+                ],
+            },
         )
         self.assertNotIn(
             "unit-test-access-token", json.dumps(account, default=server.encode)
@@ -1222,6 +1293,112 @@ class ExecutorViewSummaryTests(unittest.TestCase):
         self.assertNotIn("unit-test-api-key", serialized)
         self.assertNotIn("must-not-leak", serialized)
         self.assertNotIn("deprecated", serialized)
+
+    def test_xai_account_reports_masked_key_metadata(self):
+        server.XAI_KEY_CACHE = {
+            "expires_at": 0.0,
+            "credential": None,
+            "data": None,
+        }
+        with (
+            patch.dict(server.os.environ, {"EXECUTOR_VIEW_XAI_REMOTE_CHECK": "1"}),
+            patch.object(server, "configured_grok_homes", return_value=[]),
+            patch.object(
+                server,
+                "configured_secret",
+                side_effect=lambda name: (
+                    "unit-test-xai-key" if name == "XAI_API_KEY" else None
+                ),
+            ),
+            patch.object(
+                server,
+                "fetch_xai_models",
+                return_value={
+                    "checkedAt": "2026-07-14T16:00:00+00:00",
+                    "statusCode": 200,
+                    "verified": True,
+                    "modelCount": 3,
+                },
+            ) as fetch_models,
+        ):
+            result = server.fetch_xai_accounts(force=True)
+            cached_result = server.fetch_xai_accounts(force=True)
+
+        account = result["accounts"][0]
+        fetch_models.assert_called_once_with("unit-test-xai-key")
+        self.assertEqual(cached_result["accounts"][0]["status"], account["status"])
+        self.assertEqual(account["status"], "verified")
+        self.assertEqual(
+            next(item["value"] for item in account["details"] if item["label"] == "Models accessible"),
+            "3",
+        )
+        serialized = json.dumps(result, default=server.encode)
+        self.assertNotIn("unit-test-xai-key", serialized)
+
+    def test_xai_accounts_include_grok_login_homes_and_api_key(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory) / "reviewer" / ".grok"
+            home.mkdir(parents=True)
+            (home / "auth.json").write_text(
+                json.dumps({"email": "grok@example.test", "tokens": {"access_token": "x"}}),
+                encoding="utf-8",
+            )
+            with (
+                patch.object(server, "GROK_ACCOUNTS_ROOT", Path(directory)),
+                patch.object(server, "configured_grok_homes", return_value=[home]),
+                patch.object(
+                    server,
+                    "configured_secret",
+                    side_effect=lambda name: (
+                        "unit-test-xai-key" if name == "XAI_API_KEY" else None
+                    ),
+                ),
+                patch.dict(server.os.environ, {"EXECUTOR_VIEW_XAI_REMOTE_CHECK": "0"}),
+            ):
+                result = server.fetch_xai_accounts(force=True)
+
+            self.assertEqual(result["total"], 2)
+            login = next(account for account in result["accounts"] if account["path"] == str(home))
+            key = next(account for account in result["accounts"] if account["path"] == "XAI_API_KEY")
+            self.assertEqual(login["id"], "reviewer")
+            self.assertTrue(login["canRemove"])
+            self.assertEqual(login["statusKind"], "available")
+            self.assertTrue(key["active"])
+            self.assertIn("XAI_API_KEY", result["configuredRaw"])
+
+    def test_managed_xai_key_overrides_environment_and_disable_is_sticky(self):
+        with tempfile.TemporaryDirectory() as directory:
+            credential_path = Path(directory) / "providers.json"
+            credential_path.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "credentials": {"xai": "managed-xai-key"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with (
+                patch.object(server, "PROVIDER_CREDENTIALS_PATH", credential_path),
+                patch.dict(server.os.environ, {"XAI_API_KEY": "initial-key"}),
+            ):
+                self.assertEqual(server.configured_secret("XAI_API_KEY"), "managed-xai-key")
+
+            credential_path.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "credentials": {},
+                        "disabledEnvironmentProviders": ["xai"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with (
+                patch.object(server, "PROVIDER_CREDENTIALS_PATH", credential_path),
+                patch.dict(server.os.environ, {"XAI_API_KEY": "initial-key"}),
+            ):
+                self.assertIsNone(server.configured_secret("XAI_API_KEY"))
 
     def test_managed_openrouter_key_overrides_environment_and_disable_is_sticky(self):
         with tempfile.TemporaryDirectory() as directory:

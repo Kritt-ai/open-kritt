@@ -34,6 +34,7 @@ export function groupByDepth(steps) {
       steps: levelSteps,
       multiOutput: levelSteps[0]?.multiOutput || false,
       consumesAll: levelSteps[0]?.consumesAll || false,
+      bindPrevious: levelSteps.some((step) => step.boundSourceStepId != null),
     };
   });
 }

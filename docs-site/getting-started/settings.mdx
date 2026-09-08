@@ -19,6 +19,7 @@ and whether that value is live or needs an engine container recreation.
 | Ignore low-storage safeguard | Live | Starts new scan containers regardless of free disk space while preserving the configured threshold for later use. |
 | Workspace setup concurrency | Engine recreation | Limits simultaneous checkout and isolated workspace preparation. |
 | Model-call retries | Live | Additional attempts for retryable workflow-step and post-script model calls. |
+| Cyber-block retries | Live | Opt-in additional attempts after a provider blocks a request under its cybersecurity safety policy. `0` keeps the fail-fast default. |
 | Model-call timeout | Live | Maximum duration of each future harness invocation. |
 
 Live changes affect future work; already-running model calls keep the values they
@@ -52,6 +53,11 @@ Automatic resume of an entire failed scan remains intentionally unavailable.
 Model-call retries do not automatically resume a scan after it reaches the failed
 state. A failed scan still uses the manual **Resume** action. Temporary provider limits
 use the separate `rate_limited` state and retry automatically.
+
+Cyber-block retries are independent of ordinary model-call retries. A value of `3`
+allows three retries after the first blocked call, for up to four total attempts.
+Because policy decisions are often deterministic, leave this at `0` unless repeated
+attempts are appropriate for your provider account and workload.
 
 ## Secrets
 

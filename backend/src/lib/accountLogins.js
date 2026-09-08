@@ -16,13 +16,38 @@ import {
   CLAUDE_RUNTIME_PRIMARY_HOME,
   CODEX_ACCOUNTS_ROOT,
   CODEX_PRIMARY_HOME,
+  GROK_ACCOUNTS_ROOT,
+  GROK_PRIMARY_HOME,
+  GROK_RUNTIME_ACCOUNTS_ROOT,
+  GROK_RUNTIME_PRIMARY_HOME,
 } from './providerLogins.js';
 import { CLAUDE_CREDENTIAL_FILENAMES, promoteClaudeCredential, withClaudeCredentialLock } from './claudeCredentials.js';
 
-const LOGIN_PROVIDERS = new Set(['codex', 'claude']);
+const LOGIN_PROVIDERS = new Set(['codex', 'claude', 'xai']);
+const PROVIDER_LABELS = { codex: 'Codex', claude: 'Claude', xai: 'xAI' };
 const SESSION_TIMEOUT_MS = 20 * 60 * 1000;
 const MAX_CAPTURED_OUTPUT = 32 * 1024;
 const ACCOUNT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const LOGIN_ENV_KEYS = [
+  'PATH',
+  'TMPDIR',
+  'LANG',
+  'LC_ALL',
+  'LC_CTYPE',
+  'SSL_CERT_FILE',
+  'SSL_CERT_DIR',
+  'REQUESTS_CA_BUNDLE',
+  'CURL_CA_BUNDLE',
+  'NODE_EXTRA_CA_CERTS',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'ALL_PROXY',
+  'NO_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'all_proxy',
+  'no_proxy',
+];
 const ENGINE_RUNTIME_CONFIG_PATH =
   process.env.OPEN_KRITT_ENGINE_RUNTIME_CONFIG_PATH || '/engine-data/engine-runtime.env';
 const CODEX_RUNTIME_ACCOUNTS_ROOT = process.env.OPEN_KRITT_CODEX_RUNTIME_ACCOUNTS_DIR || '/codex-accounts';
@@ -32,6 +57,14 @@ function loginError(message, statusCode = 422) {
   const error = new Error(message);
   error.statusCode = statusCode;
   return error;
+}
+
+export function scopedLoginEnvironment(source = process.env) {
+  const env = { NO_COLOR: '1', TERM: 'dumb' };
+  for (const key of LOGIN_ENV_KEYS) {
+    if (typeof source[key] === 'string' && source[key]) env[key] = source[key];
+  }
+  return env;
 }
 
 export function stripTerminalFormatting(value) {
@@ -48,7 +81,9 @@ export function stripTerminalFormatting(value) {
 export function parseLoginInstructions(provider, rawOutput) {
   const output = stripTerminalFormatting(rawOutput);
   const authorizationUrl = output.match(/https:\/\/[^\s<>"']+/)?.[0]?.replace(/[),.;]+$/, '') || null;
-  const deviceCode = provider === 'codex' ? output.match(/\b[A-Z0-9]{4}-[A-Z0-9]{5}\b/)?.[0] || null : null;
+  // Codex uses ABCD-12345; Grok device-auth uses ABCD-EFGH (and embeds it in the URL).
+  const deviceCode =
+    provider === 'codex' || provider === 'xai' ? output.match(/\b[A-Z0-9]{4}-[A-Z0-9]{4,5}\b/)?.[0] || null : null;
   const requiresInput = provider === 'claude' && /paste code here/i.test(output);
   return { authorizationUrl, deviceCode, requiresInput };
 }
@@ -183,6 +218,81 @@ export async function removeClaudeRuntimeHome(
   return state.changed;
 }
 
+async function updateGrokRuntimeHome(
+  home,
+  present,
+  { runtimeConfigPath = ENGINE_RUNTIME_CONFIG_PATH, initialHomes = [] } = {}
+) {
+  let nextHomes = [];
+  const state = await mutateEnvironmentFile(
+    (values) => {
+      const homes = splitConfiguredHomes(values.ENGINE_GROK_HOME || initialHomes.join(','));
+      const updatedHomes = present
+        ? homes.includes(home)
+          ? homes
+          : [...homes, home]
+        : homes.filter((candidate) => candidate !== home);
+      nextHomes = updatedHomes;
+      const changed = updatedHomes.length !== homes.length;
+      return changed ? { ENGINE_GROK_HOME: updatedHomes.join(',') } : null;
+    },
+    { environmentFilePath: runtimeConfigPath }
+  );
+  return { changed: state.changed, homes: nextHomes };
+}
+
+async function environmentGrokHomes(environmentFilePath) {
+  if (!environmentFilePath) return [];
+  try {
+    const values = parseEnvironmentText(await readFile(environmentFilePath, 'utf8'));
+    return splitConfiguredHomes(values.ENGINE_GROK_HOME);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return [];
+    throw error;
+  }
+}
+
+async function syncGrokEnvironment(homes, environmentFilePath) {
+  await updateEnvironmentFile(
+    {
+      ENGINE_GROK_HOME: homes.join(','),
+      GROK_LOGIN_CONFIGURED: homes.length ? '1' : '',
+    },
+    { environmentFilePath }
+  );
+}
+
+export async function addGrokRuntimeHome(
+  home,
+  { runtimeConfigPath = ENGINE_RUNTIME_CONFIG_PATH, environmentFilePath = PROJECT_ENV_FILE_PATH } = {}
+) {
+  const initialHomes = await environmentGrokHomes(environmentFilePath);
+  const state = await updateGrokRuntimeHome(home, true, { runtimeConfigPath, initialHomes });
+  try {
+    await syncGrokEnvironment(state.homes, environmentFilePath);
+  } catch (error) {
+    if (state.changed) await updateGrokRuntimeHome(home, false, { runtimeConfigPath });
+    throw error;
+  }
+  return state.homes;
+}
+
+export async function removeGrokRuntimeHome(
+  home,
+  { runtimeConfigPath = ENGINE_RUNTIME_CONFIG_PATH, environmentFilePath = PROJECT_ENV_FILE_PATH } = {}
+) {
+  const initialHomes = await environmentGrokHomes(environmentFilePath);
+  const state = await updateGrokRuntimeHome(home, false, { runtimeConfigPath, initialHomes });
+  if (!state.changed) return false;
+  try {
+    await syncGrokEnvironment(state.homes, environmentFilePath);
+  } catch (error) {
+    await updateGrokRuntimeHome(home, true, { runtimeConfigPath });
+    throw error;
+  }
+  return true;
+}
+
 async function usableJsonFile(path) {
   try {
     const file = await stat(path);
@@ -249,6 +359,38 @@ async function claudeReloginTarget(accountId, { primaryHome, primaryRuntimeHome,
   return { home, runtimeHome };
 }
 
+async function grokReloginTarget(accountId, { primaryHome, primaryRuntimeHome, accountsRoot, runtimeAccountsRoot }) {
+  if (!accountId) return null;
+  if (accountId === 'primary') {
+    if (!(await usableJsonFile(join(primaryHome, 'auth.json')))) throw loginError('xAI account not found.', 404);
+    return { home: primaryHome, runtimeHome: primaryRuntimeHome };
+  }
+  if (typeof accountId !== 'string' || !ACCOUNT_ID_PATTERN.test(accountId)) {
+    throw loginError('xAI account not found.', 404);
+  }
+  const resolvedAccountsRoot = resolve(accountsRoot);
+  const accountDirectory = resolve(resolvedAccountsRoot, accountId);
+  if (dirname(accountDirectory) !== resolvedAccountsRoot) throw loginError('xAI account not found.', 404);
+  try {
+    const entry = await lstat(accountDirectory);
+    if (!entry.isDirectory() || entry.isSymbolicLink()) throw loginError('xAI account not found.', 404);
+  } catch (error) {
+    if (error?.statusCode) throw error;
+    if (error?.code === 'ENOENT') throw loginError('xAI account not found.', 404);
+    throw error;
+  }
+  const home = join(accountDirectory, '.grok');
+  try {
+    const entry = await lstat(home);
+    if (!entry.isDirectory() || entry.isSymbolicLink()) throw loginError('xAI account not found.', 404);
+  } catch (error) {
+    if (error?.statusCode) throw error;
+    if (error?.code === 'ENOENT') throw loginError('xAI account not found.', 404);
+    throw error;
+  }
+  return { home, runtimeHome: join(runtimeAccountsRoot, accountId, '.grok') };
+}
+
 function publicSession(session) {
   const instructions = parseLoginInstructions(session.provider, session.output);
   return {
@@ -265,7 +407,8 @@ function publicSession(session) {
 }
 
 function sessionMessage(provider, status, instructions) {
-  if (status === 'completed') return `${provider === 'codex' ? 'Codex' : 'Claude'} login saved.`;
+  const label = PROVIDER_LABELS[provider] || 'Provider';
+  if (status === 'completed') return `${label} login saved.`;
   if (status === 'failed') return 'Login did not complete. Start a new login and try again.';
   if (status === 'canceled') return 'Login canceled.';
   if (instructions.requiresInput) return 'Finish signing in, then paste the callback code below.';
@@ -287,6 +430,10 @@ export class AccountLoginManager {
     claudeAccountsRoot = CLAUDE_ACCOUNTS_ROOT,
     claudeRuntimePrimaryHome = CLAUDE_RUNTIME_PRIMARY_HOME,
     claudeRuntimeAccountsRoot = CLAUDE_RUNTIME_ACCOUNTS_ROOT,
+    grokPrimaryHome = GROK_PRIMARY_HOME,
+    grokAccountsRoot = GROK_ACCOUNTS_ROOT,
+    grokRuntimePrimaryHome = GROK_RUNTIME_PRIMARY_HOME,
+    grokRuntimeAccountsRoot = GROK_RUNTIME_ACCOUNTS_ROOT,
     runtimeConfigPath = ENGINE_RUNTIME_CONFIG_PATH,
     environmentFilePath = PROJECT_ENV_FILE_PATH,
     timeoutMs = SESSION_TIMEOUT_MS,
@@ -300,6 +447,10 @@ export class AccountLoginManager {
     this.claudeAccountsRoot = claudeAccountsRoot;
     this.claudeRuntimePrimaryHome = claudeRuntimePrimaryHome;
     this.claudeRuntimeAccountsRoot = claudeRuntimeAccountsRoot;
+    this.grokPrimaryHome = grokPrimaryHome;
+    this.grokAccountsRoot = grokAccountsRoot;
+    this.grokRuntimePrimaryHome = grokRuntimePrimaryHome;
+    this.grokRuntimeAccountsRoot = grokRuntimeAccountsRoot;
     this.runtimeConfigPath = runtimeConfigPath;
     this.environmentFilePath = environmentFilePath;
     this.timeoutMs = timeoutMs;
@@ -307,7 +458,7 @@ export class AccountLoginManager {
   }
 
   async start(provider, accountId = null) {
-    if (!LOGIN_PROVIDERS.has(provider)) throw loginError('Choose Codex or Claude login.');
+    if (!LOGIN_PROVIDERS.has(provider)) throw loginError('Choose Codex, Claude, or xAI login.');
     const activeForProvider = [...this.sessions.values()].find(
       (session) => session.provider === provider && ['starting', 'waiting'].includes(session.status)
     );
@@ -321,12 +472,19 @@ export class AccountLoginManager {
             accountsRoot: this.codexAccountsRoot,
             runtimeAccountsRoot: this.codexRuntimeAccountsRoot,
           })
-        : await claudeReloginTarget(accountId, {
-            primaryHome: this.claudeHome,
-            primaryRuntimeHome: this.claudeRuntimePrimaryHome,
-            accountsRoot: this.claudeAccountsRoot,
-            runtimeAccountsRoot: this.claudeRuntimeAccountsRoot,
-          });
+        : provider === 'claude'
+          ? await claudeReloginTarget(accountId, {
+              primaryHome: this.claudeHome,
+              primaryRuntimeHome: this.claudeRuntimePrimaryHome,
+              accountsRoot: this.claudeAccountsRoot,
+              runtimeAccountsRoot: this.claudeRuntimeAccountsRoot,
+            })
+          : await grokReloginTarget(accountId, {
+              primaryHome: this.grokPrimaryHome,
+              primaryRuntimeHome: this.grokRuntimePrimaryHome,
+              accountsRoot: this.grokAccountsRoot,
+              runtimeAccountsRoot: this.grokRuntimeAccountsRoot,
+            });
 
     const id = randomUUID();
     const createdAt = new Date();
@@ -361,7 +519,7 @@ export class AccountLoginManager {
       command = 'codex';
       args = ['login', '--device-auth'];
       env.CODEX_HOME = session.codexHome;
-    } else {
+    } else if (provider === 'claude') {
       if (reloginTarget) {
         session.claudeHome = reloginTarget.home;
         session.claudeRuntimeHome = reloginTarget.runtimeHome;
@@ -380,6 +538,25 @@ export class AccountLoginManager {
       env.HOME = session.claudeLoginHome;
       env.CLAUDE_HOME = session.claudeLoginHome;
       env.CLAUDE_CONFIG_DIR = session.claudeLoginHome;
+    } else {
+      // Grok is a separately distributed binary. Give device login only the
+      // process settings it needs, never backend/database or provider secrets.
+      env = scopedLoginEnvironment();
+      if (reloginTarget) {
+        session.grokHome = reloginTarget.home;
+        session.grokRuntimeHome = reloginTarget.runtimeHome;
+        session.replacesAccountId = accountId;
+      } else {
+        const folder = `account-${createdAt.toISOString().replace(/\D/g, '').slice(0, 14)}-${id.slice(0, 8)}`;
+        session.grokDirectory = join(this.grokAccountsRoot, folder);
+        session.grokHome = join(session.grokDirectory, '.grok');
+        session.grokRuntimeHome = join(this.grokRuntimeAccountsRoot, folder, '.grok');
+        await mkdir(session.grokHome, { recursive: true, mode: 0o700 });
+      }
+      command = 'grok';
+      args = ['login', '--device-auth'];
+      env.GROK_HOME = session.grokHome;
+      env.HOME = session.grokDirectory || dirname(session.grokHome);
     }
     delete env.CI;
 
@@ -391,6 +568,7 @@ export class AccountLoginManager {
       session.message = `Could not start ${provider} login: ${error.message}`;
       if (session.claudeDirectory) void rm(session.claudeDirectory, { recursive: true, force: true });
       if (session.claudeLoginHome) void rm(session.claudeLoginHome, { recursive: true, force: true });
+      if (session.grokDirectory) void rm(session.grokDirectory, { recursive: true, force: true });
       throw loginError(session.message, 503);
     }
     session.child = child;
@@ -530,11 +708,45 @@ export class AccountLoginManager {
   }
 
   async removeAccount(provider, accountId) {
-    if (!LOGIN_PROVIDERS.has(provider)) throw loginError('Choose a Codex or Claude account.', 404);
+    if (!LOGIN_PROVIDERS.has(provider)) throw loginError('Choose a Codex, Claude, or xAI account.', 404);
     const activeForProvider = [...this.sessions.values()].some(
       (session) => session.provider === provider && ['starting', 'waiting'].includes(session.status)
     );
     if (activeForProvider) throw loginError(`Finish or cancel the ${provider} login before removing an account.`, 409);
+
+    if (provider === 'xai') {
+      if (accountId === 'primary') {
+        const configured = await removeGrokRuntimeHome(this.grokRuntimePrimaryHome, {
+          runtimeConfigPath: this.runtimeConfigPath,
+          environmentFilePath: this.environmentFilePath,
+        });
+        if (!configured) throw loginError('xAI account not found.', 404);
+        await rm(join(this.grokPrimaryHome, 'auth.json'), { force: true });
+        return { provider, accountId, removed: true };
+      }
+      if (typeof accountId !== 'string' || !ACCOUNT_ID_PATTERN.test(accountId)) {
+        throw loginError('xAI account not found.', 404);
+      }
+      const accountsRoot = resolve(this.grokAccountsRoot);
+      const accountDirectory = resolve(accountsRoot, accountId);
+      if (dirname(accountDirectory) !== accountsRoot) throw loginError('xAI account not found.', 404);
+      try {
+        const entry = await lstat(accountDirectory);
+        if (!entry.isDirectory() || entry.isSymbolicLink()) throw loginError('xAI account not found.', 404);
+      } catch (error) {
+        if (error?.statusCode) throw error;
+        if (error?.code === 'ENOENT') throw loginError('xAI account not found.', 404);
+        throw error;
+      }
+      const runtimeHome = join(this.grokRuntimeAccountsRoot, accountId, '.grok');
+      const configured = await removeGrokRuntimeHome(runtimeHome, {
+        runtimeConfigPath: this.runtimeConfigPath,
+        environmentFilePath: this.environmentFilePath,
+      });
+      if (!configured) throw loginError('xAI account not found.', 404);
+      await rm(accountDirectory, { recursive: true });
+      return { provider, accountId, removed: true };
+    }
 
     if (provider === 'claude') {
       const target = await claudeReloginTarget(accountId, {
@@ -611,6 +823,7 @@ export class AccountLoginManager {
     if (session.codexDirectory) void rm(session.codexDirectory, { recursive: true, force: true });
     if (session.claudeDirectory) void rm(session.claudeDirectory, { recursive: true, force: true });
     if (session.claudeLoginHome) void rm(session.claudeLoginHome, { recursive: true, force: true });
+    if (session.grokDirectory) void rm(session.grokDirectory, { recursive: true, force: true });
   }
 
   async finish(session, code) {
@@ -622,6 +835,7 @@ export class AccountLoginManager {
       if (session.codexDirectory) await rm(session.codexDirectory, { recursive: true, force: true });
       if (session.claudeDirectory) await rm(session.claudeDirectory, { recursive: true, force: true });
       if (session.claudeLoginHome) await rm(session.claudeLoginHome, { recursive: true, force: true });
+      if (session.grokDirectory) await rm(session.grokDirectory, { recursive: true, force: true });
       return;
     }
     if (code !== 0) {
@@ -635,10 +849,14 @@ export class AccountLoginManager {
     }
 
     try {
-      const usable =
-        session.provider === 'codex'
-          ? await usableJsonFile(join(session.codexHome, 'auth.json'))
-          : await promoteClaudeCredential(session.claudeLoginHome, session.claudeHome || this.claudeHome);
+      let usable = false;
+      if (session.provider === 'codex') {
+        usable = await usableJsonFile(join(session.codexHome, 'auth.json'));
+      } else if (session.provider === 'xai') {
+        usable = await usableJsonFile(join(session.grokHome, 'auth.json'));
+      } else {
+        usable = await promoteClaudeCredential(session.claudeLoginHome, session.claudeHome || this.claudeHome);
+      }
       if (!usable) throw new Error('The provider finished without saving usable login credentials.');
       if (session.provider === 'codex') {
         if (!(await usableJsonFile(join(this.codexPrimaryHome, 'auth.json')))) {
@@ -648,6 +866,17 @@ export class AccountLoginManager {
           });
         }
         await addCodexRuntimeHome(session.codexRuntimeHome, {
+          runtimeConfigPath: this.runtimeConfigPath,
+          environmentFilePath: this.environmentFilePath,
+        });
+      } else if (session.provider === 'xai') {
+        if (!(await usableJsonFile(join(this.grokPrimaryHome, 'auth.json')))) {
+          await removeGrokRuntimeHome(this.grokRuntimePrimaryHome, {
+            runtimeConfigPath: this.runtimeConfigPath,
+            environmentFilePath: this.environmentFilePath,
+          });
+        }
+        await addGrokRuntimeHome(session.grokRuntimeHome, {
           runtimeConfigPath: this.runtimeConfigPath,
           environmentFilePath: this.environmentFilePath,
         });
@@ -671,6 +900,7 @@ export class AccountLoginManager {
       session.message = error.message;
       if (session.codexDirectory) await rm(session.codexDirectory, { recursive: true, force: true });
       if (session.claudeDirectory) await rm(session.claudeDirectory, { recursive: true, force: true });
+      if (session.grokDirectory) await rm(session.grokDirectory, { recursive: true, force: true });
     } finally {
       if (session.claudeLoginHome) await rm(session.claudeLoginHome, { recursive: true, force: true });
       session.settled = true;

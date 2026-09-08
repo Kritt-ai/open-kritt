@@ -7,7 +7,7 @@ import { Spinner, ErrorState, Button } from '../components/ui.jsx';
 import { PromptHighlight } from '../components/PromptEditor.jsx';
 import Drawer from '../components/Drawer.jsx';
 import { availableKeysForDepth, groupByDepth, workflowDeleteState } from '../lib/workflow.js';
-import { parseTemplateRefs, refResolves } from '../lib/keys.js';
+import { parseTemplateRefs, refResolves, REQUIRED_VULN_KEYS } from '../lib/keys.js';
 import { downloadWorkflowExport } from '../lib/workflowTransfer.js';
 
 export default function WorkflowDetail() {
@@ -200,6 +200,20 @@ export default function WorkflowDetail() {
                       batched
                     </span>
                   )}
+                  {level.bindPrevious && (
+                    <span
+                      style={{
+                        fontSize: 9.5,
+                        color: 'var(--accent)',
+                        background: 'var(--accent-subtle)',
+                        borderRadius: 5,
+                        padding: '2px 7px',
+                        letterSpacing: '0.04em',
+                      }}
+                    >
+                      bound 1:1
+                    </span>
+                  )}
                 </div>
                 <div style={{ display: 'flex', gap: 18, justifyContent: 'center', flexWrap: 'wrap' }}>
                   {level.steps.map((step) => (
@@ -246,6 +260,13 @@ export default function WorkflowDetail() {
                         >
                           {step.content.replace(/\{\{\s*|\s*\}\}/g, '').slice(0, 90)}…
                         </div>
+                        {step.boundSourceStepId && (
+                          <div className="mono" style={{ fontSize: 10, color: 'var(--accent)', marginTop: 7 }}>
+                            input only from{' '}
+                            {wf.steps.find((candidate) => candidate.id === step.boundSourceStepId)?.name ||
+                              `step ${step.boundSourceStepId}`}
+                          </div>
+                        )}
                       </div>
                       <div
                         className="mono"
@@ -290,12 +311,8 @@ export default function WorkflowDetail() {
 // isn't batched fans out into a separate agent per result.
 function Connector({ level, next }) {
   const batched = !!next.consumesAll;
-  // const label = batched
-  //   ? `⇉ all depth-${level.depth} results → 1 agent`
-  //   : prevMulti
-  //   ? '⤳ per result → separate agents'
-  //   : null;
-  const label = null;
+  const bound = !!next.bindPrevious;
+  const label = bound ? 'bound 1:1' : null;
 
   if (!label) {
     return <div style={{ width: 1.5, height: 34, background: 'var(--border)' }} />;
@@ -308,7 +325,9 @@ function Connector({ level, next }) {
         title={
           batched
             ? `Batched: one agent receives {{multi_output_depth_${level.depth}}}`
-            : 'Fan-out: one agent per result'
+            : bound
+              ? `Bound: each depth-${level.depth} sibling routes only to its selected depth-${next.depth} sibling`
+              : 'Fan-out: one agent per result'
         }
         style={{
           fontSize: 9.5,
@@ -316,9 +335,9 @@ function Connector({ level, next }) {
           padding: '3px 9px',
           borderRadius: 20,
           whiteSpace: 'nowrap',
-          color: batched ? 'var(--run)' : 'var(--text-2)',
-          background: batched ? 'var(--run-bg)' : 'var(--surface-2)',
-          border: `1px solid ${batched ? 'var(--run-bg)' : 'var(--border)'}`,
+          color: bound ? 'var(--accent)' : batched ? 'var(--run)' : 'var(--text-2)',
+          background: bound ? 'var(--accent-subtle)' : batched ? 'var(--run-bg)' : 'var(--surface-2)',
+          border: `1px solid ${bound ? 'var(--accent-subtle)' : batched ? 'var(--run-bg)' : 'var(--border)'}`,
         }}
       >
         {label}
@@ -328,12 +347,15 @@ function Connector({ level, next }) {
   );
 }
 
-function StepPanel({ step, steps, editTo, onClose }) {
+export function StepPanel({ step, steps, editTo, onClose }) {
   const available = availableKeysForDepth(steps, step.depth);
   const parsedRefs = parseTemplateRefs(step.content);
   const refs = [...new Set(parsedRefs.refs)];
   const malformedRefs = [...new Set(parsedRefs.malformed)];
   const bad = malformedRefs.length + refs.filter((k) => !refResolves(k, available, true)).length;
+  const boundSource = step.boundSourceStepId
+    ? steps.find((candidate) => candidate.id === step.boundSourceStepId)
+    : null;
 
   return (
     <>
@@ -420,6 +442,12 @@ function StepPanel({ step, steps, editTo, onClose }) {
             </span>
           </span>
           <span>
+            bound_source_step_id:{' '}
+            <span style={{ color: step.boundSourceStepId ? 'var(--accent)' : 'var(--text-2)' }}>
+              {step.boundSourceStepId || 'null'}
+            </span>
+          </span>
+          <span>
             output_table: <span style={{ color: 'var(--text)' }}>{step.outputTable}</span>
           </span>
         </div>
@@ -439,6 +467,23 @@ function StepPanel({ step, steps, editTo, onClose }) {
             ⇉ Batched input — one agent runs this depth over the full array of depth {step.depth - 1} outputs, available
             as <span className="mono">{`{{multi_output_depth_${step.depth - 1}}}`}</span>. Individual depth-
             {step.depth - 1} keys aren't available here or downstream.
+          </div>
+        )}
+
+        {boundSource && (
+          <div
+            style={{
+              marginBottom: 18,
+              fontSize: 11.5,
+              color: 'var(--accent)',
+              background: 'var(--accent-subtle)',
+              borderRadius: 8,
+              padding: '9px 12px',
+              lineHeight: 1.5,
+            }}
+          >
+            Bound input - this step receives results only from{' '}
+            <span className="mono">{boundSource.name || `step ${boundSource.id}`}</span> at depth {step.depth - 1}.
           </div>
         )}
 
@@ -526,7 +571,8 @@ function StepPanel({ step, steps, editTo, onClose }) {
               lineHeight: 1.5,
             }}
           >
-            ✓ Terminal step — emits all 9 required vulnerability keys to workflows.vulnerabilities.
+            ✓ Terminal step — emits all {REQUIRED_VULN_KEYS.length} required vulnerability keys to
+            workflows.vulnerabilities.
           </div>
         )}
 

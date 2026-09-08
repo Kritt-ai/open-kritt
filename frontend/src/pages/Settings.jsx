@@ -56,6 +56,42 @@ const PRESENTATION = {
     enabledDescription: 'The minimum free-storage threshold is not enforced.',
     disabledDescription: 'New containers pause below the configured threshold.',
   },
+  memoryReserveGb: {
+    label: 'Docker memory reserve',
+    unit: 'GiB',
+    description:
+      'Memory withheld from scan runners for the engine, database, API, and operating overhead. The worker ceiling is reduced automatically when the remaining budget cannot fit every runner.',
+  },
+  scanRunnerMemoryMb: {
+    label: 'Runner hard memory limit',
+    unit: 'MiB',
+    description:
+      'Docker hard limit for each tool-enabled model session. A runner that exceeds this limit is terminated; set 0 only to disable the hard cap.',
+  },
+  scanRunnerMemoryReservationMb: {
+    label: 'Runner memory reservation',
+    unit: 'MiB',
+    description:
+      'Soft memory reservation used for worker-capacity planning and live admission. It may be lower than the hard limit so idle runners share unused Docker memory.',
+  },
+  scanRunnerCpus: {
+    label: 'Runner CPU limit',
+    unit: 'CPUs',
+    description:
+      'Maximum CPU capacity for each future scan runner. Fractional values let runners share CPU capacity; set 0 to leave CPU unlimited.',
+  },
+  scanRunnerOomScoreAdj: {
+    label: 'Runner OOM priority',
+    description:
+      'Linux out-of-memory priority for future runners. Positive values make a runner more likely to be terminated before the engine coordinator.',
+  },
+  memoryPressureEvictionEnabled: {
+    label: 'Evict one runner under memory pressure',
+    description:
+      'Disabled by default. When enabled, terminate the newest runner and retry it at reduced concurrency if free Docker memory falls below the engine reserve plus one runner reservation.',
+    enabledDescription: 'One newest runner is recycled before aggregate pressure can restart the engine.',
+    disabledDescription: 'Only admission control and Docker OOM handling protect the engine.',
+  },
   workspaceSetupConcurrency: {
     label: 'Workspace setup concurrency',
     unit: 'setups',
@@ -67,6 +103,12 @@ const PRESENTATION = {
     unit: 'retries',
     description:
       'Additional attempts for retryable workflow-step and post-script failures. This does not automatically resume a failed whole scan.',
+  },
+  cyberSafetyRetryCount: {
+    label: 'Cyber-block retries',
+    unit: 'retries',
+    description:
+      'Additional attempts made only when a provider blocks a request under its cybersecurity safety policy. Set 0 to fail after the first blocked attempt.',
   },
   harnessTimeoutSeconds: {
     label: 'Model-call timeout',
@@ -212,34 +254,7 @@ export default function Settings() {
               </div>
             </div>
 
-            <div className="settings-grid">
-              {Object.entries(PRESENTATION).map(([key, presentation]) =>
-                data.settings[key]?.type === 'boolean' ? (
-                  <BooleanRuntimeSetting
-                    key={key}
-                    name={key}
-                    presentation={presentation}
-                    setting={data.settings[key]}
-                    value={draft[key]}
-                    issue={issues[key]}
-                    disabled={saving}
-                    onChange={(value) => set(key, value)}
-                  />
-                ) : (
-                  <RuntimeSetting
-                    key={key}
-                    name={key}
-                    presentation={presentation}
-                    setting={data.settings[key]}
-                    value={draft[key]}
-                    issue={issues[key]}
-                    disabled={saving}
-                    ignored={key === 'minFreeStorageGb' && draft.ignoreLowStorage}
-                    onChange={(value) => set(key, value)}
-                  />
-                )
-              )}
-            </div>
+            <RuntimeSettingsFields data={data} draft={draft} issues={issues} saving={saving} onChange={set} />
           </section>
 
           <section className="settings-section">
@@ -268,6 +283,51 @@ export default function Settings() {
         </>
       )}
     </div>
+  );
+}
+
+export function RuntimeSettingsFields({ data, draft, issues, saving, onChange }) {
+  const entries = Object.entries(PRESENTATION);
+  const availableEntries = entries.filter(([key]) => data.settings?.[key]);
+  const missingLabels = entries.filter(([key]) => !data.settings?.[key]).map(([, presentation]) => presentation.label);
+
+  return (
+    <>
+      {missingLabels.length > 0 && (
+        <div className="settings-warning">
+          Some settings are unavailable from the running backend and have been hidden: {missingLabels.join(', ')}.
+          Restart the backend to load the current settings schema.
+        </div>
+      )}
+      <div className="settings-grid">
+        {availableEntries.map(([key, presentation]) =>
+          data.settings[key].type === 'boolean' ? (
+            <BooleanRuntimeSetting
+              key={key}
+              name={key}
+              presentation={presentation}
+              setting={data.settings[key]}
+              value={draft[key]}
+              issue={issues[key]}
+              disabled={saving}
+              onChange={(value) => onChange(key, value)}
+            />
+          ) : (
+            <RuntimeSetting
+              key={key}
+              name={key}
+              presentation={presentation}
+              setting={data.settings[key]}
+              value={draft[key]}
+              issue={issues[key]}
+              disabled={saving}
+              ignored={key === 'minFreeStorageGb' && draft.ignoreLowStorage}
+              onChange={(value) => onChange(key, value)}
+            />
+          )
+        )}
+      </div>
+    </>
   );
 }
 
@@ -311,6 +371,7 @@ function RuntimeSetting({ name, presentation, setting, value, issue, disabled, i
   const numericValue = rawValue && Number.isFinite(Number(rawValue)) ? Number(rawValue) : null;
   const aboveRecommendation = numericValue !== null && numericValue > setting.recommendedMax;
   const paused = name === 'workerCount' && numericValue === 0;
+  const cyberRetryEnabled = name === 'cyberSafetyRetryCount' && numericValue !== null && numericValue > 0;
   return (
     <article className="settings-card">
       <div className="settings-card-topline">
@@ -341,13 +402,15 @@ function RuntimeSetting({ name, presentation, setting, value, issue, disabled, i
       {!setting.valid && !issue && (
         <div className="settings-field-error">The stored value was invalid; the safe default is shown.</div>
       )}
-      {(aboveRecommendation || paused || ignored) && !issue && (
+      {(aboveRecommendation || paused || ignored || cyberRetryEnabled) && !issue && (
         <div className="settings-field-warning">
           {ignored
             ? 'This threshold is preserved but not enforced while the low-storage safeguard is ignored.'
             : paused
               ? 'New engine work will remain queued until worker slots are raised above zero.'
-              : `Above the conservative recommendation of ${setting.recommendedMax}; verify provider and host capacity.`}
+              : cyberRetryEnabled
+                ? `A blocked request may run up to ${numericValue + 1} total attempts. The provider may reject every attempt.`
+                : `Above the conservative recommendation of ${setting.recommendedMax}; verify provider and host capacity.`}
         </div>
       )}
       <div className="settings-card-meta">
