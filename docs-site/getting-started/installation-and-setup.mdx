@@ -73,7 +73,7 @@ docker compose version
 
 ### The Docker preflight check
 
-`./kritt start` and both guided logins verify Docker before they run anything, and stop
+`./kritt start` and both guided logins verify Docker before starting their containers, and stop
 with the reason when they cannot:
 
 | Reported problem | What to do |
@@ -81,7 +81,12 @@ with the reason when they cannot:
 | The Docker daemon is not reachable | Start Docker Desktop or the `docker` service. When more than one Docker is installed, check that `docker context ls` selects the running one. |
 | The Docker Compose plugin is not available | Install the Compose plugin, or Docker Desktop, and confirm `docker compose version` works. |
 | Docker Compose is too old | Update Docker. The guided logins run `docker compose run --build`, which needs Compose 2.13.0 or newer. |
-| Docker Compose could not read this project | Update Docker, or inspect `docker-compose.yml` and `.env` locally. Configuration values are omitted from the startup notice. |
+| The Docker Compose version could not be verified | Check `docker compose version` locally and update Docker Compose. |
+| A Docker diagnostic did not finish within 30 seconds | Check Docker and the selected context locally, then try again. The timeout applies only to preflight checks. |
+| Docker Compose could not read this project | Update Docker, or inspect `docker-compose.yml` and `.env` locally. |
+
+Startup notices omit raw diagnostic output and configuration values. Interactive login,
+image builds, and application startup are not limited by the diagnostic timeout.
 
 Before this check existed, a stopped or outdated Docker surfaced only as a login that
 saved nothing.

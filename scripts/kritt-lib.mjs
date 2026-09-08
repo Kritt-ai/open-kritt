@@ -34,6 +34,7 @@ const CODEX_LOGIN_CONTAINER_HOME = `${CODEX_LOGIN_CONTAINER_USER_HOME}/.codex`;
 const CODEX_LOGIN_CONTAINER_BOOTSTRAP =
   'umask 077; mkdir -p "$HOME" "$CODEX_HOME" && chmod 700 "$HOME" "$CODEX_HOME" && exec codex "$@"';
 const MAX_CAPTURED_OUTPUT = 64 * 1024;
+const DOCKER_PROBE_TIMEOUT_MS = 30_000;
 const DOCKER_INSTALL_HINT = 'Install Docker Desktop, or Docker Engine with the Docker Compose plugin, then try again.';
 
 // `docker compose run --build` backs both guided logins and arrived in Compose 2.13.0.
@@ -787,7 +788,30 @@ export function createPrompter(io) {
 
 export async function runCommand(command, args, options = {}) {
   return new Promise((resolveCommand, rejectCommand) => {
-    const child = spawn(command, args, { cwd: options.cwd, stdio: options.stdio || 'inherit' });
+    const timeoutMs = options.timeoutMs ?? 0;
+    const isolatedProcessGroup = timeoutMs > 0 && process.platform !== 'win32';
+    const child = spawn(command, args, {
+      cwd: options.cwd,
+      stdio: options.stdio || 'inherit',
+      detached: isolatedProcessGroup,
+    });
+    let timedOut = false;
+    // Only bounded diagnostic commands opt in; interactive operations have no timer.
+    const timer =
+      timeoutMs > 0
+        ? setTimeout(() => {
+            timedOut = true;
+            if (isolatedProcessGroup && child.pid) {
+              try {
+                process.kill(-child.pid, 'SIGKILL');
+              } catch {
+                child.kill('SIGKILL');
+              }
+            } else {
+              child.kill('SIGKILL');
+            }
+          }, timeoutMs)
+        : null;
     const captured = { stdout: '', stderr: '' };
     const capture = (stream, key) => {
       if (!stream) return;
@@ -808,12 +832,14 @@ export async function runCommand(command, args, options = {}) {
     abortSignal?.addEventListener('abort', onAbort, { once: true });
     if (abortSignal?.aborted) onAbort();
     child.once('error', (error) => {
+      clearTimeout(timer);
       removeAbortListener();
       rejectCommand(new CommandError(command, error));
     });
     child.once('close', (code, signal) => {
+      clearTimeout(timer);
       removeAbortListener();
-      resolveCommand({ code: code ?? 1, signal, ...captured });
+      resolveCommand({ code: code ?? 1, signal, timedOut, ...captured });
     });
   });
 }
@@ -970,8 +996,8 @@ async function removeLoginContainer(runner, rootDir, containerName, io) {
 }
 
 function versionNumbers(text) {
-  const match = /(\d+)\.(\d+)(?:\.(\d+))?/.exec(text || '');
-  return match ? [Number(match[1]), Number(match[2]), Number(match[3] ?? 0)] : null;
+  const match = /^v?(\d+)\.(\d+)\.(\d+)(?:[-+][0-9A-Za-z.-]+)?$/.exec(text || '');
+  return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
 }
 
 function isOlderVersion(candidate, minimum) {
@@ -990,15 +1016,6 @@ function firstLine(text) {
     .find((line) => line.length > 0);
 }
 
-// Docker prints the useful part of a failure on the first line; keep it as a sentence so
-// issue messages stay readable both in the plain CLI and in a fullscreen notice.
-function commandDetail(result) {
-  const line = firstLine(result?.stderr) || firstLine(result?.stdout);
-  if (!line) return '';
-  const detail = line.replace(/\s+/g, ' ').slice(0, 300);
-  return /[.!?]$/.test(detail) ? `${detail} ` : `${detail}. `;
-}
-
 /**
  * Verifies the Docker environment this project actually needs: a reachable daemon, a
  * Compose plugin new enough for the flags the CLI passes, and a Compose project the
@@ -1007,17 +1024,31 @@ function commandDetail(result) {
  */
 export async function checkDockerEnvironment({ rootDir, runner = runCommand } = {}) {
   const issues = [];
-  const probe = (args) => runner('docker', args, { cwd: rootDir, stdio: 'pipe' });
+  const probe = async (args) => {
+    const result = await runner('docker', args, {
+      cwd: rootDir,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeoutMs: DOCKER_PROBE_TIMEOUT_MS,
+    });
+    if (result.timedOut) {
+      const error = new Error('Docker diagnostic timed out.');
+      error.code = 'docker_timeout';
+      throw error;
+    }
+    return result;
+  };
   let serverVersion = null;
   let composeVersion = null;
 
   try {
     const daemon = await probe(['version', '--format', '{{.Server.Version}}']);
-    serverVersion = daemon.code === 0 ? firstLine(daemon.stdout) || null : null;
+    const daemonVersion = firstLine(daemon.stdout);
+    serverVersion = daemon.code === 0 && versionNumbers(daemonVersion) ? daemonVersion : null;
     if (daemon.code !== 0) {
       issues.push({
         code: 'daemon_unreachable',
-        message: `The Docker daemon is not reachable. ${commandDetail(daemon)}Start Docker Desktop or the docker service, and check "docker context ls" when more than one Docker is installed.`,
+        message:
+          'The Docker daemon is not reachable. Start Docker Desktop or the docker service, and check "docker context ls" when more than one Docker is installed.',
       });
     }
 
@@ -1025,14 +1056,23 @@ export async function checkDockerEnvironment({ rootDir, runner = runCommand } = 
     if (compose.code !== 0) {
       issues.push({
         code: 'compose_missing',
-        message: `The Docker Compose plugin is not available. ${commandDetail(compose)}${DOCKER_INSTALL_HINT}`,
+        message: `The Docker Compose plugin is not available. ${DOCKER_INSTALL_HINT}`,
       });
       return { ok: false, issues, serverVersion, composeVersion };
     }
 
-    composeVersion = (firstLine(compose.stdout) || '').replace(/^v/, '') || null;
-    const numbers = versionNumbers(composeVersion);
-    if (numbers && isOlderVersion(numbers, versionNumbers(MINIMUM_COMPOSE_VERSION))) {
+    const rawVersion = (compose.stdout || '').trim();
+    const numbers = versionNumbers(rawVersion);
+    if (!numbers) {
+      issues.push({
+        code: 'compose_version_unknown',
+        message:
+          'The Docker Compose version could not be verified. Check "docker compose version" locally, update Docker Compose, then try again.',
+      });
+      return { ok: false, issues, serverVersion, composeVersion };
+    }
+    composeVersion = rawVersion.replace(/^v/, '');
+    if (isOlderVersion(numbers, versionNumbers(MINIMUM_COMPOSE_VERSION))) {
       issues.push({
         code: 'compose_outdated',
         message: `Docker Compose ${composeVersion} is too old for open-kritt, which needs ${MINIMUM_COMPOSE_VERSION} or newer: the guided logins run "docker compose run --build". Update Docker, then try again.`,
@@ -1049,7 +1089,15 @@ export async function checkDockerEnvironment({ rootDir, runner = runCommand } = 
       });
     }
   } catch (error) {
-    issues.push({ code: 'docker_missing', message: `${error.message}. ${DOCKER_INSTALL_HINT}` });
+    issues.push(
+      error?.code === 'docker_timeout'
+        ? {
+            code: 'docker_timeout',
+            message:
+              'A Docker diagnostic did not finish within 30 seconds. Check Docker and the selected context locally, then try again.',
+          }
+        : { code: 'docker_missing', message: `Docker could not be started. ${DOCKER_INSTALL_HINT}` }
+    );
   }
 
   return { ok: issues.length === 0, issues, serverVersion, composeVersion };

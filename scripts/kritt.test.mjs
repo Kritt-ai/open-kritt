@@ -816,7 +816,7 @@ test('Docker preflight explains a missing docker executable', async (t) => {
     preflight.issues.map((issue) => issue.code),
     ['docker_missing']
   );
-  assert.match(preflight.issues[0].message, /spawn docker ENOENT/);
+  assert.match(preflight.issues[0].message, /Docker could not be started/);
   assert.match(preflight.issues[0].message, /Install Docker Desktop/);
 });
 
@@ -847,7 +847,7 @@ test('start stops before Compose when the Docker daemon is unreachable', async (
   assert.equal(exitCode, 1);
   assert.deepEqual(commands, []);
   assert.match(io.error.text, /The Docker daemon is not reachable/);
-  assert.match(io.error.text, /Cannot connect to the Docker daemon/);
+  assert.doesNotMatch(io.error.text, /unix:\/\/\/var\/run\/docker.sock/);
   assert.match(io.error.text, /docker context ls/);
 });
 
@@ -929,6 +929,129 @@ test('guided Codex login returns a Docker environment failure with its reason', 
   assert.equal(result.ok, false);
   assert.equal(result.code, 'docker_unavailable');
   assert.match(result.message, /The Docker Compose plugin is not available/);
-  assert.match(result.message, /is not a docker command/);
+  assert.doesNotMatch(result.message, /is not a docker command/);
   assert.deepEqual(commands, []);
+});
+
+test('Docker diagnostics use bounded commands with closed standard input', async () => {
+  const calls = [];
+  const probes = dockerProbes();
+  const result = await checkDockerEnvironment({
+    rootDir: '/example',
+    runner: async (command, args, options) => {
+      calls.push({ command, args, options });
+      return probes(command, args);
+    },
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(
+    calls.map(({ args }) => args),
+    [
+      ['version', '--format', '{{.Server.Version}}'],
+      ['compose', 'version', '--short'],
+      ['compose', 'config', '-q'],
+    ]
+  );
+  for (const { command, options } of calls) {
+    assert.equal(command, 'docker');
+    assert.equal(options.cwd, '/example');
+    assert.deepEqual(options.stdio, ['ignore', 'pipe', 'pipe']);
+    assert.equal(options.timeoutMs, 30_000);
+  }
+});
+
+test('Docker preflight checks the minimum version and accepts packaged version suffixes', async () => {
+  for (const [version, expected] of [
+    ['2.12.9', false],
+    ['2.13.0', true],
+    ['v2.13.0', true],
+    ['2.39.4-desktop.1', true],
+    ['5.5.1', true],
+  ]) {
+    const result = await checkDockerEnvironment({ runner: dockerProbes({ compose: { stdout: version } }) });
+    assert.equal(result.ok, expected, version);
+  }
+});
+
+test('Docker preflight stops when the Compose version cannot be verified', async () => {
+  for (const version of ['', 'development', '2.13', 'warning\n2.29.7']) {
+    let projectChecked = false;
+    const probes = dockerProbes({ compose: { stdout: version } });
+    const result = await checkDockerEnvironment({
+      runner: async (command, args) => {
+        if (args[1] === 'config') projectChecked = true;
+        return probes(command, args);
+      },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.issues[0].code, 'compose_version_unknown');
+    assert.equal(result.composeVersion, null);
+    assert.equal(projectChecked, false);
+  }
+});
+
+test('Docker preflight reports a diagnostic timeout and stops further probes', async () => {
+  let calls = 0;
+  const result = await checkDockerEnvironment({
+    runner: async () => {
+      calls += 1;
+      return { code: 1, timedOut: true, stdout: '', stderr: '' };
+    },
+  });
+  assert.equal(calls, 1);
+  assert.equal(result.ok, false);
+  assert.equal(result.issues[0].code, 'docker_timeout');
+  assert.match(result.issues[0].message, /30 seconds/);
+});
+
+test('Docker notices omit raw diagnostic and exception details', async () => {
+  const detail = 'example diagnostic detail';
+  for (const override of [
+    { daemon: { code: 1, stderr: detail } },
+    { compose: { code: 1, stderr: detail } },
+    { project: { code: 1, stderr: detail } },
+  ]) {
+    const result = await checkDockerEnvironment({ runner: dockerProbes(override) });
+    assert.equal(result.ok, false);
+    assert.equal(JSON.stringify(result).includes(detail), false);
+  }
+  const result = await checkDockerEnvironment({
+    runner: async () => {
+      throw new Error(detail);
+    },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(JSON.stringify(result).includes(detail), false);
+});
+
+test('runCommand bounds captured output without blocking a verbose process', async () => {
+  const result = await runCommand(
+    process.execPath,
+    ['-e', "process.stdout.write('x'.repeat(200000)); process.stderr.write('y'.repeat(200000));"],
+    { stdio: ['ignore', 'pipe', 'pipe'], timeoutMs: 5000 }
+  );
+  assert.equal(result.code, 0);
+  assert.equal(result.timedOut, false);
+  assert.equal(result.stdout, 'x'.repeat(65536));
+  assert.equal(result.stderr, 'y'.repeat(65536));
+});
+
+test('runCommand terminates a stalled diagnostic at its requested deadline', async () => {
+  const result = await runCommand(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeoutMs: 100,
+  });
+  assert.equal(result.timedOut, true);
+  assert.notEqual(result.code, 0);
+});
+
+test('a diagnostic deadline also closes a spawned helper on Unix', { skip: process.platform === 'win32' }, async () => {
+  const helper = "console.log('helper ready'); setInterval(() => {}, 1000);";
+  const parent = `require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(helper)}], { stdio: 'inherit' });`;
+  const result = await runCommand(process.execPath, ['-e', parent], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeoutMs: 1000,
+  });
+  assert.equal(result.timedOut, true);
+  assert.match(result.stdout, /helper ready/);
 });

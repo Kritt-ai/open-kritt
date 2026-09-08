@@ -425,7 +425,7 @@ test('interactive Claude login reports a stopped Docker without suspending the t
   const notice = terminal.notices.find((item) => item.title === 'Claude login');
   assert.equal(notice.subtitle, 'Docker is not ready');
   assert.match(notice.message, /The Docker daemon is not reachable/);
-  assert.match(notice.message, /Cannot connect to the Docker daemon/);
+  assert.doesNotMatch(notice.message, /unix:\/\/\/var\/run\/docker.sock/);
   assert.equal(
     terminal.calls.some((call) => call === 'suspend'),
     false
