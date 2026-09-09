@@ -27,6 +27,7 @@ import {
   syncCodexLoginStatus,
 } from './kritt-lib.mjs';
 
+
 const ANSI = {
   accent: '\x1B[38;5;203m',
   altScreen: '\x1B[?1049h',

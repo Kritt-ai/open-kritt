@@ -1,4 +1,4 @@
-export const MODEL_PROVIDER_IDS = ['codex', 'claude', 'openrouter', 'xai'];
+export const MODEL_PROVIDER_IDS = ['codex', 'claude', 'openrouter', 'xai', 'abliteration'];
 export const MODEL_CATALOG_STATUSES = ['ready', 'loading', 'unavailable'];
 const SAFE_MODEL_NOTE_URLS = new Set(['https://chatgpt.com/cyber']);
 
@@ -9,6 +9,7 @@ const PROVIDER_HARNESSES = {
   // for advanced installations with a matching Codex provider configuration.
   openrouter: ['claude-code', 'codex'],
   xai: ['grok-build'],
+  abliteration: ['codex'],
 };
 
 const PROVIDER_DEFAULT_MODELS = {
@@ -16,6 +17,7 @@ const PROVIDER_DEFAULT_MODELS = {
   claude: 'claude-sonnet-5',
   openrouter: 'z-ai/glm-5.2',
   xai: 'grok-4.6',
+  abliteration: 'abliterated-model',
 };
 
 const PROVIDER_THINKING_EFFORTS = {
@@ -23,6 +25,7 @@ const PROVIDER_THINKING_EFFORTS = {
   claude: ['low', 'medium', 'high', 'xhigh', 'max'],
   openrouter: ['default', 'low', 'medium', 'high', 'xhigh', 'max'],
   xai: ['low', 'medium', 'high', 'xhigh'],
+  abliteration: ['low', 'medium', 'high'],
 };
 
 const HARNESS_THINKING_EFFORTS = {

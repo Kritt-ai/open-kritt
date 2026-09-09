@@ -5,6 +5,7 @@ const PROVIDER_LABELS = {
   claude: 'Claude',
   openrouter: 'OpenRouter',
   xai: 'xAI',
+  abliteration: 'Abliteration',
 };
 
 const HARNESS_LABELS = {

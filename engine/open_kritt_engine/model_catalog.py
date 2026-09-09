@@ -31,6 +31,8 @@ XAI_GROK_46_THINKING_EFFORTS = (*XAI_THINKING_EFFORTS, "xhigh")
 OPENROUTER_MODEL_THINKING_EFFORTS = {
     "stealth/ox-alpha": ("low", "high", "max"),
 }
+ABLITERATION_MODELS_URL = "https://api.abliteration.ai/v1/models"
+ABLITERATION_DEFAULT_MODEL_ID = "abliterated-model"
 CATALOG_REFRESH_ERROR = "Unable to refresh the provider model catalog."
 MAX_CATALOG_MODELS = 500
 MAX_CATALOG_PAGES = 10
@@ -54,6 +56,12 @@ CLAUDE_MODEL_THINKING_EFFORTS = {
     "claude-opus-4-6": ("low", "medium", "high", "max"),
     "claude-sonnet-5": ("low", "medium", "high", "xhigh", "max"),
     "claude-sonnet-4-6": ("low", "medium", "high", "max"),
+}
+# Both documented Abliteration models reason by default and accept the
+# OpenAI-standard reasoning effort values.
+ABLITERATION_MODEL_THINKING_EFFORTS = {
+    "abliterated-model": ("low", "medium", "high"),
+    "abliterated-model-large": ("low", "medium", "high"),
 }
 
 
@@ -525,6 +533,52 @@ def fetch_xai_models(api_key: str, timeout_seconds: float) -> tuple[list[dict[st
     return models, default_model or XAI_DEFAULT_MODEL_ID
 
 
+def fetch_abliteration_models(api_key: str, timeout_seconds: float) -> tuple[list[dict[str, Any]], str]:
+    """List models available to the configured Abliteration API key."""
+
+    request = Request(
+        ABLITERATION_MODELS_URL,
+        headers={"Authorization": f"Bearer {api_key}"},
+    )
+    try:
+        with urlopen(request, timeout=max(1.0, timeout_seconds)) as response:  # noqa: S310 - fixed provider URL
+            raw_payload = response.read(MAX_HTTP_CATALOG_BYTES + 1)
+        if len(raw_payload) > MAX_HTTP_CATALOG_BYTES:
+            raise ModelCatalogError("Abliteration model catalog response was too large")
+        payload = json.loads(raw_payload)
+    except (HTTPError, URLError, OSError, TimeoutError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ModelCatalogError("Could not read the Abliteration model catalog") from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+        raise ModelCatalogError("Abliteration model catalog response was invalid")
+
+    entries: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for raw in payload["data"]:
+        if not isinstance(raw, Mapping):
+            continue
+        model_id = _clean_text(raw.get("id"))
+        if not model_id or model_id in seen_ids:
+            continue
+        seen_ids.add(model_id)
+        entries.append(
+            {
+                "model": model_id,
+                "displayName": raw.get("name"),
+                "supportedReasoningEfforts": list(ABLITERATION_MODEL_THINKING_EFFORTS.get(model_id, ("default",))),
+                "isDefault": model_id == ABLITERATION_DEFAULT_MODEL_ID,
+            }
+        )
+        if len(entries) > MAX_CATALOG_MODELS:
+            candidate = entries.pop()
+            if candidate["isDefault"] and not any(entry["isDefault"] for entry in entries):
+                entries[-1] = candidate
+
+    models, default_model = normalize_catalog_models(entries)
+    if not models:
+        raise ModelCatalogError("Abliteration model catalog was empty")
+    return models, default_model
+
+
 CatalogFetcher = Callable[[], tuple[list[dict[str, Any]], str]]
 
 
@@ -541,6 +595,7 @@ class ModelCatalogRefresher:
         fetch_anthropic: CatalogFetcher | None = None,
         fetch_openrouter: CatalogFetcher | None = None,
         fetch_xai: CatalogFetcher | None = None,
+        fetch_abliteration: CatalogFetcher | None = None,
         codex_cli_gate: Any | None = None,
     ):
         self.db = db
@@ -550,6 +605,7 @@ class ModelCatalogRefresher:
         self.fetch_anthropic = fetch_anthropic
         self.fetch_openrouter = fetch_openrouter
         self.fetch_xai = fetch_xai
+        self.fetch_abliteration = fetch_abliteration
         self.codex_cli_gate = codex_cli_gate
 
     def refresh(self, env: Mapping[str, str] | None = None) -> dict[str, bool]:
@@ -579,6 +635,11 @@ class ModelCatalogRefresher:
         if _clean_text(env.get("XAI_API_KEY")):
             fetch_xai = self.fetch_xai or (lambda: fetch_xai_models(env["XAI_API_KEY"], self.timeout_seconds))
             outcomes["xai"] = self._refresh_provider("xai", fetch_xai)
+        if _clean_text(env.get("ABLIT_KEY")):
+            fetch_abliteration = self.fetch_abliteration or (
+                lambda: fetch_abliteration_models(env["ABLIT_KEY"], self.timeout_seconds)
+            )
+            outcomes["abliteration"] = self._refresh_provider("abliteration", fetch_abliteration)
         return outcomes
 
     def _refresh_provider(self, provider: str, fetcher: CatalogFetcher) -> bool:

@@ -90,7 +90,7 @@ The create body accepts these fields:
 | `dependencies` | No | Array of `{ "kind", "repo_full", "commit_sha"? }` references. |
 | `configuration` | No | JSON object exposed as `{{configuration}}`; `repeat_runs` and additional post-script IDs also live here. |
 | `model` | Yes | Provider model ID or supported alias. Use a current catalog entry, or an exact custom OpenRouter or xAI model ID. |
-| `model_provider` | Yes | `codex`, `claude`, `openrouter`, or `xai`. |
+| `model_provider` | Yes | `codex`, `claude`, `openrouter`, `xai`, or `abliteration`. |
 | `harness` | Yes | Supported values are `codex`, `claude-code`, and `grok-build`; it must be compatible with the provider. |
 | `thinking_effort` | No | Model/harness-specific: `default`, `low`, `medium`, `high`, `xhigh`, `max`, or `ultra`; defaults to `medium`. |
 | `post_processing_model` | No | Independent model ID for deduplication, ranking, and post-scripts. Omit it to use the top-level scan model. |
@@ -103,8 +103,8 @@ The create body accepts these fields:
 | `extra` | As required by selected prompts | Object containing every `{{extra.<key>}}` referenced by the selected workflow or post-scripts. Unknown keys are discarded. |
 
 Provider/harness combinations are `codex` + `codex`, `claude` + `claude-code`,
-`openrouter` + `claude-code` or advanced `codex`, and `xai` + `grok-build`. The API
-returns `422`
+`openrouter` + `claude-code` or advanced `codex`, `xai` + `grok-build`, and
+`abliteration` + `codex`. The API returns `422`
 with field-specific errors when IDs, required scan extras, local folders, configured
 providers, models, or combinations are invalid.
 

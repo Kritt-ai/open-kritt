@@ -1,0 +1,86 @@
+---
+title: "Abliteration"
+description: "Create an Abliteration.ai API key and scan with its models on the Codex harness."
+---
+
+The **Abliteration** provider uses `ABLIT_KEY` to run [Abliteration.ai](https://abliteration.ai)
+models. Abliteration.ai hosts less-restrictive open-weight models behind an
+OpenAI-compatible API, and open·kritt runs this provider on the Codex harness.
+
+After the key is configured, the engine periodically refreshes the provider model
+catalog from Abliteration's authenticated models endpoint. The results reflect the
+models returned for that key and are cached for the create-scan and AI-generation
+forms.
+
+## Create and configure the key
+
+<Steps>
+  <Step title="Create an Abliteration account">
+    Sign in to the [Abliteration console](https://abliteration.ai) and add credits or a
+    plan for reliable scan capacity.
+  </Step>
+  <Step title="Create an API key">
+    Generate an API key in the console and copy it when shown. Keys are bearer tokens
+    and can be scoped to a project.
+  </Step>
+  <Step title="Save it in open·kritt">
+    Run `./kritt setup`, choose **Abliteration API key**, and paste the key into the
+    hidden input. The CLI writes it to `ABLIT_KEY` in `.env`. You can also add it from
+    the running application's **Accounts** page.
+  </Step>
+  <Step title="Start or recreate the stack">
+    ```bash
+    ./kritt start
+    ```
+
+    Stop an already-running attached stack with Ctrl+C first.
+  </Step>
+  <Step title="Choose a model">
+    Pick a model in the scan or generation form. `abliterated-model` is the default;
+    `abliterated-model-large` targets harder reasoning workloads.
+  </Step>
+</Steps>
+
+## Model compatibility
+
+The discovered catalog is a convenience, not a compatibility guarantee. Abliteration
+and the Codex harness ultimately decide whether a model is available and compatible
+when the run starts. The model must support the agent behavior the harness needs,
+including a large code context, tool use for scans, and reliable structured output.
+
+The **Codex** harness is the only supported Abliteration path. open·kritt registers
+Abliteration's OpenAI-compatible endpoint (`https://api.abliteration.ai/v1`) as a
+Codex model provider internally, with the credential read from `ABLIT_KEY`; you do
+not need to maintain a Codex provider definition yourself.
+
+## Catalog refresh and fallback
+
+The engine refreshes the Abliteration catalog in the background and stores only the
+sanitized model metadata needed by the UI. While the first refresh is still running,
+the forms may show the catalog as loading. A successful refresh replaces the cached
+choices.
+
+If a later refresh fails, open·kritt keeps the last usable cached catalog. If no
+successful catalog has been cached yet, model discovery is shown as unavailable;
+check the engine logs and the configured key, then retry.
+
+## Verify and troubleshoot
+
+- `./kritt setup` should show **Abliteration API key present**.
+- The create and generation forms should list **Abliteration** and load its model
+  catalog.
+- If the catalog remains in a loading or unavailable state, inspect
+  `docker compose logs engine` and confirm the configured key can list models.
+- A `401` usually means the key is invalid or revoked. A `402` or `429` generally
+  means the account needs credits or has hit its rate limits.
+- If a run starts but cannot use tools or return valid structured output, choose a
+  model with the required capabilities.
+
+See Abliteration's official [documentation](https://docs.abliteration.ai),
+[model overview](https://docs.abliteration.ai/models), and
+[Codex integration guide](https://docs.abliteration.ai/integrations/codex) for
+current provider behavior.
+
+Next: configure [Codex](/ai-provider-setup/codex),
+[Claude Code](/ai-provider-setup/claude-code), [OpenRouter](/ai-provider-setup/openrouter),
+or learn how to choose a [model and harness](/scans/model-and-harness).
