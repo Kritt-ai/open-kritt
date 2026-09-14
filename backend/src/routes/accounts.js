@@ -8,6 +8,7 @@ import {
   getAccountProvider,
   getAccountsOverview,
   getAccountsSummary,
+  setAccountActive,
 } from '../lib/accounts.js';
 import {
   removeManagedProviderCredential,
@@ -24,6 +25,7 @@ export function createAccountsRouter({
   loginManager = accountLoginManager,
   consumeReset = consumeCodexManualReset,
   deepseek = createDeepSeekClient(),
+  setActive = setAccountActive,
 } = {}) {
   const router = Router();
 
@@ -77,6 +79,15 @@ export function createAccountsRouter({
       res.status(error instanceof DeepSeekError ? error.statusCode : 502).json({
         error: error instanceof DeepSeekError ? error.message : 'Could not check the DeepSeek API.',
       });
+    }
+  });
+
+  router.patch('/:provider/account/:activityId/active', async (req, res, next) => {
+    try {
+      res.json(await setActive(req.params.provider, req.params.activityId, req.body?.active));
+    } catch (error) {
+      if (error?.statusCode) return res.status(error.statusCode).json({ error: error.message });
+      next(error);
     }
   });
 

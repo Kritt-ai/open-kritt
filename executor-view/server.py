@@ -1389,12 +1389,20 @@ def empty_claude_accounts():
 def fetch_claude_accounts(force=False):
     api_key = configured_secret("ANTHROPIC_API_KEY")
     homes = configured_claude_homes()
-    if api_key and not homes:
-        homes = [CLAUDE_PRIMARY_HOME]
-    accounts = [
-        claude_account(home, api_key=api_key if index == 0 else "", force=force)
-        for index, home in enumerate(homes)
-    ]
+    accounts = [claude_account(home, force=force) for home in homes]
+    if api_key:
+        accounts.append(
+            {
+                "id": "claude-api-key",
+                "provider": "Claude",
+                "label": "Claude API key",
+                "path": "ANTHROPIC_API_KEY",
+                "active": True,
+                "status": "key configured",
+                "statusKind": "available",
+                "details": [],
+            }
+        )
     active = sum(1 for account in accounts if account["active"])
     limited = sum(1 for account in accounts if account["statusKind"] == "limited")
     stale = sum(1 for account in accounts if account["statusKind"] == "stale")

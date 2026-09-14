@@ -43,6 +43,8 @@ test('DeepSeek keys reuse protected storage without exposing a scan provider', a
   const overview = await getAccountProvider('deepseek', { statusOptions: { ...options, env: {} } });
   assert.equal(overview.loadError, null);
   assert.equal(overview.configured, true);
+  assert.deepEqual(overview.accounts, []);
+  assert.equal(overview.active, 0);
   await removeManagedProviderCredential('deepseek', { ...options, disableEnvironment: true });
   assert.deepEqual(readManagedCredentialsSync(options.credentialsPath), { openrouter: 'fake-other-key' });
   const client = createDeepSeekClient({ ...options, env: { DEEPSEEK_API_KEY: 'fake-environment-key' } });

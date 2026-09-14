@@ -5,6 +5,8 @@ import uuid
 from collections.abc import Mapping
 from pathlib import Path
 
+from .account_activity import filter_account_environment, read_account_activity
+
 DEFAULT_PROVIDER_CREDENTIALS_PATH = "/credentials/providers.json"
 PROVIDER_ENV_KEYS = {
     "openrouter": "OPENROUTER_API_KEY",
@@ -124,7 +126,7 @@ def provider_environment(source: Mapping[str, str] | None = None) -> dict[str, s
         env[PROVIDER_ENV_KEYS[provider]] = value
     if not env.get("CODEX_API_KEY") and env.get("OPENAI_API_KEY"):
         env["CODEX_API_KEY"] = env["OPENAI_API_KEY"]
-    return env
+    return filter_account_environment(env, read_account_activity(env))
 
 
 def job_environment(

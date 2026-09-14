@@ -3,6 +3,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import {
   AccountRateLimits,
+  applyAccountActivity,
   CodexSignInRequired,
   CodexWeeklyUsage,
   ProviderCard,
@@ -593,5 +594,65 @@ describe('optimistic account removal', () => {
     expect(next.providers[1]).toMatchObject({ id: 'claude', active: 0, total: 0, accounts: [] });
     expect(next.providers[2]).toBe(overview.providers[2]);
     expect(next).toMatchObject({ active: 2, total: 2 });
+  });
+});
+
+describe('saved account activity', () => {
+  const overview = {
+    providers: [
+      {
+        id: 'codex',
+        label: 'Codex',
+        configured: true,
+        active: 1,
+        total: 1,
+        accounts: [
+          {
+            id: 'sample',
+            activityId: 'sample-control',
+            path: '/sample/account',
+            label: 'Sample account',
+            active: true,
+            available: true,
+            statusKind: 'available',
+            status: 'ready',
+          },
+        ],
+      },
+    ],
+  };
+
+  it('merges the saved response without losing credentials metadata or another provider', () => {
+    const saved = applyAccountActivity(overview, 'codex', { activityId: 'sample-control', active: false });
+    expect(saved.providers[0].accounts[0]).toMatchObject({ active: false, available: true, path: '/sample/account' });
+    expect(saved.providers[0].active).toBe(0);
+    expect(overview.providers[0].accounts[0].active).toBe(true);
+    expect(applyAccountActivity(saved, 'codex', { activityId: 'sample-control', active: true }).active).toBe(1);
+  });
+
+  it('renders an accessible saved switch and explains reactivation', () => {
+    const provider = applyAccountActivity(overview, 'codex', { activityId: 'sample-control', active: false })
+      .providers[0];
+    const html = renderToStaticMarkup(
+      createElement(ProviderCard, { provider, startingUsage: new Set(), resettingUsage: new Set() })
+    );
+    expect(html).toContain('role="switch"');
+    expect(html).toContain('aria-label="Active: Sample account"');
+    expect(html).not.toContain('checked=""');
+    expect(html).toContain('Activate this account');
+    expect(html).toContain('Calls already assigned may finish');
+  });
+
+  it('keeps the prior state visible while saving', () => {
+    const html = renderToStaticMarkup(
+      createElement(ProviderCard, {
+        provider: overview.providers[0],
+        updatingActive: true,
+        startingUsage: new Set(),
+        resettingUsage: new Set(),
+      })
+    );
+    expect(html).toContain('checked=""');
+    expect(html).toContain('disabled=""');
   });
 });

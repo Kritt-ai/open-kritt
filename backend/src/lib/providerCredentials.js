@@ -228,6 +228,8 @@ export function providerCredentialStatuses({
       credentialLabel: definition.credentialLabel,
       management: definition.management,
       configured,
+      apiKeyConfigured: managedCredential || environmentCredential,
+      apiKeyPath: definition.envKeys[0],
       source,
       canManage: definition.management === 'login' || definition.management === 'api_key',
       // xAI keeps OpenRouter-style managed API keys alongside device login.
