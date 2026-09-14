@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 
 import { api, apiErrorMessages } from '../api/client.js';
 import { Button, ErrorState, Spinner } from '../components/ui.jsx';
@@ -140,15 +140,24 @@ const CAPABILITIES = [
 ];
 
 export default function Settings() {
+  const { hash } = useLocation();
   const { data, loading, error, reload, setData } = useFetch(() => api.settings(), []);
   const [draft, setDraft] = useState(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(null);
   const [notice, setNotice] = useState('');
+  const fieldsReady = Boolean(draft);
 
   useEffect(() => {
     if (data) setDraft(runtimeSettingsDraft(data));
   }, [data]);
+
+  useEffect(() => {
+    if (!fieldsReady || !hash.startsWith('#setting-')) return;
+    const input = document.getElementById(hash.slice(1));
+    input?.scrollIntoView({ block: 'center' });
+    input?.focus({ preventScroll: true });
+  }, [hash, fieldsReady]);
 
   const issues = useMemo(() => runtimeSettingsIssues(data, draft), [data, draft]);
   const patch = useMemo(() => runtimeSettingsPatch(data, draft), [data, draft]);
@@ -402,6 +411,7 @@ function RuntimeSetting({ name, presentation, setting, value, issue, disabled, i
       <input
         id={`setting-${name}`}
         className="mono settings-number-input"
+        aria-label={`${presentation.label}${presentation.unit ? ` (${presentation.unit})` : ''}`}
         type="number"
         inputMode={setting.type === 'number' ? 'decimal' : 'numeric'}
         min={setting.min}

@@ -4,6 +4,7 @@
 import { prisma } from '../db.js';
 import { serializeWorkflow, serializeScan, timeAgo } from './serialize.js';
 import { isDefaultWorkflowName } from './defaultWorkflows.js';
+import { readResourceDiagnostics, resourceFailure, resourceWaitingNotice } from './resourceDiagnostics.js';
 
 const PHASE_LABELS = {
   building_workspace: 'Building workspace',
@@ -324,24 +325,9 @@ export function orderScanErrorsForDisplay(errors) {
 export function knownError(value) {
   const compact = compactError(value);
   if (!compact) return null;
+  const resource = resourceFailure(compact);
+  if (resource) return resource;
   const lower = compact.toLowerCase();
-  if (lower.includes('no space left on device') || lower.includes('enospc')) {
-    return {
-      key: 'engine_storage_full',
-      title: 'Engine storage full',
-      message:
-        'The scanner ran out of disk space while creating a job workspace. Free local disk space, then resume the scan.',
-    };
-  }
-  if (lower.includes('cannot set path in scalar')) {
-    return {
-      key: 'storage_warning_persistence_failed',
-      title: 'Low-storage pause failed',
-      message:
-        'The engine ran low on disk space, then could not save its automatic pause warning. Free disk space, lower Minimum free storage, or enable Ignore low-storage safeguard in Settings, then resume the scan; completed work is preserved.',
-      fixLinks: [{ label: 'Open Settings', url: '/settings', internal: true }],
-    };
-  }
   if (
     compact.includes(CYBER_RISK_FLAG_TEXT) ||
     lower.includes('openai has flagged these tasks as unauthorized') ||
@@ -829,7 +815,7 @@ export async function assembleScans(scans) {
   const workflowIds = [...new Set(scans.map((s) => s.workflowId))];
   const postScriptIds = [...new Set(scans.flatMap((scan) => configuredPostScriptIds(scan)).map((id) => BigInt(id)))];
   const agentSkillIds = [...new Set(scans.flatMap((s) => s.agentSkillIds || []))];
-  const [workflows, postScripts, agentSkills, counts] = await Promise.all([
+  const [workflows, postScripts, agentSkills, counts, resources] = await Promise.all([
     prisma.workflow.findMany({
       where: { id: { in: workflowIds } },
       select: { id: true, name: true, stepIds: true },
@@ -849,6 +835,7 @@ export async function assembleScans(scans) {
       },
     }),
     findingCountsByScan(scans.map((s) => s.id)),
+    readResourceDiagnostics(),
   ]);
   const wfMap = new Map(workflows.map((w) => [w.id.toString(), w]));
   const psMap = new Map(postScripts.map((p) => [p.id.toString(), p]));
@@ -876,8 +863,8 @@ export async function assembleScans(scans) {
     };
     const statusSummary = statusSummaries.get(s.id.toString());
     const prog = await runningProgress(s, statusSummary);
-    out.push(
-      serializeScan(s, {
+    out.push({
+      ...serializeScan(s, {
         workflowName: wf?.name ?? null,
         workflowDepths,
         postScriptName: ps?.name ?? null,
@@ -892,8 +879,9 @@ export async function assembleScans(scans) {
         progress: prog.progress,
         progressLabel: prog.progressLabel,
         statusSummary,
-      })
-    );
+      }),
+      resourceNotice: resourceWaitingNotice(s.status, resources),
+    });
   }
   return out;
 }

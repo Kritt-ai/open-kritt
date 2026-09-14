@@ -17,6 +17,7 @@ from jsonschema import Draft202012Validator
 
 from .claude_auth import CLAUDE_OAUTH_EXPIRY_ENV, claude_oauth_timeout_seconds
 from .provider_credentials import provider_environment
+from .resource_diagnostics import local_resource_failure_message
 from .runtime_config import runtime_float, runtime_int
 from .schema import EXTRACTOR_HELPER_FIELD
 
@@ -84,7 +85,11 @@ HARNESS_FAILURE_MESSAGES = {
     "rate_limited": "The model provider is rate limiting generation requests. Wait and try again.",
     "start_failed": "The configured model harness could not be started. Rebuild or restart the engine and try again.",
     "timeout": "Generation timed out before the model provider returned a draft. Try again or choose a faster model.",
-    "runner_resource_limited": "The runner was terminated by the system. It will be retried with lower concurrency.",
+    "runner_resource_limited": (
+        "The runner was killed. Exit 137 alone does not establish the cause: a memory limit, "
+        "system pressure, or an external stop may be responsible. Check Docker/container events "
+        "and engine logs. The task status indicates whether it is waiting to retry or has failed."
+    ),
 }
 
 
@@ -673,6 +678,10 @@ def _has_provider_error_event(output: str) -> bool:
 def _safe_harness_public_message(output: str, code: str) -> str:
     """Return a useful fixed message without exposing arbitrary provider output."""
     normalized = (output or "").lower()
+    if code in {"model_process_error", "harness_failed"}:
+        resource_message = local_resource_failure_message(output)
+        if resource_message:
+            return resource_message
     if code == "network_error" and any(
         value in normalized
         for value in (
@@ -771,6 +780,7 @@ def _run_process(cmd, prompt, cwd, timeout, env=None):
         raise HarnessError(
             "Harness could not be started.",
             code="start_failed",
+            public_message=local_resource_failure_message(exc),
             harness=harness,
         ) from exc
     finally:

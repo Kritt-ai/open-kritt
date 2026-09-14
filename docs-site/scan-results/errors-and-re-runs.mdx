@@ -21,6 +21,40 @@ Scan-level problems are recorded on the scan itself; individual step and post-sc
 failures are recorded per job, so you can tell whether the whole scan or just one job went
 wrong.
 
+## Resource waits and failures
+
+**Waiting for memory** and **Waiting for storage** explain why new work cannot start.
+These waits are checked again automatically; running work can finish. They do not mean
+the scan has failed. A failed scan still needs **Resume** after you address its cause.
+
+Memory diagnostics show the latest engine-visible Linux memory reading and the sum of
+**Docker memory reserve** plus one **Runner memory reservation**. With Docker Desktop,
+the reading usually describes its Linux VM. It does not establish an individual
+container's memory headroom or a remote Docker host's capacity. Missing or old readings
+are reported as unavailable rather than treated as zero.
+
+Free memory, provide a larger machine, or allocate more memory to Docker's VM. For smaller
+projects, lowering **Runner memory reservation** may allow work to start, but increases
+contention and the risk of memory exhaustion. It does not reduce actual memory use or
+change **Runner hard memory limit**. Lowering **Docker memory reserve** leaves less
+headroom for supporting services and does not create memory.
+
+Storage waits show the last reported free space on the filesystem containing engine data
+and its **Minimum free storage** threshold. Docker image storage may be on another disk.
+Free space or expand the affected disk. Lowering the threshold reduces a safety margin;
+it does not free space or estimate the project's storage needs. An unavailable storage
+check means the cause is unknown, not that the disk is full.
+
+Failure messages distinguish explicit memory allocation errors, full disks or disk quotas,
+and rejected Docker CPU allocations. CPU numbers appear only when Docker reports them.
+If **Runner CPU limit** exceeds Docker's capacity, lowering it may help but can slow
+CPU-heavy work. Exit 137 alone means the runner was killed; inspect container events and
+engine logs to distinguish memory pressure from an external stop. A timeout or provider
+capacity error alone is not evidence of a local CPU, memory, or disk shortage.
+
+Diagnostic links open the relevant [Settings](/getting-started/settings) control. No
+settings are changed automatically by these messages.
+
 ## Automatic rate-limit recovery
 
 When a Codex or Claude account returns a rate limit, open·kritt removes it from normal

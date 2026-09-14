@@ -4,10 +4,12 @@ import { prisma } from '../db.js';
 import { assertModelSelectionAvailable } from '../lib/modelSelection.js';
 import { serializeGeneration } from '../lib/serialize.js';
 import { validateGeneration } from '../lib/validation.js';
+import { readResourceDiagnostics, resourceFailure, resourceWaitingNotice } from '../lib/resourceDiagnostics.js';
 
 export function createGenerationsRouter({
   prismaClient = prisma,
   ensureModelSelection = assertModelSelectionAvailable,
+  readResources = readResourceDiagnostics,
 } = {}) {
   const router = Router();
 
@@ -38,7 +40,16 @@ export function createGenerationsRouter({
     try {
       const generation = await prismaClient.generation.findUnique({ where: { id: BigInt(req.params.id) } });
       if (!generation) return res.status(404).json({ error: 'Generation not found.' });
-      res.set('Cache-Control', 'no-store').json(serializeGeneration(generation));
+      const resourceNotice =
+        generation.status === 'pending'
+          ? resourceWaitingNotice('pending', await readResources(), { generation: true })
+          : null;
+      res.set('Cache-Control', 'no-store').json({
+        ...serializeGeneration(generation),
+        resourceNotice,
+        resourceFailure:
+          generation.status === 'failed' ? resourceFailure(generation.error, { generation: true }) : null,
+      });
     } catch (error) {
       next(error);
     }

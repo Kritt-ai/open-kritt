@@ -5,6 +5,7 @@ import { useFetch } from '../lib/useFetch.js';
 import { usePageChrome } from '../context/ui.jsx';
 import { CardLinkOverlay, Spinner, ErrorState, EmptyState, StatusBadge, Button } from '../components/ui.jsx';
 import LinkifiedText from '../components/LinkifiedText.jsx';
+import ResourceNotice from '../components/ResourceNotice.jsx';
 import { duplicateScanPath } from '../lib/scanDuplication.js';
 import { isScanDeletable } from '../lib/scanPresentation.js';
 import { useModalDialog } from '../lib/useModalDialog.js';
@@ -443,7 +444,7 @@ function ScanCreationOption({ title, sub, to, onClick, disabled, autoFocus = fal
   );
 }
 
-function ScanCard({ scan, to, onResume, onToggleError, onDelete, busy, errorExpanded }) {
+export function ScanCard({ scan, to, onResume, onToggleError, onDelete, busy, errorExpanded }) {
   const isRunning =
     scan.status === 'running' || scan.status === 'prewarming_cache' || scan.status === 'post_processing';
   const isPaused = scan.status === 'paused';
@@ -454,7 +455,7 @@ function ScanCard({ scan, to, onResume, onToggleError, onDelete, busy, errorExpa
   const isRateLimited = scan.status === 'rate_limited';
   const rateLimit = rateLimitPresentation(scan.reasoning);
   const providerAutoscale = providerCapacityAutoscalePresentation(scan.reasoning);
-  const storageWarning = storageWarningPresentation(scan.reasoning);
+  const storageWarning = storageWarningPresentation(scan.reasoning, scan.status);
   const summary = scan.statusSummary || {};
   const latestError = summary.latestError;
   const currentFailedAttempts = summary.currentFailedAttempts ?? summary.failedAttempts ?? 0;
@@ -501,21 +502,8 @@ function ScanCard({ scan, to, onResume, onToggleError, onDelete, busy, errorExpa
         </div>
       )}
 
-      {storageWarning && (
-        <div
-          style={{
-            marginTop: 12,
-            padding: '9px 10px',
-            borderRadius: 8,
-            color: 'var(--pend)',
-            background: 'var(--pend-bg)',
-            fontSize: 12,
-            lineHeight: 1.45,
-          }}
-        >
-          <strong>Low storage.</strong> {storageWarning.message}
-        </div>
-      )}
+      <ResourceNotice notice={scan.resourceNotice} />
+      <ResourceNotice notice={storageWarning} />
 
       {isRunning && (
         <div style={{ marginTop: 18, paddingTop: 14, borderTop: '1px solid var(--border-2)' }}>
@@ -605,7 +593,7 @@ function ScanCard({ scan, to, onResume, onToggleError, onDelete, busy, errorExpa
           </div>
         </div>
       )}
-      {isPending && (
+      {isPending && !scan.resourceNotice && (
         <div
           style={{
             marginTop: 18,
@@ -615,7 +603,7 @@ function ScanCard({ scan, to, onResume, onToggleError, onDelete, busy, errorExpa
             color: 'var(--text-2)',
           }}
         >
-          Pending — the engine will pick this up shortly.
+          Pending — waiting for the engine. No specific waiting reason has been reported.
         </div>
       )}
       {isQueued && (
