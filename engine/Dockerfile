@@ -1,8 +1,8 @@
-FROM docker:27-cli AS docker-cli
+FROM docker:29.8.0-cli AS docker-cli
 
 FROM node:24.15.0-bookworm-slim AS node_runtime
 
-FROM python:3.12.7-slim-bookworm
+FROM python:3.12.14-slim-bookworm
 
 WORKDIR /app
 
