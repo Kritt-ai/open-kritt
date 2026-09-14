@@ -1,6 +1,8 @@
 import { useId } from 'react';
 import { Link } from 'react-router-dom';
 import SearchSelect from './SearchSelect.jsx';
+import ProviderVisibility, { useProviderVisibility } from './ProviderVisibility.jsx';
+import { PROVIDER_LABELS, visibleProviderIds } from '../lib/providerVisibility.js';
 import {
   defaultHarnessForModelProvider,
   harnessesForModelProvider,
@@ -16,13 +18,6 @@ import {
 } from '../lib/modelProviders.js';
 
 export const THINKING_EFFORTS = ['default', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
-
-const PROVIDER_LABELS = {
-  codex: 'Codex',
-  claude: 'Claude',
-  openrouter: 'OpenRouter',
-  xai: 'xAI',
-};
 
 export function modelConfigurationForCatalog(current, providers, catalog) {
   const previousProvider = current?.model_provider || '';
@@ -65,6 +60,7 @@ export default function ModelConfiguration({
   disabled = false,
   showAvailabilityHelp = true,
 }) {
+  const { visible } = useProviderVisibility();
   const providerConfigured = providers.includes(value.model_provider);
   const compatibleHarnesses = harnessesForModelProvider(value.model_provider);
   const selectableModels = modelsForModelProvider(catalog, value.model_provider);
@@ -101,7 +97,9 @@ export default function ModelConfiguration({
           ? `No ${providerName} models are available.`
           : `${providerName} model catalog is unavailable.`;
   }
-  const unavailableProviders = MODEL_PROVIDER_IDS.filter((provider) => !providers.includes(provider));
+  const unavailableProviders = visibleProviderIds(MODEL_PROVIDER_IDS, visible, value.model_provider).filter(
+    (provider) => !providers.includes(provider)
+  );
 
   const changeProvider = (modelProvider) => {
     const model = modelForCatalogChange(value.model, value.model_provider, modelProvider, catalog);
@@ -263,6 +261,7 @@ export default function ModelConfiguration({
           </>
         )}
       </div>
+      <ProviderVisibility configuredProviders={providers} selected={value.model_provider} />
       {showAvailabilityHelp && (unavailableProviders.length > 0 || catalogMessage) && (
         <div style={{ marginTop: 10, color: 'var(--text-2)', fontSize: 12.5, lineHeight: 1.5 }}>
           {unavailableProviders.length > 0 && (
@@ -301,7 +300,8 @@ function Field({ label, children }) {
   );
 }
 
-function ProviderSelect({ id, value, onChange, configuredProviders, disabled }) {
+export function ProviderSelect({ id, value, onChange, configuredProviders, disabled }) {
+  const { visible } = useProviderVisibility();
   return (
     <select
       id={id}
@@ -323,7 +323,7 @@ function ProviderSelect({ id, value, onChange, configuredProviders, disabled }) 
       }}
     >
       {!value && <option value="">No configured providers</option>}
-      {MODEL_PROVIDER_IDS.map((provider) => {
+      {visibleProviderIds(MODEL_PROVIDER_IDS, visible, value).map((provider) => {
         const configured = configuredProviders.includes(provider);
         return (
           <option key={provider} value={provider} disabled={!configured}>

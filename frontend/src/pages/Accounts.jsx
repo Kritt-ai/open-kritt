@@ -2,6 +2,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { api } from '../api/client.js';
 import Pagination from '../components/Pagination.jsx';
+import ProviderVisibility, { useProviderVisibility } from '../components/ProviderVisibility.jsx';
+import DeepSeekApiCheck from '../components/DeepSeekApiCheck.jsx';
+import { PROVIDER_LABELS } from '../lib/providerVisibility.js';
 import { Button, ErrorState, Spinner } from '../components/ui.jsx';
 import { usePageChrome } from '../context/ui.jsx';
 import { usePagination } from '../lib/usePagination.js';
@@ -9,6 +12,7 @@ import { usePagination } from '../lib/usePagination.js';
 const PROVIDER_LINKS = {
   openrouter: 'https://openrouter.ai/settings/keys',
   xai: 'https://console.x.ai/',
+  deepseek: 'https://platform.deepseek.com/api_keys',
 };
 
 const WEEKLY_WINDOW_MINUTES = 7 * 24 * 60;
@@ -25,12 +29,14 @@ const SOURCE_LABELS = {
 const LOGIN_PROVIDERS = new Set(['codex', 'claude', 'xai']);
 
 export default function Accounts() {
+  const { visible } = useProviderVisibility();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(null);
   const [editing, setEditing] = useState(null);
   const [editingKey, setEditingKey] = useState(null);
+  const [credentialRevision, setCredentialRevision] = useState(0);
   const [removingAccount, setRemovingAccount] = useState(null);
   const [startingUsage, setStartingUsage] = useState(() => new Set());
   const [resettingUsage, setResettingUsage] = useState(() => new Set());
@@ -121,6 +127,7 @@ export default function Accounts() {
 
   const save = async (provider, credential) => {
     const next = await api.saveProviderCredential(provider.id, credential);
+    setCredentialRevision((revision) => revision + 1);
     setData(next);
     setEditing(null);
     setEditingKey(null);
@@ -192,8 +199,8 @@ export default function Accounts() {
         <div>
           <div style={{ fontSize: 27, fontWeight: 600, letterSpacing: '-0.02em' }}>Accounts</div>
           <div style={{ color: 'var(--text-2)', marginTop: 7, maxWidth: 680, lineHeight: 1.5 }}>
-            See which model providers are ready. Sign in to Codex, Claude, or xAI with their official login flows, or
-            add an OpenRouter or xAI API key. Secret values are never returned by the API.
+            Manage provider logins and API keys. Show additional providers below to configure them. Secret values are
+            never returned by the API.
           </div>
         </div>
         {data && (
@@ -214,35 +221,43 @@ export default function Accounts() {
             <Summary label="Accounts observed" value={data.total} />
           </div>
 
+          <ProviderVisibility
+            configuredProviders={data.providers
+              .filter((provider) => provider.configured)
+              .map((provider) => provider.id)}
+          />
           <div className="account-provider-grid">
-            {data.providers.map((provider) => (
-              <ProviderCard
-                key={provider.id}
-                provider={provider}
-                onEdit={() => setEditing(provider)}
-                onEditKey={
-                  provider.management === 'login' && provider.canManageKey ? () => setEditingKey(provider) : null
-                }
-                onRemove={() => remove(provider)}
-                onRemoveAccount={(account) => removeLoginAccount(provider, account)}
-                onStartWeeklyUsage={startWeeklyUsage}
-                onUseManualReset={useManualReset}
-                onToggleActive={(account) => toggleActive(provider, account)}
-                updatingActive={
-                  updatingActive ||
-                  refreshing ||
-                  loadingProviders.size > 0 ||
-                  Boolean(removingAccount) ||
-                  startingUsage.size > 0 ||
-                  resettingUsage.size > 0
-                }
-                removingAccount={removingAccount}
-                startingUsage={startingUsage}
-                resettingUsage={resettingUsage}
-                loading={loadingProviders.has(provider.id)}
-                loadError={providerErrors[provider.id]}
-              />
-            ))}
+            {data.providers
+              .filter((provider) => visible.includes(provider.id))
+              .map((provider) => (
+                <ProviderCard
+                  key={provider.id}
+                  provider={provider}
+                  credentialRevision={credentialRevision}
+                  onEdit={() => setEditing(provider)}
+                  onEditKey={
+                    provider.management === 'login' && provider.canManageKey ? () => setEditingKey(provider) : null
+                  }
+                  onRemove={() => remove(provider)}
+                  onRemoveAccount={(account) => removeLoginAccount(provider, account)}
+                  onStartWeeklyUsage={startWeeklyUsage}
+                  onUseManualReset={useManualReset}
+                  onToggleActive={(account) => toggleActive(provider, account)}
+                  updatingActive={
+                    updatingActive ||
+                    refreshing ||
+                    loadingProviders.size > 0 ||
+                    Boolean(removingAccount) ||
+                    startingUsage.size > 0 ||
+                    resettingUsage.size > 0
+                  }
+                  removingAccount={removingAccount}
+                  startingUsage={startingUsage}
+                  resettingUsage={resettingUsage}
+                  loading={loadingProviders.has(provider.id)}
+                  loadError={providerErrors[provider.id]}
+                />
+              ))}
           </div>
         </>
       )}
@@ -275,6 +290,7 @@ function Summary({ label, value, color = 'var(--text)' }) {
 
 export function ProviderCard({
   provider,
+  credentialRevision = 0,
   onEdit,
   onEditKey,
   onRemove,
@@ -294,21 +310,24 @@ export function ProviderCard({
     provider.configured && provider.accounts.some((account) => account.active && (account.available ?? account.active));
   const signInRequired =
     LOGIN_PROVIDERS.has(provider.id) && provider.accounts.some((account) => account.statusKind === 'expired');
+  const apiCheckOnly = provider.id === 'deepseek';
   const status = loading
     ? 'Loading'
     : loadError
       ? 'Unavailable'
-      : provider.configured && provider.active === 0 && provider.accounts.length > 0
-        ? 'Inactive'
-        : signInRequired
-          ? 'Sign-in required'
-          : provider.limited
-            ? 'Limited'
-            : ready
-              ? 'Ready'
-              : provider.configured
-                ? 'Needs attention'
-                : 'Not configured';
+      : apiCheckOnly && provider.configured
+        ? 'Key configured'
+        : provider.configured && provider.active === 0 && provider.accounts.length > 0
+          ? 'Inactive'
+          : signInRequired
+            ? 'Sign-in required'
+            : provider.limited
+              ? 'Limited'
+              : ready
+                ? 'Ready'
+                : provider.configured
+                  ? 'Needs attention'
+                  : 'Not configured';
   const statusColor =
     loading || loadError || provider.limited || (provider.configured && !ready)
       ? 'var(--pend)'
@@ -321,7 +340,7 @@ export function ProviderCard({
         <div style={{ minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
             <ProviderMark provider={provider.id} />
-            <h2 style={{ fontSize: 18, margin: 0 }}>{provider.label}</h2>
+            <h2 style={{ fontSize: 18, margin: 0 }}>{PROVIDER_LABELS[provider.id] || provider.label}</h2>
           </div>
           <div style={{ color: 'var(--text-2)', fontSize: 12.5, lineHeight: 1.45, marginTop: 9 }}>
             {provider.description}
@@ -349,6 +368,8 @@ export function ProviderCard({
             <div style={{ fontWeight: 500 }}>Could not load {provider.label} accounts</div>
             <div style={{ color: 'var(--text-2)', fontSize: 12, marginTop: 4 }}>{loadError}</div>
           </div>
+        ) : apiCheckOnly ? (
+          <DeepSeekApiCheck key={`${provider.configured}:${credentialRevision}`} configured={provider.configured} />
         ) : (provider.configured || signInRequired) && provider.accounts.length ? (
           accountPages.pageItems.map((account, index) => (
             <AccountDetail
@@ -493,7 +514,7 @@ export function removeProviderFromOverview(overview, providerId) {
 }
 
 function ProviderMark({ provider }) {
-  const label = provider === 'codex' ? 'CX' : provider === 'claude' ? 'CL' : provider === 'xai' ? 'XA' : 'OR';
+  const label = { codex: 'CX', claude: 'CL', xai: 'XA', openrouter: 'OR', deepseek: 'DS' }[provider] || provider;
   return <span className={`mono account-provider-mark account-provider-mark-${provider}`}>{label}</span>;
 }
 

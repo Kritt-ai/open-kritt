@@ -507,6 +507,7 @@ export class AccountLoginManager {
     let command;
     let args;
     let env = { ...process.env, NO_COLOR: '1', TERM: 'dumb' };
+    delete env.DEEPSEEK_API_KEY;
     if (provider === 'codex') {
       if (reloginTarget) {
         session.codexHome = reloginTarget.home;

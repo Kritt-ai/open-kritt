@@ -4,13 +4,13 @@ import { join } from 'node:path';
 import { accountActivityId, accountIsActive, readAccountActivity, saveAccountActivity } from './accountActivity.js';
 import { renewClaudeCredential } from './claudeCredentials.js';
 import { probeGrokCredential } from './grokCredentials.js';
-import { PROVIDER_DEFINITIONS, providerCredentialStatuses } from './providerCredentials.js';
+import { providerCredentialStatuses } from './providerCredentials.js';
 import { CLAUDE_ACCOUNTS_ROOT, CLAUDE_HOME, GROK_ACCOUNTS_ROOT, GROK_PRIMARY_HOME } from './providerLogins.js';
 
 const EXECUTOR_VIEW_URL = process.env.EXECUTOR_VIEW_URL || 'http://executor-view:8090';
 const EXECUTOR_VIEW_INTERNAL_TOKEN_FILE =
   process.env.EXECUTOR_VIEW_INTERNAL_TOKEN_FILE || '/executor-auth/internal-token';
-const ACCOUNT_PROVIDER_IDS = Object.keys(PROVIDER_DEFINITIONS);
+const EXECUTOR_ACCOUNT_PROVIDER_IDS = ['codex', 'claude', 'openrouter', 'xai'];
 const EXECUTOR_ACCOUNT_TIMEOUT_MS = 180000;
 const ACCOUNT_STATUS_KINDS = new Set(['available', 'limited', 'stale', 'expired', 'warning', 'missing']);
 const ACCOUNT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -212,7 +212,7 @@ export async function fetchExecutorProvider(
     probeGrokLogin = probeGrokCredential,
   } = {}
 ) {
-  if (!ACCOUNT_PROVIDER_IDS.includes(providerId)) return null;
+  if (!EXECUTOR_ACCOUNT_PROVIDER_IDS.includes(providerId)) return null;
   try {
     const token = await executorInternalToken({ internalToken, internalTokenFile });
     if (!token) return null;
@@ -278,7 +278,7 @@ export async function fetchExecutorAccounts({
   probeGrokLogin,
 } = {}) {
   const providers = await Promise.all(
-    ACCOUNT_PROVIDER_IDS.map((providerId) =>
+    EXECUTOR_ACCOUNT_PROVIDER_IDS.map((providerId) =>
       fetchExecutorProvider(providerId, {
         refresh,
         executorViewUrl,
@@ -311,7 +311,11 @@ export function buildAccountsOverview(statuses, executorAccounts, activity = [])
           .map((account) => safeAccount(account, status.id, activity))
           .filter((account) => account && account.statusKind !== 'missing')
       : [];
-    if (status.apiKeyConfigured && !accounts.some((account) => account.path === status.apiKeyPath)) {
+    if (
+      status.id !== 'deepseek' &&
+      status.apiKeyConfigured &&
+      !accounts.some((account) => account.path === status.apiKeyPath)
+    ) {
       accounts.push(
         safeAccount(
           {
@@ -364,6 +368,9 @@ export function getAccountsSummary({ statusOptions } = {}) {
 export async function getAccountProvider(providerId, { refresh = false, statusOptions, executorOptions } = {}) {
   const status = providerCredentialStatuses(statusOptions).find((provider) => provider.id === providerId);
   if (!status) return null;
+  if (providerId === 'deepseek') {
+    return { ...buildAccountsOverview([status], null, readAccountActivity()).providers[0], loadError: null };
+  }
   const executorProvider = await fetchExecutorProvider(providerId, { refresh, ...executorOptions });
   const provider = buildAccountsOverview(
     [status],
