@@ -14,6 +14,7 @@ const LOCK_WAIT_MS = 30_000;
 const STALE_LOCK_MS = 30 * 60 * 1000;
 const CLAUDE_REFRESH_TIMEOUT_MS = 120_000;
 const CLAUDE_REFRESH_ENVIRONMENT_OVERRIDES = [
+  'DEEPSEEK_API_KEY',
   'ANTHROPIC_API_KEY',
   'ANTHROPIC_AUTH_TOKEN',
   'ANTHROPIC_BASE_URL',
@@ -142,7 +143,10 @@ async function replaceClaudeCredential(home, credential) {
   }
 }
 
-async function runClaudeCredentialProbe(home, { spawnProcess = spawn, timeoutMs = CLAUDE_REFRESH_TIMEOUT_MS } = {}) {
+export async function runClaudeCredentialProbe(
+  home,
+  { spawnProcess = spawn, timeoutMs = CLAUDE_REFRESH_TIMEOUT_MS } = {}
+) {
   const directory = await mkdtemp(join(tmpdir(), 'open-kritt-claude-refresh-'));
   const env = {
     ...process.env,
