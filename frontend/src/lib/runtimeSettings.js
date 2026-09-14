@@ -5,6 +5,7 @@ export const RUNTIME_SETTING_KEYS = [
   'workersPerAccount',
   'autoscaleScanWorkersOnProviderCapacity',
   'codexMaxSubagentsPerSession',
+  'codexFastMode',
   'minFreeStorageGb',
   'ignoreLowStorage',
   'memoryReserveGb',

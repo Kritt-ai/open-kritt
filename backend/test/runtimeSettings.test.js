@@ -39,6 +39,7 @@ test('settings API exposes the whitelisted runtime settings', async () => {
       'workersPerAccount',
       'autoscaleScanWorkersOnProviderCapacity',
       'codexMaxSubagentsPerSession',
+      'codexFastMode',
       'minFreeStorageGb',
       'ignoreLowStorage',
       'memoryReserveGb',
@@ -90,6 +91,9 @@ test('runtime settings expose only whitelisted effective values and their source
   assert.equal(result.settings.autoscaleScanWorkersOnProviderCapacity.value, true);
   assert.equal(result.settings.autoscaleScanWorkersOnProviderCapacity.source, 'default');
   assert.equal(result.settings.codexMaxSubagentsPerSession.value, 5);
+  assert.equal(result.settings.codexFastMode.value, false);
+  assert.equal(result.settings.codexFastMode.source, 'default');
+  assert.equal(result.settings.codexFastMode.type, 'boolean');
   assert.equal(result.settings.minFreeStorageGb.value, 23.5);
   assert.equal(result.settings.minFreeStorageGb.source, 'process_environment');
   assert.equal(result.settings.minFreeStorageGb.type, 'number');
@@ -122,6 +126,7 @@ test('runtime setting updates apply live and persist without overwriting unrelat
       cyberSafetyRetryCount: 3,
       autoscaleScanWorkersOnProviderCapacity: false,
       codexMaxSubagentsPerSession: 5,
+      codexFastMode: true,
       minFreeStorageGb: 18.5,
       ignoreLowStorage: true,
       memoryReserveGb: 2.5,
@@ -147,6 +152,7 @@ test('runtime setting updates apply live and persist without overwriting unrelat
   assert.equal(runtimeValues.ENGINE_CYBER_SAFETY_RETRY_COUNT, '3');
   assert.equal(runtimeValues.ENGINE_AUTOSCALE_SCAN_WORKERS_ON_PROVIDER_CAPACITY, 'false');
   assert.equal(runtimeValues.ENGINE_CODEX_MAX_SUBAGENTS_PER_SESSION, '5');
+  assert.equal(runtimeValues.ENGINE_CODEX_FAST_MODE, 'true');
   assert.equal(runtimeValues.ENGINE_MIN_FREE_STORAGE_GB, '18.5');
   assert.equal(runtimeValues.ENGINE_IGNORE_LOW_STORAGE, 'true');
   assert.equal(runtimeValues.ENGINE_MEMORY_RESERVE_GB, '2.5');
@@ -162,6 +168,7 @@ test('runtime setting updates apply live and persist without overwriting unrelat
   assert.equal(projectValues.ENGINE_CYBER_SAFETY_RETRY_COUNT, '3');
   assert.equal(projectValues.ENGINE_AUTOSCALE_SCAN_WORKERS_ON_PROVIDER_CAPACITY, 'false');
   assert.equal(projectValues.ENGINE_CODEX_MAX_SUBAGENTS_PER_SESSION, '5');
+  assert.equal(projectValues.ENGINE_CODEX_FAST_MODE, 'true');
   assert.equal(projectValues.ENGINE_MIN_FREE_STORAGE_GB, '18.5');
   assert.equal(projectValues.ENGINE_IGNORE_LOW_STORAGE, 'true');
   assert.equal(projectValues.ENGINE_MEMORY_RESERVE_GB, '2.5');
@@ -180,6 +187,7 @@ test('runtime setting updates apply live and persist without overwriting unrelat
   assert.equal(result.settings.cyberSafetyRetryCount.value, 3);
   assert.equal(result.settings.autoscaleScanWorkersOnProviderCapacity.value, false);
   assert.equal(result.settings.codexMaxSubagentsPerSession.value, 5);
+  assert.equal(result.settings.codexFastMode.value, true);
   assert.equal(result.settings.minFreeStorageGb.value, 18.5);
   assert.equal(result.settings.ignoreLowStorage.value, true);
   assert.equal(result.settings.memoryReserveGb.value, 2.5);
@@ -240,6 +248,10 @@ test('runtime setting validation rejects unknown, fractional, and out-of-range v
     codexMaxSubagentsPerSession: 5,
   });
   assert.throws(() => validateRuntimeSettingsPatch({ codexMaxSubagentsPerSession: 6 }), ValidationError);
+  assert.deepEqual(validateRuntimeSettingsPatch({ codexFastMode: true }), {
+    codexFastMode: true,
+  });
+  assert.throws(() => validateRuntimeSettingsPatch({ codexFastMode: 'true' }), ValidationError);
   assert.deepEqual(validateRuntimeSettingsPatch({ workersPerAccount: 15 }), {
     workersPerAccount: 15,
   });
