@@ -37,8 +37,11 @@ export default function Accounts() {
   const [loadingProviders, setLoadingProviders] = useState(() => new Set());
   const [providerErrors, setProviderErrors] = useState({});
   const loadSequence = useRef(0);
+  const activeUpdate = useRef(false);
+  const [updatingActive, setUpdatingActive] = useState(false);
 
   const load = useCallback(async (refresh = false) => {
+    if (activeUpdate.current) return;
     const sequence = ++loadSequence.current;
     refresh ? setRefreshing(true) : setLoading(true);
     setError(null);
@@ -98,6 +101,23 @@ export default function Accounts() {
     { label: refreshing ? 'Refreshing…' : 'Refresh accounts', onClick: () => load(true) },
     [refreshing, load]
   );
+
+  const toggleActive = async (provider, account) => {
+    if (activeUpdate.current) return;
+    activeUpdate.current = true;
+    setUpdatingActive(true);
+    ++loadSequence.current;
+    setError(null);
+    try {
+      const saved = await api.setAccountActive(provider.id, account.activityId, !account.active);
+      setData((current) => applyAccountActivity(current, provider.id, saved));
+    } catch (nextError) {
+      setError(nextError);
+    } finally {
+      activeUpdate.current = false;
+      setUpdatingActive(false);
+    }
+  };
 
   const save = async (provider, credential) => {
     const next = await api.saveProviderCredential(provider.id, credential);
@@ -189,7 +209,7 @@ export default function Accounts() {
       {data && (
         <>
           <div className="account-summary-grid">
-            <Summary label="Providers ready" value={`${data.configuredProviders}/${data.providerCount}`} />
+            <Summary label="Configured providers" value={`${data.configuredProviders}/${data.providerCount}`} />
             <Summary label="Active accounts" value={data.active} color="var(--ok)" />
             <Summary label="Accounts observed" value={data.total} />
           </div>
@@ -207,6 +227,15 @@ export default function Accounts() {
                 onRemoveAccount={(account) => removeLoginAccount(provider, account)}
                 onStartWeeklyUsage={startWeeklyUsage}
                 onUseManualReset={useManualReset}
+                onToggleActive={(account) => toggleActive(provider, account)}
+                updatingActive={
+                  updatingActive ||
+                  refreshing ||
+                  loadingProviders.size > 0 ||
+                  Boolean(removingAccount) ||
+                  startingUsage.size > 0 ||
+                  resettingUsage.size > 0
+                }
                 removingAccount={removingAccount}
                 startingUsage={startingUsage}
                 resettingUsage={resettingUsage}
@@ -257,24 +286,29 @@ export function ProviderCard({
   resettingUsage,
   loading,
   loadError,
+  onToggleActive,
+  updatingActive,
 }) {
   const accountPages = usePagination(provider.accounts || [], { pageSize: 5, resetKey: provider.id });
-  const ready = provider.configured && provider.active > 0;
+  const ready =
+    provider.configured && provider.accounts.some((account) => account.active && (account.available ?? account.active));
   const signInRequired =
     LOGIN_PROVIDERS.has(provider.id) && provider.accounts.some((account) => account.statusKind === 'expired');
   const status = loading
     ? 'Loading'
     : loadError
       ? 'Unavailable'
-      : signInRequired
-        ? 'Sign-in required'
-        : provider.limited
-          ? 'Limited'
-          : ready
-            ? 'Ready'
-            : provider.configured
-              ? 'Needs attention'
-              : 'Not configured';
+      : provider.configured && provider.active === 0 && provider.accounts.length > 0
+        ? 'Inactive'
+        : signInRequired
+          ? 'Sign-in required'
+          : provider.limited
+            ? 'Limited'
+            : ready
+              ? 'Ready'
+              : provider.configured
+                ? 'Needs attention'
+                : 'Not configured';
   const statusColor =
     loading || loadError || provider.limited || (provider.configured && !ready)
       ? 'var(--pend)'
@@ -319,6 +353,8 @@ export function ProviderCard({
           accountPages.pageItems.map((account, index) => (
             <AccountDetail
               key={`${account.path || account.label}-${accountPages.startIndex + index}`}
+              onToggleActive={() => onToggleActive?.(account)}
+              updatingActive={updatingActive}
               providerId={provider.id}
               account={account}
               onRemove={() => onRemoveAccount(account)}
@@ -470,10 +506,13 @@ function AccountDetail({
   removing,
   startingUsage,
   resettingUsage,
+  onToggleActive,
+  updatingActive,
 }) {
   const weeklyUsage = providerId === 'codex' ? codexWeeklyUsage(account) : null;
   const signInRequired = LOGIN_PROVIDERS.has(providerId) && account.statusKind === 'expired';
-  const showRateLimits = providerId !== 'claude' || account.active;
+  const available = account.available ?? account.active;
+  const showRateLimits = providerId !== 'claude' || available;
 
   return (
     <div className="account-detail">
@@ -492,6 +531,28 @@ function AccountDetail({
         <span className={`account-kind account-kind-${account.statusKind}`}>{account.status}</span>
       </div>
 
+      {account.activityId && (
+        <div style={{ marginTop: 12 }}>
+          <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: updatingActive ? 'wait' : 'pointer' }}>
+            <input
+              type="checkbox"
+              role="switch"
+              aria-label={`Active: ${account.label}`}
+              checked={account.active}
+              disabled={updatingActive}
+              onChange={onToggleActive}
+            />
+            Active
+          </label>
+          <div style={{ color: 'var(--text-2)', fontSize: 11.5, marginTop: 4 }}>
+            {account.active
+              ? 'Can receive new assignments.'
+              : 'Inactive. Activate this account to use it for new assignments.'}{' '}
+            Calls already assigned may finish.
+          </div>
+        </div>
+      )}
+
       {account.plan && (
         <div style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 10 }}>
           Plan: {account.plan}
@@ -506,7 +567,7 @@ function AccountDetail({
       {weeklyUsage && (
         <CodexWeeklyUsage
           usage={weeklyUsage}
-          onStart={onStartWeeklyUsage}
+          onStart={account.active && available ? onStartWeeklyUsage : null}
           onReset={onUseManualReset}
           starting={startingUsage}
           resetting={resettingUsage}
@@ -530,7 +591,7 @@ function AccountDetail({
       )}
 
       {showRateLimits && (
-        <AccountRateLimits providerId={providerId} rateLimits={account.rateLimits} authenticated={account.active} />
+        <AccountRateLimits providerId={providerId} rateLimits={account.rateLimits} authenticated={available} />
       )}
 
       {account.canRemove && (
@@ -662,7 +723,13 @@ export function codexWeeklyUsage(account, now = Date.now()) {
         .filter((credit) => Number.isFinite(new Date(credit.expiresAt).getTime()))
     : [];
   return {
-    notStarted: Boolean(account?.active && usedPercent !== null && usedPercent <= 0 && resetIsFullWindowAway),
+    notStarted: Boolean(
+      account?.active &&
+      (account.available ?? account.active) &&
+      usedPercent !== null &&
+      usedPercent <= 0 &&
+      resetIsFullWindowAway
+    ),
     resetRemaining: formatResetRemaining(weeklyLimit.resetsAt, now),
     manualResetsAvailable: finiteNumber(account?.rateLimits?.manualResetCredits?.availableCount),
     manualResetsApplicable: finiteNumber(account?.rateLimits?.manualResetCredits?.applicableAvailableCount),
@@ -1139,4 +1206,17 @@ function formatUsd(value) {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(amount);
+}
+
+export function applyAccountActivity(overview, providerId, saved) {
+  const provider = overview?.providers.find((item) => item.id === providerId);
+  if (!provider || typeof saved?.active !== 'boolean') return overview;
+  const accounts = provider.accounts.map((account) =>
+    account.activityId === saved.activityId ? { ...account, active: saved.active } : account
+  );
+  return replaceAccountProvider(overview, {
+    ...provider,
+    accounts,
+    active: accounts.filter((account) => account.active).length,
+  });
 }

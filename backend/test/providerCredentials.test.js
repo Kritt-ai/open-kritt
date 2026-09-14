@@ -228,6 +228,7 @@ test('account overview merges executor detail without exposing unrecognized fiel
         accounts: [
           {
             id: 'openrouter-key',
+            path: 'OPENROUTER_API_KEY',
             label: 'OpenRouter key',
             active: true,
             canRemove: true,

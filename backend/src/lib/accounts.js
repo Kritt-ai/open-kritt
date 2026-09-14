@@ -1,15 +1,16 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import { accountActivityId, accountIsActive, readAccountActivity, saveAccountActivity } from './accountActivity.js';
 import { renewClaudeCredential } from './claudeCredentials.js';
 import { probeGrokCredential } from './grokCredentials.js';
-import { providerCredentialStatuses } from './providerCredentials.js';
+import { PROVIDER_DEFINITIONS, providerCredentialStatuses } from './providerCredentials.js';
 import { CLAUDE_ACCOUNTS_ROOT, CLAUDE_HOME, GROK_ACCOUNTS_ROOT, GROK_PRIMARY_HOME } from './providerLogins.js';
 
 const EXECUTOR_VIEW_URL = process.env.EXECUTOR_VIEW_URL || 'http://executor-view:8090';
 const EXECUTOR_VIEW_INTERNAL_TOKEN_FILE =
   process.env.EXECUTOR_VIEW_INTERNAL_TOKEN_FILE || '/executor-auth/internal-token';
-const ACCOUNT_PROVIDER_IDS = ['codex', 'claude', 'openrouter', 'xai'];
+const ACCOUNT_PROVIDER_IDS = Object.keys(PROVIDER_DEFINITIONS);
 const EXECUTOR_ACCOUNT_TIMEOUT_MS = 180000;
 const ACCOUNT_STATUS_KINDS = new Set(['available', 'limited', 'stale', 'expired', 'warning', 'missing']);
 const ACCOUNT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -85,16 +86,19 @@ function safeCredit(credit) {
   return Object.values(result).some((value) => value !== null) ? result : null;
 }
 
-function safeAccount(account) {
+function safeAccount(account, provider, activity) {
   if (!account || typeof account !== 'object') return null;
   const statusKind = ACCOUNT_STATUS_KINDS.has(account.statusKind) ? account.statusKind : 'warning';
   const id = safeText(account.id, 200);
+  const path = safeText(account.path, 4096);
   return {
     id,
     label: safeText(account.label, 200) || 'Account',
     email: safeText(account.email, 320),
-    path: safeText(account.path, 1000),
-    active: Boolean(account.active),
+    path,
+    available: Boolean(account.active),
+    active: accountIsActive(provider, path, activity),
+    activityId: path ? accountActivityId(path) : null,
     canRemove: Boolean(id && account.canRemove),
     status: safeText(account.status, 200) || 'unknown',
     statusKind,
@@ -293,7 +297,7 @@ export async function fetchExecutorAccounts({
   return loaded.length ? { providers: loaded } : null;
 }
 
-export function buildAccountsOverview(statuses, executorAccounts) {
+export function buildAccountsOverview(statuses, executorAccounts, activity = []) {
   const executorProviders = new Map(
     (Array.isArray(executorAccounts?.providers) ? executorAccounts.providers : [])
       .filter((provider) => provider && typeof provider.kind === 'string')
@@ -303,10 +307,27 @@ export function buildAccountsOverview(statuses, executorAccounts) {
   const providers = statuses.map((status) => {
     const executorProvider = executorProviders.get(status.id);
     const accounts = Array.isArray(executorProvider?.accounts)
-      ? executorProvider.accounts.map(safeAccount).filter(Boolean)
+      ? executorProvider.accounts
+          .map((account) => safeAccount(account, status.id, activity))
+          .filter((account) => account && account.statusKind !== 'missing')
       : [];
-    const hasActiveAccount = accounts.some((account) => account.active);
-    const configured = status.configured || hasActiveAccount;
+    if (status.apiKeyConfigured && !accounts.some((account) => account.path === status.apiKeyPath)) {
+      accounts.push(
+        safeAccount(
+          {
+            id: `${status.id}-api-key`,
+            path: status.apiKeyPath,
+            label: `${status.label} API key`,
+            active: true,
+            status: 'key configured',
+            statusKind: 'available',
+          },
+          status.id,
+          activity
+        )
+      );
+    }
+    const configured = status.configured || accounts.some((account) => account.available);
     return {
       ...status,
       configured,
@@ -333,21 +354,39 @@ export async function getAccountsOverview({ refresh = false, statusOptions, exec
     Promise.resolve(providerCredentialStatuses(statusOptions)),
     fetchExecutorAccounts({ refresh, ...executorOptions }),
   ]);
-  return buildAccountsOverview(statuses, executorAccounts);
+  return buildAccountsOverview(statuses, executorAccounts, readAccountActivity());
 }
 
 export function getAccountsSummary({ statusOptions } = {}) {
-  return buildAccountsOverview(providerCredentialStatuses(statusOptions), null);
+  return buildAccountsOverview(providerCredentialStatuses(statusOptions), null, readAccountActivity());
 }
 
 export async function getAccountProvider(providerId, { refresh = false, statusOptions, executorOptions } = {}) {
   const status = providerCredentialStatuses(statusOptions).find((provider) => provider.id === providerId);
   if (!status) return null;
   const executorProvider = await fetchExecutorProvider(providerId, { refresh, ...executorOptions });
-  const provider = buildAccountsOverview([status], executorProvider ? { providers: [executorProvider] } : null)
-    .providers[0];
+  const provider = buildAccountsOverview(
+    [status],
+    executorProvider ? { providers: [executorProvider] } : null,
+    readAccountActivity()
+  ).providers[0];
   return {
     ...provider,
     loadError: executorProvider ? null : 'Account status is unavailable.',
   };
+}
+
+export async function setAccountActive(
+  providerId,
+  activityId,
+  active,
+  { getProvider = getAccountProvider, activityPath } = {}
+) {
+  if (typeof active !== 'boolean') throw accountActionError('Active must be a boolean.', 422);
+  const provider = await getProvider(providerId);
+  if (!provider) throw accountActionError('Unknown account provider.', 404);
+  if (provider.loadError) throw accountActionError('Account status is unavailable. Retry when Accounts can load.', 503);
+  const account = provider.accounts.find((candidate) => candidate.activityId === activityId);
+  if (!account?.path) throw accountActionError('Account not found. Refresh Accounts and try again.', 404);
+  return saveAccountActivity(providerId, account.path, active, activityPath);
 }

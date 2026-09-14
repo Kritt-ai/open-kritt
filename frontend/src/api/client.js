@@ -171,6 +171,11 @@ export const api = {
   saveProviderCredential: (provider, credential) =>
     request(`/accounts/${provider}`, { method: 'POST', body: { credential } }),
   removeProviderCredential: (provider) => request(`/accounts/${provider}`, { method: 'DELETE' }),
+  setAccountActive: (provider, activityId, active) =>
+    request(`/accounts/${encodeURIComponent(provider)}/account/${encodeURIComponent(activityId)}/active`, {
+      method: 'PATCH',
+      body: { active },
+    }),
   removeProviderAccount: (provider, accountId) =>
     request(`/accounts/${encodeURIComponent(provider)}/account/${encodeURIComponent(accountId)}`, {
       method: 'DELETE',

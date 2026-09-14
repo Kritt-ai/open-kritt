@@ -104,6 +104,9 @@ For prerequisites, manual Docker setup, and provider-specific instructions, read
 [installation guide](docs-site/getting-started/installation-and-setup.mdx) and
 [AI provider setup](docs-site/ai-provider-setup/overview.mdx).
 
+In **Accounts**, use the persisted **Active** switch to choose which accounts may receive
+new assignments while keeping other credentials saved. See [active provider accounts](docs/account-activity.md).
+
 ## Documentation
 
 Preview the documentation locally with Mint:

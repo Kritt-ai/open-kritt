@@ -20,8 +20,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .account_activity import (
+    API_ACCOUNT_KEYS,
+    AccountInactiveError,
+    account_is_active,
+    assert_account_assignment,
+    read_account_activity,
+)
 from .claude_auth import CLAUDE_OAUTH_EXPIRY_ENV, prepare_claude_job_credentials
-from .provider_credentials import job_environment
+from .provider_credentials import job_environment, provider_environment
 from .repository import (
     LOCAL_SNAPSHOT_REVISION,
     checkout_repo,
@@ -175,11 +182,11 @@ def prepare_job_workspace(
     )
     if needs_codex_home and codex_source:
         _copy_credential_files(Path(codex_source), codex_home, ("auth.json",))
-    elif needs_codex_home:
+    elif needs_codex_home and selected_provider == "openrouter":
         _prepare_openrouter_codex_home(codex_home)
-    if needs_claude_home and selected_provider == "claude":
+    if needs_claude_home and selected_provider == "claude" and claude_source:
         claude_oauth_expires_at_ms = prepare_claude_job_credentials(
-            Path(claude_source or os.getenv("CLAUDE_HOME", "/root/.claude")),
+            Path(claude_source),
             claude_home,
             harness_timeout_seconds=_harness_timeout_seconds(data_dir),
         )
@@ -223,11 +230,11 @@ def prepare_job_workspace(
         root_dir=str(root),
         repo_base_dir=str(repo_base),
         env=env,
-        codex_source_home=codex_source,
+        codex_source_home=codex_source or None,
         codex_account_id=provider_account.get("id") if codex_source else None,
         codex_account_email=provider_account.get("email") if codex_source else None,
-        provider_account_provider=(selected_provider if selected_provider in {"codex", "claude", "xai"} else None),
-        provider_account_home=codex_source or claude_source or grok_source,
+        provider_account_provider=selected_provider,
+        provider_account_home=codex_source or claude_source or grok_source or None,
         provider_account_id=provider_account.get("id"),
         provider_account_email=provider_account.get("email"),
     )
@@ -1438,11 +1445,16 @@ def provider_home_for_job(provider: str, metadata_id: int, *, data_dir: str | No
     del metadata_id
     homes = _configured_provider_homes(provider, data_dir=data_dir)
     if not homes:
-        if provider == "codex":
-            return "/root/.codex"
-        if provider == "xai":
-            return "/root/.grok"
-        return "/root/.claude"
+        homes = [{"codex": "/root/.codex", "xai": "/root/.grok"}.get(provider, "/root/.claude")]
+    entries = read_account_activity()
+    homes = [home for home in homes if account_is_active(provider, home, entries)]
+    if not homes:
+        env = provider_environment()
+        if any(env.get(key) for key in API_ACCOUNT_KEYS.get(provider, ())):
+            return ""
+        raise AccountInactiveError(
+            "No active accounts are available for this provider. Activate an account in Accounts and retry."
+        )
     live_health = _provider_account_health(provider)
     key = tuple(homes)
     with _PROVIDER_HOME_LOCK:
@@ -1526,10 +1538,11 @@ def _provider_account_worker_limit(data_dir: str | None = None) -> int:
 
 
 @contextmanager
-def provider_account_lease(provider: str | None, home: str | None, *, data_dir: str | None = None):
+def provider_account_lease(provider: str | None, home: str | None, *, data_dir: str | None = None, env=None):
     """Limit concurrent root model calls assigned to one native provider account."""
 
     if provider not in {"codex", "claude", "xai"} or not home:
+        assert_account_assignment(provider, home, env)
         yield
         return
     key = (provider, home)
@@ -1538,6 +1551,7 @@ def provider_account_lease(provider: str | None, home: str | None, *, data_dir: 
     with gate.condition:
         while gate.active >= _provider_account_worker_limit(data_dir):
             gate.condition.wait(timeout=1.0)
+        assert_account_assignment(provider, home, env)
         gate.active += 1
     try:
         yield
@@ -1551,6 +1565,8 @@ def provider_accounts_all_rate_limited(provider: str | None, *, data_dir: str | 
     if provider not in {"codex", "claude", "xai"}:
         return True
     homes = _configured_provider_homes(provider, data_dir=data_dir)
+    entries = read_account_activity()
+    homes = [home for home in homes if account_is_active(provider, home, entries)]
     if not homes:
         return True
     live_health = _provider_account_health(provider)
