@@ -1639,6 +1639,7 @@ def codex_exec_command(
     allow_tools: bool,
     codex_model_provider: str | None = None,
     max_subagents: int | None = None,
+    fast_mode: bool = False,
 ) -> list[str]:
     """Build a Codex exec command while preserving scan-mode compatibility."""
 
@@ -1657,6 +1658,8 @@ def codex_exec_command(
         command.append("--dangerously-bypass-approvals-and-sandbox")
         if max_subagents is not None:
             command.extend(["-c", f"agents.max_concurrent_threads_per_session={max_subagents}"])
+        if fast_mode and normalize_model_provider(model_provider) == "codex":
+            command.extend(["-c", "features.fast_mode=true", "-c", 'service_tier="fast"'])
     else:
         command.extend(
             [
@@ -1697,6 +1700,7 @@ class CodexHarness:
         cli_gate=None,
         codex_model_provider: str | None = None,
         max_subagents: int = 5,
+        fast_mode: bool = False,
         runner_memory_mb: int = 0,
         runner_memory_reservation_mb: int = 0,
     ):
@@ -1705,6 +1709,7 @@ class CodexHarness:
         self.codex_model_provider = codex_model_provider
         self.cli_gate = cli_gate
         self.max_subagents = max(1, min(int(max_subagents), 5))
+        self.fast_mode = bool(fast_mode)
         self.runner_memory_mb = max(0, int(runner_memory_mb))
         self.runner_memory_reservation_mb = max(0, int(runner_memory_reservation_mb))
 
@@ -1755,6 +1760,7 @@ class CodexHarness:
                 thinking_effort=thinking_effort,
                 allow_tools=allow_tools,
                 max_subagents=self.max_subagents if allow_tools else None,
+                fast_mode=self.fast_mode,
             )
             if allow_tools:
                 cmd = _scan_docker_command(
@@ -1867,6 +1873,8 @@ class CodexHarness:
             "-o",
             output_path,
         ]
+        if self.fast_mode and normalize_model_provider(self.model_provider) == "codex":
+            cmd.extend(["-c", "features.fast_mode=true", "-c", 'service_tier="fast"'])
         cli_model_provider = codex_cli_model_provider(
             self.model_provider,
             self.codex_model_provider,
@@ -2368,6 +2376,7 @@ def harness_for(
     codex_model_provider: str | None = None,
     codex_cli_gate=None,
     codex_max_subagents: int = 5,
+    codex_fast_mode: bool = False,
     runner_memory_mb: int = 0,
     runner_memory_reservation_mb: int = 0,
 ):
@@ -2380,6 +2389,7 @@ def harness_for(
             cli_gate=codex_cli_gate,
             codex_model_provider=codex_model_provider,
             max_subagents=codex_max_subagents,
+            fast_mode=codex_fast_mode,
             runner_memory_mb=runner_memory_mb,
             runner_memory_reservation_mb=runner_memory_reservation_mb,
         )

@@ -15,6 +15,7 @@ and whether that value is live or needs an engine container recreation.
 | Concurrent scan pool | Live | Maximum number of immediately started scans admitted at once. Queued scans wait until the active pool is empty. |
 | Workers per scan | Live | Hard cap on worker slots used by one scan. Set it to `0` for automatic fair sharing. |
 | Autoscale on provider capacity | Live | Reduces a scan's future worker cap after the provider reports server-capacity throttling. It does not change account quota limits. |
+| Codex Fast mode | Live | Requests faster responses at higher usage cost for native Codex models that advertise Fast support. Disabled by default. |
 | Minimum free storage | Live | Pauses new scan containers below the configured host free-space floor. |
 | Ignore low-storage safeguard | Live | Starts new scan containers regardless of free disk space while preserving the configured threshold for later use. |
 | Workspace setup concurrency | Engine recreation | Limits simultaneous checkout and isolated workspace preparation. |
@@ -39,6 +40,26 @@ the project `.env` file so a future `docker compose up` recreation keeps them.
   confirmation before enabling this override, pausing work, or raising worker slots
   above the conservative recommendation.
 </Warning>
+
+## Codex Fast mode
+
+![Codex Fast mode setting, disabled by default](/images/codex-fast-mode.png)
+
+Enable **Codex Fast mode** to request the Fast service tier for future native Codex
+calls. Saving the enabled setting asks for confirmation because it can increase
+usage costs. Existing calls keep their original setting.
+
+The engine checks the selected model's advertised service tiers before requesting
+Fast. If the catalog is missing, unavailable, or does not advertise Fast for that
+model, the call keeps its normal tier. OpenRouter calls and tool-free generation
+are unaffected. A model advertising Fast does not guarantee that every account is
+eligible; provider account restrictions still apply.
+
+Availability and pricing depend on the model and authentication method. ChatGPT
+sign-ins use Codex usage limits and credits; API-key calls use API billing. See the
+official [Codex speed guide](https://learn.chatgpt.com/docs/agent-configuration/speed)
+for current details. The equivalent environment setting is
+`ENGINE_CODEX_FAST_MODE=true`; its default is `false`.
 
 ## Scheduling behavior
 

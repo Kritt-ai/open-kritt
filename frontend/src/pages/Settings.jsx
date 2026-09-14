@@ -43,6 +43,13 @@ const PRESENTATION = {
     unit: 'subagents',
     description: 'Hard cap for concurrently running child agents inside each Codex scan session.',
   },
+  codexFastMode: {
+    label: 'Codex Fast mode',
+    description:
+      'Request faster responses for supported native Codex models, with higher usage costs. Models without advertised Fast support keep their normal tier. Availability and cost depend on the model and account.',
+    enabledDescription: 'Applies to new calls using supported native Codex models; running calls are unchanged.',
+    disabledDescription: 'New calls keep their normal service tier.',
+  },
   minFreeStorageGb: {
     label: 'Minimum free storage',
     unit: 'GiB',
@@ -182,6 +189,13 @@ export default function Settings() {
       patch.ignoreLowStorage === true &&
       !window.confirm(
         'Ignore the low-storage safeguard? New scan containers may fill the host disk, causing scans or other services to fail.'
+      )
+    )
+      return;
+    if (
+      patch.codexFastMode === true &&
+      !window.confirm(
+        'Enable Codex Fast mode? Supported models can respond faster at a higher usage cost. Pricing and availability depend on your model and account.'
       )
     )
       return;

@@ -4,6 +4,36 @@ import { describe, expect, it } from 'vitest';
 import { RuntimeSettingsFields } from './Settings.jsx';
 
 describe('runtime settings fields', () => {
+  it('shows Fast mode eligibility, cost and the disabled default', () => {
+    const html = renderToStaticMarkup(
+      <RuntimeSettingsFields
+        data={{
+          settings: {
+            codexFastMode: {
+              value: false,
+              defaultValue: false,
+              source: 'default',
+              valid: true,
+              envKey: 'ENGINE_CODEX_FAST_MODE',
+              type: 'boolean',
+              apply: 'live',
+            },
+          },
+        }}
+        draft={{ codexFastMode: false }}
+        issues={{}}
+        saving={false}
+        onChange={() => {}}
+      />
+    );
+
+    expect(html).toContain('id="setting-codexFastMode"');
+    expect(html).toContain('higher usage costs');
+    expect(html).toContain('Models without advertised Fast support keep their normal tier.');
+    expect(html).toContain('Default disabled');
+    expect(html).not.toContain('checked=""');
+  });
+
   it('renders available fields and warns when the backend omits newer settings', () => {
     const html = renderToStaticMarkup(
       <RuntimeSettingsFields
