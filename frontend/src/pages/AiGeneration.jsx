@@ -6,6 +6,7 @@ import ModelConfiguration, {
   modelConfigurationIsValid,
 } from '../components/ModelConfiguration.jsx';
 import { Spinner } from '../components/ui.jsx';
+import ResourceNotice from '../components/ResourceNotice.jsx';
 import { usePageChrome } from '../context/ui.jsx';
 import { configuredModelCatalog, configuredModelProviders, modelCatalogIsReady } from '../lib/modelProviders.js';
 import {
@@ -306,7 +307,7 @@ export default function AiGeneration({ kind }) {
         {(generationRunning || job?.status === 'failed' || errors.length > 0) && (
           <section style={{ marginTop: 28 }}>
             {generationRunning && !pollingStopped ? (
-              <GenerationProgress status={job?.status || 'pending'} kind={copy.label} />
+              <GenerationProgress status={job?.status || 'pending'} kind={copy.label} notice={job?.resourceNotice} />
             ) : job?.status === 'failed' ? (
               <GenerationFailure job={job} kind={copy.label} />
             ) : (
@@ -390,7 +391,7 @@ function Label({ children, htmlFor }) {
   );
 }
 
-function GenerationProgress({ status, kind }) {
+function GenerationProgress({ status, kind, notice }) {
   return (
     <div
       role="status"
@@ -406,6 +407,7 @@ function GenerationProgress({ status, kind }) {
       <div style={{ fontSize: 12.5, color: 'var(--text-3)', margin: '-28px 0 18px 26px' }}>
         Invalid output is rejected before it reaches the editor.
       </div>
+      {status === 'pending' && <ResourceNotice notice={notice} />}
     </div>
   );
 }
@@ -467,7 +469,12 @@ function GenerationFailure({ job, kind }) {
         <div className="mono" style={{ color: 'var(--fail)', fontSize: 10, marginBottom: 4 }}>
           WHAT HAPPENED
         </div>
-        {failure.message}
+        {job.resourceFailure?.message || failure.message}
+        {job.resourceFailure?.fixLinks?.map((link) => (
+          <div key={link.url} style={{ marginTop: 6 }}>
+            <Link to={link.url}>{link.label}</Link>
+          </div>
+        ))}
       </div>
 
       {failure.issues.length > 0 && (

@@ -5,6 +5,7 @@ import { useFetch } from '../lib/useFetch.js';
 import { usePageChrome } from '../context/ui.jsx';
 import { CardLinkOverlay, Spinner, ErrorState, StatusBadge, Button } from '../components/ui.jsx';
 import LinkifiedText from '../components/LinkifiedText.jsx';
+import ResourceNotice from '../components/ResourceNotice.jsx';
 import {
   sevColor,
   findingSeverity,
@@ -320,7 +321,7 @@ export default function ScanDetail() {
         : [];
   const rateLimit = rateLimitPresentation(scan.reasoning);
   const providerAutoscale = providerCapacityAutoscalePresentation(scan.reasoning);
-  const storageWarning = storageWarningPresentation(scan.reasoning);
+  const storageWarning = storageWarningPresentation(scan.reasoning, scan.status);
   const supplementalAvailability = supplementalPostScriptAvailability(scan, list);
   const selectedPostScript = (availablePostScripts || []).find(
     (postScript) => String(postScript.id) === supplementalPostScriptId
@@ -584,21 +585,8 @@ export default function ScanDetail() {
           </div>
         )}
 
-        {storageWarning && (
-          <div
-            style={{
-              marginTop: 14,
-              padding: '10px 12px',
-              borderRadius: 8,
-              color: 'var(--pend)',
-              background: 'var(--pend-bg)',
-              fontSize: 12.5,
-              lineHeight: 1.45,
-            }}
-          >
-            <strong>Low storage.</strong> {storageWarning.message}
-          </div>
-        )}
+        <ResourceNotice notice={scan.resourceNotice} />
+        <ResourceNotice notice={storageWarning} />
 
         {providerAutoscale && (
           <div

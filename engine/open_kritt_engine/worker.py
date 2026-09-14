@@ -60,6 +60,7 @@ from .prompting import (
 )
 from .provider_credentials import provider_environment
 from .queue import build_pending_jobs, configured_step_ids
+from .resource_diagnostics import publish_resource_diagnostics
 from .runner_resources import evict_newest_scan_runner
 from .runtime_config import runtime_bool, runtime_config_path, runtime_float, runtime_int, runtime_value
 from .schema import OutputValidationError, output_schema, validate_payload
@@ -250,6 +251,7 @@ class Worker:
                 generation_worker = None
 
             capacity = self.runtime_memory_capacity()
+            publish_resource_diagnostics(capacity, data_dir=self.config.data_dir)
             desired = capacity.effective_workers
             if capacity != last_capacity:
                 if capacity.total_bytes is None:
@@ -261,13 +263,14 @@ class Worker:
                 else:
                     LOGGER.info(
                         "engine worker capacity is %s of %s configured "
-                        "(%.1f GiB total, %.1f GiB reserve, %s MiB reservation per runner, %s MiB hard cap)",
+                        "(engine-visible Linux system: %.3f GiB total, %.3f GiB reserve, "
+                        "%.3f GiB reservation per runner, %.3f GiB hard cap)",
                         desired,
                         capacity.configured_workers,
                         capacity.total_bytes / GIB,
                         capacity.reserve_bytes / GIB,
-                        capacity.runner_bytes // MIB,
-                        self.runtime_scan_runner_memory_mb(),
+                        capacity.runner_bytes / GIB,
+                        self.runtime_scan_runner_memory_mb() * MIB / GIB,
                     )
                 last_capacity = capacity
 
@@ -475,13 +478,16 @@ class Worker:
         was_paused = bool(getattr(self, "_memory_admission_paused", False))
         if not allowed and not was_paused:
             LOGGER.warning(
-                "pausing new runner admission: %.1f GiB available, %.1f GiB reserve plus %s MiB required",
+                "waiting for memory: engine-visible Linux system has %.3f GiB available; "
+                "%.3f GiB required (%.3f GiB Docker memory reserve + %.3f GiB Runner memory reservation). "
+                "Free memory or increase system/VM memory; review these settings and their tradeoffs in Settings",
                 available_bytes / GIB,
+                (reserve_bytes + runner_bytes) / GIB,
                 reserve_bytes / GIB,
-                runner_bytes // MIB,
+                runner_bytes / GIB,
             )
         elif allowed and was_paused:
-            LOGGER.info("resuming runner admission with %.1f GiB available", available_bytes / GIB)
+            LOGGER.info("resuming runner admission with %.3f GiB available to the Linux system", available_bytes / GIB)
         self._memory_admission_paused = not allowed
         return allowed
 
@@ -1107,7 +1113,9 @@ class Worker:
                 LOGGER.warning("scan %s container launch paused: storage check failed: %s", scan_id, check_error)
             else:
                 LOGGER.warning(
-                    "scan %s container launch paused: %.1f GiB free, %.1f GiB required",
+                    "scan %s container launch waiting for storage: engine-data filesystem has %.3f GiB free; "
+                    "Minimum free storage is %.3f GiB. Free space or expand the disk; "
+                    "lowering the setting reduces the safety margin but does not free space",
                     scan_id,
                     free_bytes / 1024**3,
                     required_bytes / 1024**3,

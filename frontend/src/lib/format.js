@@ -1,6 +1,14 @@
 // Status + severity presentation helpers (ported from the design logic).
 
 export function rateLimitPresentation(reasoning) {
+  if (reasoning?.limit_kind === 'runner_resource_limited') {
+    return {
+      label: 'Runner retry pending',
+      message:
+        'The runner was killed. The cause is unknown: memory pressure, a container limit, or an external stop may be responsible. Check Docker/container events and engine logs. Exit 137 alone does not prove a memory shortage.',
+      accountRelated: false,
+    };
+  }
   if (reasoning?.limit_kind === 'provider_throttled') {
     return {
       label: 'Provider busy',
@@ -44,8 +52,13 @@ export function providerCapacityAutoscalePresentation(reasoning) {
     return null;
   const reductions = Number.isInteger(events) && events > 0 ? events : Math.max(0, initialCap - workerCap);
   const subagentLimited = reasoning?.limit_kind === 'subagent_limited';
-  const label = subagentLimited ? 'Subagent-limit autoscale' : 'Provider-capacity autoscale';
-  const cause = subagentLimited ? 'subagent-limit' : 'capacity';
+  const runnerLimited = reasoning?.limit_kind === 'runner_resource_limited';
+  const label = runnerLimited
+    ? 'Runner-termination autoscale'
+    : subagentLimited
+      ? 'Subagent-limit autoscale'
+      : 'Provider-capacity autoscale';
+  const cause = runnerLimited ? 'runner-termination' : subagentLimited ? 'subagent-limit' : 'capacity';
   return {
     initialCap,
     workerCap,
@@ -57,22 +70,41 @@ export function providerCapacityAutoscalePresentation(reasoning) {
   };
 }
 
-export function storageWarningPresentation(reasoning) {
+export function storageWarningPresentation(reasoning, status = 'running') {
+  if (!['prewarming_cache', 'running', 'post_processing'].includes(status)) return null;
   const warning = reasoning?.storage_warning;
   if (!warning || typeof warning !== 'object') return null;
-  const requiredGiB = Number(warning.required_bytes) / 1024 ** 3;
-  const freeGiB = warning.free_bytes == null ? null : Number(warning.free_bytes) / 1024 ** 3;
-  const fallback =
-    warning.code === 'storage_check_unavailable'
-      ? 'New scan containers are paused because free storage could not be checked. The scan will resume automatically after the check succeeds.'
-      : `New scan containers are paused${Number.isFinite(freeGiB) ? ` at ${freeGiB.toFixed(1)} GiB free` : ''}${
-          Number.isFinite(requiredGiB) ? `; ${requiredGiB.toFixed(0)} GiB is required` : ''
-        }. Running containers are not interrupted, and the scan will resume automatically when space is available.`;
+  if (!['low_storage', 'storage_check_unavailable'].includes(warning.code)) return null;
+  const toGiB = (value) => (Number.isSafeInteger(value) && value >= 0 ? value / 1024 ** 3 : null);
+  const requiredGiB = toGiB(warning.required_bytes);
+  const freeGiB = toGiB(warning.free_bytes);
+  const unavailable = warning.code === 'storage_check_unavailable';
+  const measured = freeGiB === null ? 'available space was not recorded' : `${Number(freeGiB.toFixed(3))} GiB was free`;
+  const required =
+    requiredGiB === null
+      ? 'the threshold was not recorded'
+      : `Minimum free storage was ${Number(requiredGiB.toFixed(3))} GiB`;
+  const recordedAt = Date.parse(warning.detected_at);
   return {
-    code: warning.code || 'low_storage',
-    freeGiB: Number.isFinite(freeGiB) ? freeGiB : null,
-    requiredGiB: Number.isFinite(requiredGiB) ? requiredGiB : null,
-    message: typeof warning.message === 'string' && warning.message.trim() ? warning.message : fallback,
+    code: warning.code,
+    freeGiB,
+    requiredGiB,
+    title: unavailable ? 'Storage check unavailable' : 'Waiting for storage',
+    message:
+      (unavailable
+        ? 'Free space on the engine-data filesystem could not be measured; a disk shortage has not been established.'
+        : `At the last reported check, ${measured} on the filesystem containing engine data; ${required}.`) +
+      ' New container starts wait for a successful check with enough space. Checks repeat automatically; running containers continue.',
+    detail:
+      'This is the engine-data filesystem, which may differ from Docker image storage or other host disks. The minimum is a safety margin, not an estimate of the space this project will need.' +
+      (freeGiB !== null && requiredGiB !== null && !unavailable
+        ? ` GiB values are rounded; the recorded comparison is ${warning.free_bytes} bytes free versus ${warning.required_bytes} bytes required.`
+        : ''),
+    remedy: unavailable
+      ? 'Check that the engine-data mount is accessible and review the engine logs. Restore the storage measurement before changing the safeguard.'
+      : 'Free space or expand the disk containing engine data. For smaller projects, lowering Minimum free storage may allow starts with less free space, but increases the risk of filling the disk. It does not free space or guarantee completion.',
+    observedAt: Number.isFinite(recordedAt) ? new Date(recordedAt).toISOString() : null,
+    fixLinks: [{ label: 'Minimum free storage', url: '/settings#setting-minFreeStorageGb' }],
   };
 }
 

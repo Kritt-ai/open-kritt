@@ -527,24 +527,15 @@ test('Claude reconnect failures link directly to Accounts', () => {
 test('workspace disk exhaustion renders an actionable engine error', () => {
   const message = 'workspace setup failed for step 54: git clone failed: fatal: write error: No space left on device';
 
-  assert.equal(knownError(message)?.title, 'Engine storage full');
-  assert.equal(
-    cleanError(message),
-    'Engine storage full. The scanner ran out of disk space while creating a job workspace. ' +
-      'Free local disk space, then resume the scan.'
-  );
+  assert.equal(knownError(message)?.title, 'Storage exhausted');
+  assert.match(cleanError(message), /affected filesystem were not recorded/);
+  assert.match(cleanError(message), /Lowering Minimum free storage cannot fix a full disk/);
 });
 
-test('low-storage warning persistence failures explain the pause bug', () => {
+test('generic JSON persistence failures do not claim a storage shortage', () => {
   const message = 'psycopg.errors.InvalidParameterValue: cannot set path in scalar';
-
-  assert.equal(knownError(message)?.title, 'Low-storage pause failed');
-  assert.equal(
-    cleanError(message),
-    'Low-storage pause failed. The engine ran low on disk space, then could not save its automatic pause warning. ' +
-      'Free disk space, lower Minimum free storage, or enable Ignore low-storage safeguard in Settings, then resume the scan; completed work is preserved.'
-  );
-  assert.deepEqual(knownError(message)?.fixLinks, [{ label: 'Open Settings', url: '/settings', internal: true }]);
+  assert.equal(knownError(message), null);
+  assert.equal(cleanError(message), message);
 });
 
 test('cyber policy diagnostics render the actionable provider cause', () => {
