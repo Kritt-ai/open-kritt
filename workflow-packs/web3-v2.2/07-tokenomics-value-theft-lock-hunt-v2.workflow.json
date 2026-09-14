@@ -1,0 +1,271 @@
+{
+  "kind": "open-kritt-workflow",
+  "version": 2,
+  "workflow": {
+    "name": "Tokenomics Value Theft and Lock Hunt v2",
+    "description": "Deployment- and scope-derived hunt for permissionless theft, over-claim, vote-weight inflation, staking conservation failure, or unauthorized lock of tokenomics value. Import-valid v2.2: globally unique stage keys, a single dedup consume-all boundary, explicit proxy/storage/initialization coverage, and per-operation cross-contract neighborhoods for composition analysis.",
+    "levels": [
+      {
+        "depth": 0,
+        "multiOutput": false,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "scope_scope_contract_id": "string",
+          "scope_in_scope_assets": "array",
+          "scope_accepted_impacts": "array",
+          "scope_excluded_issues": "array",
+          "scope_known_issues": "array",
+          "scope_program_rules": "array",
+          "scope_payout_priorities": "array",
+          "scope_deployment_facts": "array",
+          "scope_authorized_test_constraints": "array",
+          "scope_scope_gaps": "array",
+          "scope_scope_evidence": "array",
+          "scope_in_scope_contract_addresses": "array",
+          "scope_in_scope_chains": "array",
+          "scope_impact_threshold_rules": "array",
+          "scope_trusted_dependency_rules": "array",
+          "scope_fork_block_or_deployment_snapshot": "string"
+        },
+        "steps": [
+          {
+            "name": "Freeze tokenomics program scope",
+            "content": "Repository: {{repo_full}} at commit {{commit_sha}}.\nProgram URL: {{extra.bug_bounty_url}}\nRules checked at: {{extra.program_rules_checked_at}}\nProgram snapshot: {{extra.program_rules_snapshot}}\nDeployment evidence: {{extra.deployment_evidence}}\nKnown-issues snapshot: {{extra.known_issues_snapshot}}\nAuthorized testing constraints: {{extra.authorized_test_constraints}}\n\nBuild the immutable scope contract for this run before analyzing code. Extract exact in-scope assets/components, accepted impacts, exclusions, known issues, testing restrictions, payout priorities, and supplied deployment facts. Separate supplied evidence from missing facts. Never infer current program rules, live deployments, TVL, traffic, configuration, or severity from memory. A silent snapshot creates a scope gap.\n\nReturn exactly one record. Preserve the wording or a close identifier for each controlling rule so later agents can map a technical effect to a named accepted impact. Do not analyze vulnerabilities.\n\nExtract exact tokenomics assets/contracts/addresses/chains, accepted theft/freeze/governance impacts, cross-chain and trusted-relayer rules, impact thresholds, and deployment snapshot. Do not exclude bridges, gauges, or audited modules unless the supplied scope controls."
+          }
+        ]
+      },
+      {
+        "depth": 1,
+        "multiOutput": true,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "surface_operation_id": "string",
+          "surface_operation_label": "string",
+          "surface_entrypoint": "string",
+          "surface_file_path": "string",
+          "surface_line": "number",
+          "surface_actor": "string",
+          "surface_production_address_evidence": "array",
+          "surface_custody_model": "string",
+          "surface_fund_provenance": "array",
+          "surface_victims_and_approvals": "array",
+          "surface_assets_and_accounting": "array",
+          "surface_controlled_inputs": "array",
+          "surface_protected_invariants": "array",
+          "surface_math_and_rounding_trace": "array",
+          "surface_oracle_and_external_calls": "array",
+          "surface_state_update_order": "array",
+          "surface_terminal_value_effect": "string",
+          "surface_candidate_allowed_impacts": "array",
+          "surface_evidence_gaps": "array",
+          "surface_value_domain": "string",
+          "surface_position_or_allocation_identity": "string",
+          "surface_time_epoch_checkpoint_trace": "array",
+          "surface_claim_replay_state": "array",
+          "surface_governance_or_bridge_boundary": "array",
+          "surface_proxy_and_initialization_trace": "array",
+          "surface_storage_layout_risks": "array",
+          "surface_cross_contract_edges": "array",
+          "surface_related_operations": "array",
+          "surface_shared_state_dependencies": "array"
+        },
+        "steps": [
+          {
+            "name": "Map tokenomics custody and distribution surfaces",
+            "content": "Map current in-scope deployed contracts that custody or distribute locked tokens, staking assets/shares, emissions, vote weight, gauges, vesting, and Merkle/claim rewards. Derive modules from code and deployment evidence instead of hard-coded Pendle paths. For each permissionless operation trace owner/beneficiary identity, balances/shares, unlock/epoch/week/checkpoint math, vote bias/slope, emission conservation, claimed ledgers/roots/proofs, bridge/relayer boundaries, external calls, and terminal transfers. Record exact invariants and accepted-impact candidates.\n\nUse deterministic enumeration before reasoning: ripgrep plus language-aware AST/compiler tooling when available. Perform {{extra.repeat_runs}} independent enumeration passes when supplied (default: 2), compare their coverage, and record any coverage gap.\n\nWeb3 architecture expansion: identify whether the operation is reached through a transparent proxy, UUPS proxy, beacon, diamond/facet, minimal clone, metamorphic deployment, delegatecall-based module, or direct implementation. Trace proxy -> implementation/facet resolution, initializer state, upgrade authorization, storage slots/layout across relevant versions, selector routing, and every attacker-influenceable delegatecall target. Check deployed bytecode/configuration evidence rather than assuming source deployment.\n\nFor each operation, include its local cross-contract neighborhood: direct callers and callees, callbacks/hooks, shared storage/accounting dependencies, tokens/oracles/bridges it trusts, and related public operations that can prepare or consume its state. Follow at least two contract hops where source and deployment evidence permit. Populate the proxy/storage and cross-contract output fields even when the conclusion is \"direct deployment / no relevant edge\", with evidence.\n"
+          }
+        ]
+      },
+      {
+        "depth": 2,
+        "multiOutput": true,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "hyp_hypothesis_id": "string",
+          "hyp_hypothesis_class": "string",
+          "hyp_hypothesis_summary": "string",
+          "hyp_root_cause": "string",
+          "hyp_root_cause_location": "string",
+          "hyp_broken_invariant": "string",
+          "hyp_attacker_sequence": "array",
+          "hyp_required_preconditions": "array",
+          "hyp_expected_technical_impact": "string",
+          "hyp_matched_allowed_impact_candidate": "string",
+          "hyp_candidate_guards": "array",
+          "hyp_verification_locations": "array",
+          "hyp_falsification_target": "string",
+          "hyp_evidence_gaps": "array",
+          "hyp_fund_source": "string",
+          "hyp_victim": "string",
+          "hyp_exact_math_or_state_drift": "string",
+          "hyp_profit_mechanism": "string",
+          "hyp_flash_or_composition_requirements": "array"
+        },
+        "steps": [
+          {
+            "name": "Tokenomics hypotheses A: ownership, locks, claims",
+            "content": "Fresh-context analysis of {{surface_operation_label}}. Generate only precise permissionless hypotheses for early or foreign withdrawal, position substitution, unauthorized beneficiary/recipient, claim replay/double claim/over-claim, root/domain separation, staking share inflation, reward debt/index error, or permanent lock. Require exact state identity, sequence, fund source, victim, arithmetic, locations, guards, accepted impact, and falsification target."
+          },
+          {
+            "name": "Tokenomics hypotheses B: vote, epoch, checkpoint composition",
+            "content": "Independently analyze {{surface_operation_label}}. Hunt vote-weight bias/slope forgery, checkpoint omission/reordering, week/epoch boundary double counting, emission over-allocation, stale gauge state, flash/composable voting where feasible, rounding accumulation, and cross-module/cross-chain message replay allowed by scope. Require a concrete value or governance impact path, exact math/state drift, realistic prerequisites, guards, and falsification target.\n\nUse the mapped neighborhood, not only the focal operation:\n- proxy/initialization: {{surface_proxy_and_initialization_trace}}\n- storage risks: {{surface_storage_layout_risks}}\n- call edges: {{surface_cross_contract_edges}}\n- related public operations: {{surface_related_operations}}\n- shared state: {{surface_shared_state_dependencies}}\n\nExplicitly test cross-contract sequences of two or more public operations when they share accounting, authorization, oracle, callback, approval, epoch, or settlement state. Include sequences where one operation creates a state that another consumes in the same transaction, later transaction, callback, or flash-loan bundle.\n\nExplicit proxy/storage classes: uninitialized proxy or implementation; initializer/reinitializer replay; implementation takeover with a concrete effect on the proxy or assets; UUPS/transparent/beacon/diamond upgrade authorization bypass; storage-layout collision across evidenced versions; facet/selector clashing; delegatecall to an attacker-controlled or incorrectly validated target; proxy/implementation authorization disagreement; immutable/domain-separator/address-context mistakes under delegatecall; and upgrade paths that brick, seize, mint, withdraw, or permanently freeze in-scope value. Emit a hypothesis only with an evidenced deployed path, attacker-controlled primitive, exact faulty slot/selector/initializer/authorization operation, and accepted-impact candidate.\n"
+          }
+        ]
+      },
+      {
+        "depth": 3,
+        "multiOutput": true,
+        "consumesAll": true,
+        "bindPrevious": false,
+        "outputFormat": {
+          "dedup_canonical_hypothesis_id": "string",
+          "dedup_root_bug_fingerprint": "string",
+          "dedup_canonical_summary": "string",
+          "dedup_canonical_root_cause": "string",
+          "dedup_canonical_location": "string",
+          "dedup_broken_invariant": "string",
+          "dedup_canonical_entrypoints": "array",
+          "dedup_canonical_flows": "array",
+          "dedup_canonical_attacker_sequence": "array",
+          "dedup_canonical_preconditions": "array",
+          "dedup_canonical_expected_impact": "string",
+          "dedup_candidate_allowed_impact": "string",
+          "dedup_canonical_candidate_guards": "array",
+          "dedup_canonical_verification_locations": "array",
+          "dedup_canonical_falsification_target": "string",
+          "dedup_canonical_evidence_gaps": "array",
+          "dedup_merged_hypothesis_ids": "array",
+          "dedup_triage_priority": "string"
+        },
+        "steps": [
+          {
+            "name": "Deduplicate tokenomics root causes",
+            "content": "Cluster {{multi_output_depth_2}} by faulty identity/accounting/checkpoint operation, attacker primitive, victim/value source, invariant, and fix. Keep distinct bugs separate when their fixes differ. Create stable fingerprints and preserve trigger variants. Discard self-only expected behavior, privileged-only paths, scope-excluded trust assumptions, known issues, and unsupported deployment claims."
+          }
+        ]
+      },
+      {
+        "depth": 4,
+        "multiOutput": false,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "verify_technical_verdict": "string",
+          "verify_production_reachability": "string",
+          "verify_verified_trace": "array",
+          "verify_attacker_control_evidence": "array",
+          "verify_guard_analysis": "array",
+          "verify_falsification_attempts": "array",
+          "verify_runtime_evidence": "array",
+          "verify_unresolved_assumptions": "array",
+          "verify_observed_effect": "string",
+          "verify_verified_file_path": "string",
+          "verify_verified_line": "number",
+          "verify_poc_plan": "array",
+          "verify_fund_provenance_proof": "array",
+          "verify_victim_proof": "array",
+          "verify_conservation_or_profit_arithmetic": "string",
+          "verify_realistic_profit_estimate": "string",
+          "verify_impact_magnitude_evidence": "array",
+          "verify_dedup_against_audits_and_known_issues": "array"
+        },
+        "steps": [
+          {
+            "name": "Independent tokenomics verification",
+            "content": "Try to falsify {{dedup_canonical_hypothesis_id}}. Required gates: deployed in-scope reachability; ownership/beneficiary binding; lock/unlock authorization; claim replay ledger and domain/root binding; vote-weight/checkpoint ordering; staking/emission conservation; external/cross-chain trust per scope; known-issue/audit dedup; realistic attacker gain or accepted freeze/governance impact. Record exact arithmetic and pass/fail/blocked/not-applicable per gate. supported requires an end-to-end permissionless accepted impact. Produce a pinned fork plan."
+          }
+        ]
+      },
+      {
+        "depth": 5,
+        "multiOutput": false,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "poc_poc_verdict": "string",
+          "poc_poc_method": "string",
+          "poc_commands_or_test_cases": "array",
+          "poc_poc_evidence": "array",
+          "poc_observed_effect": "string",
+          "poc_expected_vs_observed": "string",
+          "poc_repeatability": "string",
+          "poc_artifact_paths": "array",
+          "poc_minimal_reproduction": "array",
+          "poc_remaining_assumptions": "array",
+          "poc_fork_chain_and_block": "string",
+          "poc_attacker_balance_delta": "string",
+          "poc_protocol_or_victim_delta": "string",
+          "poc_invariant_before_after": "array",
+          "poc_gas_slippage_fees": "string"
+        },
+        "steps": [
+          {
+            "name": "Tokenomics fork PoC",
+            "content": "For supported candidates, implement/run a pinned fork/local regression with attacker and victim positions. Capture timestamps/epochs/checkpoints, claims and proofs, balances/shares/vote weight/emissions before/after, attacker and victim delta, gas/capital/lock opportunity cost, trace, and repeatability. Never submit public-chain transactions. Set PoC verdict with artifacts and minimal reproduction.\n\nCost gate: if {{dedup_triage_priority}} is not `high`, do not build or run a harness. Return poc_verdict=`skipped_by_priority` with the reason. For smart-contract candidates, use {{extra.fork_rpc_url}} and {{extra.fork_block}} when supplied."
+          }
+        ]
+      },
+      {
+        "depth": 6,
+        "multiOutput": false,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "program_eligibility_verdict": "string",
+          "program_asset_match": "boolean",
+          "program_matched_asset": "string",
+          "program_impact_match": "boolean",
+          "program_matched_impact": "string",
+          "program_exclusions_checked": "array",
+          "program_program_evidence": "array",
+          "program_eligibility_gaps": "array",
+          "program_severity_candidate": "string",
+          "program_severity_basis": "string",
+          "program_testing_constraints": "array"
+        },
+        "steps": [
+          {
+            "name": "Apply tokenomics program gate",
+            "content": "Apply the immutable program scope contract to this technically verified candidate.\nProgram evidence is read directly from immutable extras after dedup: snapshot={{extra.program_rules_snapshot}}; checked_at={{extra.program_rules_checked_at}}; URL={{extra.bug_bounty_url}}; deployment={{extra.deployment_evidence}}; known_issues={{extra.known_issues_snapshot}}; testing_constraints={{extra.authorized_test_constraints}}.\nCandidate: {{dedup_canonical_summary}}. Root cause: {{dedup_canonical_root_cause}} at {{dedup_canonical_location}}.\nTechnical verdict: {{verify_technical_verdict}}. Production reachability: {{verify_production_reachability}}.\nObserved effect: {{poc_observed_effect}}. Reproduction verdict: {{poc_poc_verdict}}. Reproduction evidence: {{poc_poc_evidence}}.\n\nSet eligibility_verdict=eligible only when the exact affected asset is in scope, the observed effect matches a named accepted impact, no exclusion or known-issue rule controls, and required deployment facts are evidenced. Use ineligible for a controlling exclusion or absent impact; use blocked for missing program/deployment facts. Assign severity only from the supplied program language and measured impact. Do not use popularity, theoretical TVL, scanner confidence, or remembered platform conventions."
+          }
+        ]
+      },
+      {
+        "depth": 7,
+        "multiOutput": true,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "explanation": "string",
+          "file_path": "string",
+          "line": "number",
+          "malicious_input_example": "string",
+          "summary": "string",
+          "trigger_flow": "array",
+          "vulnerability_type": "string",
+          "malicious_actor": "string",
+          "exploitable": "boolean",
+          "root_bug_fingerprint": "string",
+          "technical_verdict": "string",
+          "poc_verdict": "string",
+          "eligibility_verdict": "string",
+          "program_asset": "string",
+          "program_impact": "string",
+          "severity_candidate": "string",
+          "report_confidence": "string",
+          "remaining_assumptions": "array",
+          "evidence_artifacts": "array"
+        },
+        "steps": [
+          {
+            "name": "Report verified tokenomics exploit",
+            "content": "Create one report only for an eligible candidate with technical_verdict=supported and poc_verdict reproduced or deterministically_proven. Re-read every cited source location. Point file_path and line to the faulty operation or missing protection. Explain the attacker-controlled production path, the failed invariant, why every material guard fails, the observed impact, and the exact program mapping. Distinguish repository facts, supplied runtime facts, reproduction evidence, and remaining assumptions.\n\ntrigger_flow must be an ordered attacker-to-impact trace. malicious_input_example must be the smallest safe representation of the exploit condition for an authorized isolated target or local fork. Set exploitable=true only when the stated actor can complete the chain under the evidenced production configuration. Preserve root_bug_fingerprint, verdicts, asset, impact, severity, confidence, assumptions, and artifact references from the ranked record.\n\nCandidate: id={{dedup_canonical_hypothesis_id}} fingerprint={{dedup_root_bug_fingerprint}}\nSummary={{dedup_canonical_summary}}; root={{dedup_canonical_root_cause}} at {{dedup_canonical_location}}\nVerdicts: technical={{verify_technical_verdict}}, reachability={{verify_production_reachability}}, PoC={{poc_poc_verdict}}, eligibility={{program_eligibility_verdict}}\nImpact={{poc_observed_effect}}; asset={{program_matched_asset}}; program impact={{program_matched_impact}}; severity={{program_severity_candidate}}\nTrace={{verify_verified_trace}}; control={{verify_attacker_control_evidence}}; guards={{verify_guard_analysis}}; PoC evidence={{poc_poc_evidence}}; reproduction={{poc_minimal_reproduction}}; assumptions={{poc_remaining_assumptions}}"
+          }
+        ]
+      }
+    ]
+  }
+}

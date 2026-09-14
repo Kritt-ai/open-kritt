@@ -1,0 +1,286 @@
+{
+  "kind": "open-kritt-workflow",
+  "version": 2,
+  "workflow": {
+    "name": "Web Application Evidence and Program Gate v2",
+    "description": "Web-focused scope, architecture, external flow, dual hypothesis runs, root-cause deduplication, independent verification, isolated PoC, exact program eligibility, and relative ranking. Import-valid v2.2: globally unique stage output keys, one consume-all dedup boundary, immutable program extras after dedup, deterministic mapping, high-priority PoC gating, and explicit Web3 fork inputs.",
+    "levels": [
+      {
+        "depth": 0,
+        "multiOutput": false,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "scope_scope_contract_id": "string",
+          "scope_in_scope_assets": "array",
+          "scope_accepted_impacts": "array",
+          "scope_excluded_issues": "array",
+          "scope_known_issues": "array",
+          "scope_program_rules": "array",
+          "scope_payout_priorities": "array",
+          "scope_deployment_facts": "array",
+          "scope_authorized_test_constraints": "array",
+          "scope_scope_gaps": "array",
+          "scope_scope_evidence": "array"
+        },
+        "steps": [
+          {
+            "name": "Freeze web program scope contract",
+            "content": "Repository: {{repo_full}} at commit {{commit_sha}}.\nProgram URL: {{extra.bug_bounty_url}}\nRules checked at: {{extra.program_rules_checked_at}}\nProgram snapshot: {{extra.program_rules_snapshot}}\nDeployment evidence: {{extra.deployment_evidence}}\nKnown-issues snapshot: {{extra.known_issues_snapshot}}\nAuthorized testing constraints: {{extra.authorized_test_constraints}}\n\nBuild the immutable scope contract for this run before analyzing code. Extract exact in-scope assets/components, accepted impacts, exclusions, known issues, testing restrictions, payout priorities, and supplied deployment facts. Separate supplied evidence from missing facts. Never infer current program rules, live deployments, TVL, traffic, configuration, or severity from memory. A silent snapshot creates a scope gap.\n\nReturn exactly one record. Preserve the wording or a close identifier for each controlling rule so later agents can map a technical effect to a named accepted impact. Do not analyze vulnerabilities."
+          }
+        ]
+      },
+      {
+        "depth": 1,
+        "multiOutput": false,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "arch_architecture_id": "string",
+          "arch_services_and_components": "array",
+          "arch_trust_boundaries": "array",
+          "arch_roles_and_privileged_actors": "array",
+          "arch_data_stores": "array",
+          "arch_external_integrations": "array",
+          "arch_critical_state": "array",
+          "arch_production_wiring_evidence": "array",
+          "arch_architecture_gaps": "array"
+        },
+        "steps": [
+          {
+            "name": "Map web architecture and trust boundaries",
+            "content": "Map in-scope production web/app components, ingress and routing, authentication/session boundaries, APIs, jobs/queues, databases, file/object stores, outbound integrations, secrets/privileged identities, and deployment evidence. Cite construction/configuration/registration paths. Separate repository evidence, supplied deployment facts, and gaps. Return one architecture record; no findings.\n\nUse deterministic enumeration before reasoning: ripgrep plus language-aware AST/compiler tooling when available. Perform {{extra.repeat_runs}} independent enumeration passes when supplied (default: 2), compare their coverage, and record any coverage gap."
+          }
+        ]
+      },
+      {
+        "depth": 2,
+        "multiOutput": true,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "surface_attack_surface_id": "string",
+          "surface_entrypoint_kind": "string",
+          "surface_entrypoint_label": "string",
+          "surface_entrypoint_handler": "string",
+          "surface_entrypoint_file_path": "string",
+          "surface_entrypoint_line": "number",
+          "surface_least_privileged_actor": "string",
+          "surface_attacker_controlled_inputs": "array",
+          "surface_state_or_privilege_effect": "string",
+          "surface_candidate_allowed_impacts": "array",
+          "surface_reachability_status": "string",
+          "surface_reachability_evidence": "array",
+          "surface_reachability_gaps": "array",
+          "surface_authentication_requirement": "string",
+          "surface_network_exposure_evidence": "array"
+        },
+        "steps": [
+          {
+            "name": "Map evidenced web entrypoints",
+            "content": "Map distinct in-scope production HTTP, GraphQL, RPC, WebSocket, webhook, upload, callback, and externally supplied event entrypoints. Prove route/handler registration and network exposure from supplied evidence. Identify actor, auth requirement, controlled input, state/privilege effect, and candidate accepted impacts. Do not infer live exposure from framework conventions or hostnames. Mark proven/conditional/unproven and preserve gaps.\n\nUse deterministic enumeration before reasoning: ripgrep plus language-aware AST/compiler tooling when available. Perform {{extra.repeat_runs}} independent enumeration passes when supplied (default: 2), compare their coverage, and record any coverage gap."
+          }
+        ]
+      },
+      {
+        "depth": 3,
+        "multiOutput": true,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "flow_flow_id": "string",
+          "flow_flow_summary": "string",
+          "flow_flow_trace": "array",
+          "flow_validation_trace": "array",
+          "flow_authorization_trace": "array",
+          "flow_state_transition_trace": "array",
+          "flow_external_call_trace": "array",
+          "flow_terminal_action": "string",
+          "flow_input_at_sink": "string",
+          "flow_partial_failure_behavior": "string",
+          "flow_candidate_allowed_impacts": "array",
+          "flow_flow_evidence": "array",
+          "flow_flow_gaps": "array"
+        },
+        "steps": [
+          {
+            "name": "Trace web security flows",
+            "content": "Trace one materially distinct production flow from {{surface_entrypoint_label}} through ingress/proxy assumptions, parsing/canonicalization, authentication/session/CSRF, authorization, validation, business logic, database/queue, outbound request, file/process/parser, and terminal effect. Capture async/retry/transaction/partial-failure behavior and what remains attacker-controlled at the sink. Return ordered path:line:symbol evidence. No findings."
+          }
+        ]
+      },
+      {
+        "depth": 4,
+        "multiOutput": true,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "hyp_hypothesis_id": "string",
+          "hyp_hypothesis_class": "string",
+          "hyp_hypothesis_summary": "string",
+          "hyp_root_cause": "string",
+          "hyp_root_cause_location": "string",
+          "hyp_broken_invariant": "string",
+          "hyp_attacker_sequence": "array",
+          "hyp_required_preconditions": "array",
+          "hyp_expected_technical_impact": "string",
+          "hyp_matched_allowed_impact_candidate": "string",
+          "hyp_candidate_guards": "array",
+          "hyp_verification_locations": "array",
+          "hyp_falsification_target": "string",
+          "hyp_evidence_gaps": "array"
+        },
+        "steps": [
+          {
+            "name": "Web hypotheses A: identity, injection, trust boundaries",
+            "content": "Fresh-context hypothesis run for {{flow_flow_summary}}. Emit only code-grounded hypotheses relevant to this flow: auth/session bypass, object/tenant authorization, confused deputy, injection/unsafe interpretation, SSRF/URL confusion, path/file access, upload/parser/deserialization, request smuggling assumptions, secret/data disclosure, and trust-boundary failures. One root cause per record with precise actor sequence, locations, guards, falsification target, and accepted-impact candidate."
+          },
+          {
+            "name": "Web hypotheses B: workflow, concurrency, asymmetry",
+            "content": "Independent fresh-context run for {{flow_flow_summary}}. Examine state-machine abuse, replay/idempotency, race/TOCTOU, partial rollback, cache/policy mismatch, alternate content types/routes, callback/retry effects, and bounded computational or state amplification. Require a specific root cause and non-volume-dependent effect for availability claims. Include exact verification locations and falsification target."
+          }
+        ]
+      },
+      {
+        "depth": 5,
+        "multiOutput": true,
+        "consumesAll": true,
+        "bindPrevious": false,
+        "outputFormat": {
+          "dedup_canonical_hypothesis_id": "string",
+          "dedup_root_bug_fingerprint": "string",
+          "dedup_canonical_summary": "string",
+          "dedup_canonical_root_cause": "string",
+          "dedup_canonical_location": "string",
+          "dedup_broken_invariant": "string",
+          "dedup_canonical_entrypoints": "array",
+          "dedup_canonical_flows": "array",
+          "dedup_canonical_attacker_sequence": "array",
+          "dedup_canonical_preconditions": "array",
+          "dedup_canonical_expected_impact": "string",
+          "dedup_candidate_allowed_impact": "string",
+          "dedup_canonical_candidate_guards": "array",
+          "dedup_canonical_verification_locations": "array",
+          "dedup_canonical_falsification_target": "string",
+          "dedup_canonical_evidence_gaps": "array",
+          "dedup_merged_hypothesis_ids": "array",
+          "dedup_triage_priority": "string"
+        },
+        "steps": [
+          {
+            "name": "Deduplicate web root causes",
+            "content": "Cluster {{multi_output_depth_4}} by faulty operation/missing guard, attacker primitive, invariant, effect, and fix. Generate stable fingerprints, preserve all trigger paths and gaps, and prioritize evidence-rich candidates. Remove duplicates, unsupported deployment assumptions, scanner-only observations, volume-only DDoS, and hardening items."
+          }
+        ]
+      },
+      {
+        "depth": 6,
+        "multiOutput": false,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "verify_technical_verdict": "string",
+          "verify_production_reachability": "string",
+          "verify_verified_trace": "array",
+          "verify_attacker_control_evidence": "array",
+          "verify_guard_analysis": "array",
+          "verify_falsification_attempts": "array",
+          "verify_runtime_evidence": "array",
+          "verify_unresolved_assumptions": "array",
+          "verify_observed_effect": "string",
+          "verify_verified_file_path": "string",
+          "verify_verified_line": "number",
+          "verify_poc_plan": "array"
+        },
+        "steps": [
+          {
+            "name": "Independent web exploitability verification",
+            "content": "As a separate verifier, try to kill {{dedup_canonical_hypothesis_id}}. Re-read each location and prove network/production reachability, input control after every normalization, authentication/session state, authorization, framework/proxy behavior, database constraints, async/downstream checks, and concrete terminal effect. Label provenance for every fact. supported requires the complete path under supplied configuration; falsified means a mandatory code fact blocks it; blocked means live ingress/deployment/identity/capacity evidence is required. Provide a safe isolated reproduction plan."
+          }
+        ]
+      },
+      {
+        "depth": 7,
+        "multiOutput": false,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "poc_poc_verdict": "string",
+          "poc_poc_method": "string",
+          "poc_commands_or_test_cases": "array",
+          "poc_poc_evidence": "array",
+          "poc_observed_effect": "string",
+          "poc_expected_vs_observed": "string",
+          "poc_repeatability": "string",
+          "poc_artifact_paths": "array",
+          "poc_minimal_reproduction": "array",
+          "poc_remaining_assumptions": "array"
+        },
+        "steps": [
+          {
+            "name": "Deterministic web PoC gate",
+            "content": "Execute the smallest safe authorized reproduction against a local/isolated deployment pinned to {{commit_sha}}, using integration tests or a minimal request/event sequence. Record setup, identities, exact requests, before/after state, response/log/trace, and repeatability. Availability PoCs must use bounded traffic and demonstrate meaningful effect without prohibited load. Never test a live target destructively. Return PoC verdict and evidence.\n\nCost gate: if {{dedup_triage_priority}} is not `high`, do not build or run a harness. Return poc_verdict=`skipped_by_priority` with the reason. For smart-contract candidates, use {{extra.fork_rpc_url}} and {{extra.fork_block}} when supplied."
+          }
+        ]
+      },
+      {
+        "depth": 8,
+        "multiOutput": false,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "program_eligibility_verdict": "string",
+          "program_asset_match": "boolean",
+          "program_matched_asset": "string",
+          "program_impact_match": "boolean",
+          "program_matched_impact": "string",
+          "program_exclusions_checked": "array",
+          "program_program_evidence": "array",
+          "program_eligibility_gaps": "array",
+          "program_severity_candidate": "string",
+          "program_severity_basis": "string",
+          "program_testing_constraints": "array"
+        },
+        "steps": [
+          {
+            "name": "Apply exact program gate",
+            "content": "Apply the immutable program scope contract to this technically verified candidate.\nProgram evidence is read directly from immutable extras after dedup: snapshot={{extra.program_rules_snapshot}}; checked_at={{extra.program_rules_checked_at}}; URL={{extra.bug_bounty_url}}; deployment={{extra.deployment_evidence}}; known_issues={{extra.known_issues_snapshot}}; testing_constraints={{extra.authorized_test_constraints}}.\nCandidate: {{dedup_canonical_summary}}. Root cause: {{dedup_canonical_root_cause}} at {{dedup_canonical_location}}.\nTechnical verdict: {{verify_technical_verdict}}. Production reachability: {{verify_production_reachability}}.\nObserved effect: {{poc_observed_effect}}. Reproduction verdict: {{poc_poc_verdict}}. Reproduction evidence: {{poc_poc_evidence}}.\n\nSet eligibility_verdict=eligible only when the exact affected asset is in scope, the observed effect matches a named accepted impact, no exclusion or known-issue rule controls, and required deployment facts are evidenced. Use ineligible for a controlling exclusion or absent impact; use blocked for missing program/deployment facts. Assign severity only from the supplied program language and measured impact. Do not use popularity, theoretical TVL, scanner confidence, or remembered platform conventions."
+          }
+        ]
+      },
+      {
+        "depth": 9,
+        "multiOutput": true,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "explanation": "string",
+          "file_path": "string",
+          "line": "number",
+          "malicious_input_example": "string",
+          "summary": "string",
+          "trigger_flow": "array",
+          "vulnerability_type": "string",
+          "malicious_actor": "string",
+          "exploitable": "boolean",
+          "root_bug_fingerprint": "string",
+          "technical_verdict": "string",
+          "poc_verdict": "string",
+          "eligibility_verdict": "string",
+          "program_asset": "string",
+          "program_impact": "string",
+          "severity_candidate": "string",
+          "report_confidence": "string",
+          "remaining_assumptions": "array",
+          "evidence_artifacts": "array"
+        },
+        "steps": [
+          {
+            "name": "Report supported eligible web finding",
+            "content": "Create one report only for an eligible candidate with technical_verdict=supported and poc_verdict reproduced or deterministically_proven. Re-read every cited source location. Point file_path and line to the faulty operation or missing protection. Explain the attacker-controlled production path, the failed invariant, why every material guard fails, the observed impact, and the exact program mapping. Distinguish repository facts, supplied runtime facts, reproduction evidence, and remaining assumptions.\n\ntrigger_flow must be an ordered attacker-to-impact trace. malicious_input_example must be the smallest safe representation of the exploit condition for an authorized isolated target or local fork. Set exploitable=true only when the stated actor can complete the chain under the evidenced production configuration. Preserve root_bug_fingerprint, verdicts, asset, impact, severity, confidence, assumptions, and artifact references from the ranked record.\n\nCandidate: id={{dedup_canonical_hypothesis_id}} fingerprint={{dedup_root_bug_fingerprint}}\nSummary={{dedup_canonical_summary}}; root={{dedup_canonical_root_cause}} at {{dedup_canonical_location}}\nVerdicts: technical={{verify_technical_verdict}}, reachability={{verify_production_reachability}}, PoC={{poc_poc_verdict}}, eligibility={{program_eligibility_verdict}}\nImpact={{poc_observed_effect}}; asset={{program_matched_asset}}; program impact={{program_matched_impact}}; severity={{program_severity_candidate}}\nTrace={{verify_verified_trace}}; control={{verify_attacker_control_evidence}}; guards={{verify_guard_analysis}}; PoC evidence={{poc_poc_evidence}}; reproduction={{poc_minimal_reproduction}}; assumptions={{poc_remaining_assumptions}}"
+          }
+        ]
+      }
+    ]
+  }
+}

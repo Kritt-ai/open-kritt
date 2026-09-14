@@ -1,0 +1,255 @@
+{
+  "kind": "open-kritt-workflow",
+  "version": 2,
+  "workflow": {
+    "name": "Cosmos ABCI Consensus Halt Review v2",
+    "description": "Scope-gated enumeration of production ABCI surfaces, independent panic-class hypothesis fan-out, root-cause deduplication, hostile verification, local multi-node PoC, eligibility mapping, and relative ranking. Import-valid v2.2: globally unique stage output keys, one consume-all dedup boundary, immutable program extras after dedup, deterministic mapping, high-priority PoC gating, and explicit Web3 fork inputs.",
+    "levels": [
+      {
+        "depth": 0,
+        "multiOutput": false,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "scope_scope_contract_id": "string",
+          "scope_in_scope_assets": "array",
+          "scope_accepted_impacts": "array",
+          "scope_excluded_issues": "array",
+          "scope_known_issues": "array",
+          "scope_program_rules": "array",
+          "scope_payout_priorities": "array",
+          "scope_deployment_facts": "array",
+          "scope_authorized_test_constraints": "array",
+          "scope_scope_gaps": "array",
+          "scope_scope_evidence": "array"
+        },
+        "steps": [
+          {
+            "name": "Freeze program scope contract",
+            "content": "Repository: {{repo_full}} at commit {{commit_sha}}.\nProgram URL: {{extra.bug_bounty_url}}\nRules checked at: {{extra.program_rules_checked_at}}\nProgram snapshot: {{extra.program_rules_snapshot}}\nDeployment evidence: {{extra.deployment_evidence}}\nKnown-issues snapshot: {{extra.known_issues_snapshot}}\nAuthorized testing constraints: {{extra.authorized_test_constraints}}\n\nBuild the immutable scope contract for this run before analyzing code. Extract exact in-scope assets/components, accepted impacts, exclusions, known issues, testing restrictions, payout priorities, and supplied deployment facts. Separate supplied evidence from missing facts. Never infer current program rules, live deployments, TVL, traffic, configuration, or severity from memory. A silent snapshot creates a scope gap.\n\nReturn exactly one record. Preserve the wording or a close identifier for each controlling rule so later agents can map a technical effect to a named accepted impact. Do not analyze vulnerabilities."
+          }
+        ]
+      },
+      {
+        "depth": 1,
+        "multiOutput": true,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "surface_abci_surface_id": "string",
+          "surface_abci_kind": "string",
+          "surface_method_name": "string",
+          "surface_signature": "string",
+          "surface_receiver_type": "string",
+          "surface_module_or_app": "string",
+          "surface_file_path": "string",
+          "surface_line": "number",
+          "surface_registration_trace": "array",
+          "surface_production_reachability": "string",
+          "surface_runtime_actors": "array",
+          "surface_attacker_controlled_inputs": "array",
+          "surface_state_dependencies": "array",
+          "surface_recovery_boundary": "string",
+          "surface_candidate_chain_halt_impact": "string",
+          "surface_exclusions_checked": "array",
+          "surface_evidence_gaps": "array"
+        },
+        "steps": [
+          {
+            "name": "Enumerate production ABCI surfaces",
+            "content": "Map every production-reachable ABCI method or phase handler in in-scope Cosmos/CometBFT code at {{commit_sha}}: application methods, BaseApp/module manager wiring, Begin/End/PreBlockers, proposal and vote-extension handlers, snapshot paths, transaction paths, and registered keeper hooks. Prove ordered construction/registration/runtime reachability. Identify the least-privileged runtime actors and inputs, prior attacker-writable state, recovery boundary, and whether the supplied accepted impacts include chain halt or consensus divergence. Exclude tests, examples, build-tag-inactive code, unregistered generated code, and local-only startup failures. One record per concrete phase handler. No vulnerability claims.\n\nUse deterministic enumeration before reasoning: ripgrep plus language-aware AST/compiler tooling when available. Perform {{extra.repeat_runs}} independent enumeration passes when supplied (default: 2), compare their coverage, and record any coverage gap."
+          }
+        ]
+      },
+      {
+        "depth": 2,
+        "multiOutput": true,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "hyp_hypothesis_id": "string",
+          "hyp_hypothesis_class": "string",
+          "hyp_hypothesis_summary": "string",
+          "hyp_root_cause": "string",
+          "hyp_root_cause_location": "string",
+          "hyp_broken_invariant": "string",
+          "hyp_attacker_sequence": "array",
+          "hyp_required_preconditions": "array",
+          "hyp_expected_technical_impact": "string",
+          "hyp_matched_allowed_impact_candidate": "string",
+          "hyp_candidate_guards": "array",
+          "hyp_verification_locations": "array",
+          "hyp_falsification_target": "string",
+          "hyp_evidence_gaps": "array",
+          "hyp_panic_class": "string",
+          "hyp_panic_site_candidates": "array",
+          "hyp_consensus_propagation_hypothesis": "string"
+        },
+        "steps": [
+          {
+            "name": "Panic hypotheses: explicit and helper panics",
+            "content": "Fresh-context analysis of {{surface_method_name}} at {{surface_file_path}}:{{surface_line}}. Trace only callees reachable during this ABCI phase. Emit one hypothesis per attacker-triggerable direct panic, Must/require/assert helper, codec/store panic, reflection panic, or dependency panic candidate. For each, prove a candidate actor/input/state source, suspected panic site, consensus propagation mechanism, guard candidates, exact verification locations, accepted-impact candidate, and strongest falsification target. No finding yet."
+          },
+          {
+            "name": "Panic hypotheses: arithmetic and numeric state",
+            "content": "Fresh-context analysis of {{surface_method_name}} at {{surface_file_path}}:{{surface_line}}. Enumerate reachable divisors, modulo operands, big-int/decimal helpers, conversions, total power/supply/rate denominators, and nil numeric values. Emit only code-grounded hypotheses where an untrusted transaction/proposer/validator/IBC/oracle/governance-reachable state can create the invalid value at the panic site. Include exact arithmetic and falsification guard. No finding yet."
+          },
+          {
+            "name": "Panic hypotheses: nil, bounds, types, decoders",
+            "content": "Fresh-context analysis of {{surface_method_name}} at {{surface_file_path}}:{{surface_line}}. Inspect reachable dereferences, lookup results, ignored errors, typed-nil interfaces, collection indexes/slices, type assertions, reflection, protobuf/custom decoders, and empty-after-filter cases. Emit one record per precise actor-controlled panic hypothesis with source-to-site trace, state prerequisite, consensus propagation theory, candidate guards, and falsification target. No finding yet."
+          },
+          {
+            "name": "Consensus hypotheses: determinism and resource asymmetry",
+            "content": "Fresh-context analysis of {{surface_method_name}} at {{surface_file_path}}:{{surface_line}}. Hunt deterministic consensus failures beyond language panics: non-deterministic iteration/time/randomness/external reads, inconsistent validation between CheckTx/DeliverTx/ProcessProposal, proposer/validator disagreement, gas-meter bypass, and bounded attacker-controlled CPU/memory/state amplification capable of stopping block progress under program rules. Emit only hypotheses tied to exact code and a non-volume-dependent trigger. No finding yet."
+          }
+        ]
+      },
+      {
+        "depth": 3,
+        "multiOutput": true,
+        "consumesAll": true,
+        "bindPrevious": false,
+        "outputFormat": {
+          "dedup_canonical_hypothesis_id": "string",
+          "dedup_root_bug_fingerprint": "string",
+          "dedup_canonical_summary": "string",
+          "dedup_canonical_root_cause": "string",
+          "dedup_canonical_location": "string",
+          "dedup_broken_invariant": "string",
+          "dedup_canonical_entrypoints": "array",
+          "dedup_canonical_flows": "array",
+          "dedup_canonical_attacker_sequence": "array",
+          "dedup_canonical_preconditions": "array",
+          "dedup_canonical_expected_impact": "string",
+          "dedup_candidate_allowed_impact": "string",
+          "dedup_canonical_candidate_guards": "array",
+          "dedup_canonical_verification_locations": "array",
+          "dedup_canonical_falsification_target": "string",
+          "dedup_canonical_evidence_gaps": "array",
+          "dedup_merged_hypothesis_ids": "array",
+          "dedup_triage_priority": "string"
+        },
+        "steps": [
+          {
+            "name": "Deduplicate consensus root causes",
+            "content": "Review {{multi_output_depth_2}}. Merge hypotheses sharing the same panic/divergence operation, attacker primitive, required state, consensus effect, and fix. Emit canonical records with stable fingerprints. Preserve distinct trigger paths and conflicting evidence. Discard local-node-only crashes without accepted impact, configuration-only failures, unreachable code, generic hardening, and volume-only DDoS."
+          }
+        ]
+      },
+      {
+        "depth": 4,
+        "multiOutput": false,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "verify_technical_verdict": "string",
+          "verify_production_reachability": "string",
+          "verify_verified_trace": "array",
+          "verify_attacker_control_evidence": "array",
+          "verify_guard_analysis": "array",
+          "verify_falsification_attempts": "array",
+          "verify_runtime_evidence": "array",
+          "verify_unresolved_assumptions": "array",
+          "verify_observed_effect": "string",
+          "verify_verified_file_path": "string",
+          "verify_verified_line": "number",
+          "verify_poc_plan": "array",
+          "verify_panic_or_divergence_site": "string",
+          "verify_chain_halt_mechanism": "string",
+          "verify_consensus_wide_triggerability": "string"
+        },
+        "steps": [
+          {
+            "name": "Independent consensus-halt verification",
+            "content": "Act as a separate hostile verifier for {{dedup_canonical_hypothesis_id}}. Reconstruct transaction/proposal/state creation -> ABCI registration -> target phase -> exact panic/divergence/resource site -> effect on consensus progress. Prove the attacker role can create every prerequisite without privileged or unsupported configuration. Inspect ante/message validation, proposal checks, SDK recovery, cache/transaction rollback, process supervisors, deterministic execution, and whether enough nodes encounter the same effect. Falsify if recovery contains it, only one optional node fails, the input cannot enter a committed/proposed block, or a mandatory guard dominates. Return supported/falsified/blocked and a local multi-node reproduction plan."
+          }
+        ]
+      },
+      {
+        "depth": 5,
+        "multiOutput": false,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "poc_poc_verdict": "string",
+          "poc_poc_method": "string",
+          "poc_commands_or_test_cases": "array",
+          "poc_poc_evidence": "array",
+          "poc_observed_effect": "string",
+          "poc_expected_vs_observed": "string",
+          "poc_repeatability": "string",
+          "poc_artifact_paths": "array",
+          "poc_minimal_reproduction": "array",
+          "poc_remaining_assumptions": "array",
+          "poc_nodes_affected": "string",
+          "poc_consensus_progress_before_after": "string",
+          "poc_panic_trace": "array"
+        },
+        "steps": [
+          {
+            "name": "Local multi-node PoC gate",
+            "content": "For supported candidates, build the smallest authorized deterministic reproduction pinned to {{commit_sha}} using unit/integration tests, a local multi-validator network, simulator, or fuzzer. Capture the malicious transaction/proposal/state setup, panic stack or divergence evidence, nodes affected, and before/after block height or consensus progress. Repeat when practical. Do not touch public networks. Set reproduced, deterministically_proven, not_reproduced, or blocked and preserve exact evidence/artifacts.\n\nCost gate: if {{dedup_triage_priority}} is not `high`, do not build or run a harness. Return poc_verdict=`skipped_by_priority` with the reason. For smart-contract candidates, use {{extra.fork_rpc_url}} and {{extra.fork_block}} when supplied."
+          }
+        ]
+      },
+      {
+        "depth": 6,
+        "multiOutput": false,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "program_eligibility_verdict": "string",
+          "program_asset_match": "boolean",
+          "program_matched_asset": "string",
+          "program_impact_match": "boolean",
+          "program_matched_impact": "string",
+          "program_exclusions_checked": "array",
+          "program_program_evidence": "array",
+          "program_eligibility_gaps": "array",
+          "program_severity_candidate": "string",
+          "program_severity_basis": "string",
+          "program_testing_constraints": "array"
+        },
+        "steps": [
+          {
+            "name": "Apply program eligibility gate",
+            "content": "Apply the immutable program scope contract to this technically verified candidate.\nProgram evidence is read directly from immutable extras after dedup: snapshot={{extra.program_rules_snapshot}}; checked_at={{extra.program_rules_checked_at}}; URL={{extra.bug_bounty_url}}; deployment={{extra.deployment_evidence}}; known_issues={{extra.known_issues_snapshot}}; testing_constraints={{extra.authorized_test_constraints}}.\nCandidate: {{dedup_canonical_summary}}. Root cause: {{dedup_canonical_root_cause}} at {{dedup_canonical_location}}.\nTechnical verdict: {{verify_technical_verdict}}. Production reachability: {{verify_production_reachability}}.\nObserved effect: {{poc_observed_effect}}. Reproduction verdict: {{poc_poc_verdict}}. Reproduction evidence: {{poc_poc_evidence}}.\n\nSet eligibility_verdict=eligible only when the exact affected asset is in scope, the observed effect matches a named accepted impact, no exclusion or known-issue rule controls, and required deployment facts are evidenced. Use ineligible for a controlling exclusion or absent impact; use blocked for missing program/deployment facts. Assign severity only from the supplied program language and measured impact. Do not use popularity, theoretical TVL, scanner confidence, or remembered platform conventions."
+          }
+        ]
+      },
+      {
+        "depth": 7,
+        "multiOutput": true,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "explanation": "string",
+          "file_path": "string",
+          "line": "number",
+          "malicious_input_example": "string",
+          "summary": "string",
+          "trigger_flow": "array",
+          "vulnerability_type": "string",
+          "malicious_actor": "string",
+          "exploitable": "boolean",
+          "root_bug_fingerprint": "string",
+          "technical_verdict": "string",
+          "poc_verdict": "string",
+          "eligibility_verdict": "string",
+          "program_asset": "string",
+          "program_impact": "string",
+          "severity_candidate": "string",
+          "report_confidence": "string",
+          "remaining_assumptions": "array",
+          "evidence_artifacts": "array"
+        },
+        "steps": [
+          {
+            "name": "Report verified Cosmos finding",
+            "content": "Create one report only for an eligible candidate with technical_verdict=supported and poc_verdict reproduced or deterministically_proven. Re-read every cited source location. Point file_path and line to the faulty operation or missing protection. Explain the attacker-controlled production path, the failed invariant, why every material guard fails, the observed impact, and the exact program mapping. Distinguish repository facts, supplied runtime facts, reproduction evidence, and remaining assumptions.\n\ntrigger_flow must be an ordered attacker-to-impact trace. malicious_input_example must be the smallest safe representation of the exploit condition for an authorized isolated target or local fork. Set exploitable=true only when the stated actor can complete the chain under the evidenced production configuration. Preserve root_bug_fingerprint, verdicts, asset, impact, severity, confidence, assumptions, and artifact references from the ranked record.\n\nCandidate: id={{dedup_canonical_hypothesis_id}} fingerprint={{dedup_root_bug_fingerprint}}\nSummary={{dedup_canonical_summary}}; root={{dedup_canonical_root_cause}} at {{dedup_canonical_location}}\nVerdicts: technical={{verify_technical_verdict}}, reachability={{verify_production_reachability}}, PoC={{poc_poc_verdict}}, eligibility={{program_eligibility_verdict}}\nImpact={{poc_observed_effect}}; asset={{program_matched_asset}}; program impact={{program_matched_impact}}; severity={{program_severity_candidate}}\nTrace={{verify_verified_trace}}; control={{verify_attacker_control_evidence}}; guards={{verify_guard_analysis}}; PoC evidence={{poc_poc_evidence}}; reproduction={{poc_minimal_reproduction}}; assumptions={{poc_remaining_assumptions}}"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,241 @@
+{
+  "kind": "open-kritt-workflow",
+  "version": 2,
+  "workflow": {
+    "name": "Authorization and Business Logic Abuse v2",
+    "description": "Scope-aware actor-resource-action mapping, independent authorization and workflow abuse fan-out, root-cause deduplication, adversarial verification, stateful PoC, eligibility gating, and ranking. Import-valid v2.2: globally unique stage output keys, one consume-all dedup boundary, immutable program extras after dedup, deterministic mapping, high-priority PoC gating, and explicit Web3 fork inputs.",
+    "levels": [
+      {
+        "depth": 0,
+        "multiOutput": false,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "scope_scope_contract_id": "string",
+          "scope_in_scope_assets": "array",
+          "scope_accepted_impacts": "array",
+          "scope_excluded_issues": "array",
+          "scope_known_issues": "array",
+          "scope_program_rules": "array",
+          "scope_payout_priorities": "array",
+          "scope_deployment_facts": "array",
+          "scope_authorized_test_constraints": "array",
+          "scope_scope_gaps": "array",
+          "scope_scope_evidence": "array"
+        },
+        "steps": [
+          {
+            "name": "Freeze program scope contract",
+            "content": "Repository: {{repo_full}} at commit {{commit_sha}}.\nProgram URL: {{extra.bug_bounty_url}}\nRules checked at: {{extra.program_rules_checked_at}}\nProgram snapshot: {{extra.program_rules_snapshot}}\nDeployment evidence: {{extra.deployment_evidence}}\nKnown-issues snapshot: {{extra.known_issues_snapshot}}\nAuthorized testing constraints: {{extra.authorized_test_constraints}}\n\nBuild the immutable scope contract for this run before analyzing code. Extract exact in-scope assets/components, accepted impacts, exclusions, known issues, testing restrictions, payout priorities, and supplied deployment facts. Separate supplied evidence from missing facts. Never infer current program rules, live deployments, TVL, traffic, configuration, or severity from memory. A silent snapshot creates a scope gap.\n\nReturn exactly one record. Preserve the wording or a close identifier for each controlling rule so later agents can map a technical effect to a named accepted impact. Do not analyze vulnerabilities."
+          }
+        ]
+      },
+      {
+        "depth": 1,
+        "multiOutput": true,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "surface_boundary_id": "string",
+          "surface_boundary_label": "string",
+          "surface_entrypoint": "string",
+          "surface_entrypoint_file_path": "string",
+          "surface_entrypoint_line": "number",
+          "surface_least_privileged_actor": "string",
+          "surface_subject_identity_source": "string",
+          "surface_tenant_identity_source": "string",
+          "surface_resource_identity_source": "string",
+          "surface_resource_or_state": "string",
+          "surface_controlled_identifiers_and_fields": "array",
+          "surface_intended_authorization_invariant": "string",
+          "surface_intended_state_invariant": "string",
+          "surface_authentication_trace": "array",
+          "surface_authorization_trace": "array",
+          "surface_workflow_state_trace": "array",
+          "surface_terminal_effect": "string",
+          "surface_candidate_allowed_impacts": "array",
+          "surface_reachability_evidence": "array",
+          "surface_evidence_gaps": "array"
+        },
+        "steps": [
+          {
+            "name": "Map actor-resource-action and workflow boundaries",
+            "content": "Map every in-scope production operation where an external actor reads protected data, mutates state, spends value/quota, changes identity/privilege, crosses a tenant, invokes administration, or advances a sensitive workflow. Prove registration. For each distinct actor-resource-action boundary, trace how subject, tenant, object, role, and workflow state are derived through middleware, policy helpers, services, queues, and downstream calls. Record the least-privileged actor, controlled IDs/fields, intended authorization and state invariants, enforcement traces, terminal effect, and matching accepted-impact candidates. No vulnerabilities.\n\nUse deterministic enumeration before reasoning: ripgrep plus language-aware AST/compiler tooling when available. Perform {{extra.repeat_runs}} independent enumeration passes when supplied (default: 2), compare their coverage, and record any coverage gap."
+          }
+        ]
+      },
+      {
+        "depth": 2,
+        "multiOutput": true,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "hyp_hypothesis_id": "string",
+          "hyp_hypothesis_class": "string",
+          "hyp_hypothesis_summary": "string",
+          "hyp_root_cause": "string",
+          "hyp_root_cause_location": "string",
+          "hyp_broken_invariant": "string",
+          "hyp_attacker_sequence": "array",
+          "hyp_required_preconditions": "array",
+          "hyp_expected_technical_impact": "string",
+          "hyp_matched_allowed_impact_candidate": "string",
+          "hyp_candidate_guards": "array",
+          "hyp_verification_locations": "array",
+          "hyp_falsification_target": "string",
+          "hyp_evidence_gaps": "array"
+        },
+        "steps": [
+          {
+            "name": "Hypotheses A: identity, object, tenant, privilege",
+            "content": "Fresh-context analysis of boundary {{surface_boundary_label}} at {{surface_entrypoint_file_path}}:{{surface_entrypoint_line}}. Generate one hypothesis per precise horizontal/vertical privilege change, cross-tenant substitution, IDOR/BOLA, confused deputy, mass assignment, subject/object mismatch, alternate endpoint, stale authorization, role escalation, canonicalization collision, or downstream authorization gap. Each record must name the changed attacker field/sequence, broken invariant, exact suspected guard gap, locations, preconditions, accepted impact, candidate guards, and strongest falsification target."
+          },
+          {
+            "name": "Hypotheses B: state machine and multi-request abuse",
+            "content": "Independently analyze boundary {{surface_boundary_label}} with fresh context. Generate one hypothesis per precise step skip, replay, duplicate, reordering, race, TOCTOU, partial failure, retry/idempotency error, negative/boundary value, quota/accounting drift, cancellation/rollback, or cross-channel workflow abuse. Require a concrete attacker sequence, reachable state prerequisites, broken invariant, faulty location, terminal security effect, accepted-impact candidate, and falsification target. No generic checklist."
+          }
+        ]
+      },
+      {
+        "depth": 3,
+        "multiOutput": true,
+        "consumesAll": true,
+        "bindPrevious": false,
+        "outputFormat": {
+          "dedup_canonical_hypothesis_id": "string",
+          "dedup_root_bug_fingerprint": "string",
+          "dedup_canonical_summary": "string",
+          "dedup_canonical_root_cause": "string",
+          "dedup_canonical_location": "string",
+          "dedup_broken_invariant": "string",
+          "dedup_canonical_entrypoints": "array",
+          "dedup_canonical_flows": "array",
+          "dedup_canonical_attacker_sequence": "array",
+          "dedup_canonical_preconditions": "array",
+          "dedup_canonical_expected_impact": "string",
+          "dedup_candidate_allowed_impact": "string",
+          "dedup_canonical_candidate_guards": "array",
+          "dedup_canonical_verification_locations": "array",
+          "dedup_canonical_falsification_target": "string",
+          "dedup_canonical_evidence_gaps": "array",
+          "dedup_merged_hypothesis_ids": "array",
+          "dedup_triage_priority": "string"
+        },
+        "steps": [
+          {
+            "name": "Deduplicate authorization root causes",
+            "content": "Review {{multi_output_depth_2}} and cluster by missing/faulty enforcement operation, attacker primitive, broken authorization/state invariant, terminal effect, and fix. Merge endpoint/payload/state variants of the same root bug. Create stable fingerprints; retain alternate trigger paths, conflicts, and gaps. Discard UI-only restrictions, generic hardening, self-only actions without security effect, and unsupported impact."
+          }
+        ]
+      },
+      {
+        "depth": 4,
+        "multiOutput": false,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "verify_technical_verdict": "string",
+          "verify_production_reachability": "string",
+          "verify_verified_trace": "array",
+          "verify_attacker_control_evidence": "array",
+          "verify_guard_analysis": "array",
+          "verify_falsification_attempts": "array",
+          "verify_runtime_evidence": "array",
+          "verify_unresolved_assumptions": "array",
+          "verify_observed_effect": "string",
+          "verify_verified_file_path": "string",
+          "verify_verified_line": "number",
+          "verify_poc_plan": "array"
+        },
+        "steps": [
+          {
+            "name": "Independent authorization abuse verification",
+            "content": "As a new verifier, try to disprove {{dedup_canonical_hypothesis_id}}. Reconstruct authentication -> subject/tenant derivation -> object loading -> authorization -> state transition -> terminal effect across middleware, services, jobs, and downstream checks. Prove control over each identifier, field, timing, and prerequisite state. Inspect ownership, tenancy, policy caching, idempotency, database constraints, isolation/locking, transactions, rollback, feature flags, and alternate guards. supported requires a complete production path and concrete cross-boundary or security-sensitive effect; otherwise falsified/blocked. Produce a minimal isolated multi-account reproduction plan."
+          }
+        ]
+      },
+      {
+        "depth": 5,
+        "multiOutput": false,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "poc_poc_verdict": "string",
+          "poc_poc_method": "string",
+          "poc_commands_or_test_cases": "array",
+          "poc_poc_evidence": "array",
+          "poc_observed_effect": "string",
+          "poc_expected_vs_observed": "string",
+          "poc_repeatability": "string",
+          "poc_artifact_paths": "array",
+          "poc_minimal_reproduction": "array",
+          "poc_remaining_assumptions": "array"
+        },
+        "steps": [
+          {
+            "name": "Stateful multi-account PoC gate",
+            "content": "For supported candidates, reproduce in an authorized isolated environment with the smallest stateful sequence and at least two principals/tenants when relevant. Capture identities/roles, object ownership, requests/events, before/after state, response and downstream effect. Prefer an integration/regression test and repeat the decisive sequence. Respect {{extra.authorized_test_constraints}}. Set PoC verdict and preserve commands, evidence, artifacts, minimal reproduction, and assumptions.\n\nCost gate: if {{dedup_triage_priority}} is not `high`, do not build or run a harness. Return poc_verdict=`skipped_by_priority` with the reason. For smart-contract candidates, use {{extra.fork_rpc_url}} and {{extra.fork_block}} when supplied."
+          }
+        ]
+      },
+      {
+        "depth": 6,
+        "multiOutput": false,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "program_eligibility_verdict": "string",
+          "program_asset_match": "boolean",
+          "program_matched_asset": "string",
+          "program_impact_match": "boolean",
+          "program_matched_impact": "string",
+          "program_exclusions_checked": "array",
+          "program_program_evidence": "array",
+          "program_eligibility_gaps": "array",
+          "program_severity_candidate": "string",
+          "program_severity_basis": "string",
+          "program_testing_constraints": "array"
+        },
+        "steps": [
+          {
+            "name": "Apply program eligibility gate",
+            "content": "Apply the immutable program scope contract to this technically verified candidate.\nProgram evidence is read directly from immutable extras after dedup: snapshot={{extra.program_rules_snapshot}}; checked_at={{extra.program_rules_checked_at}}; URL={{extra.bug_bounty_url}}; deployment={{extra.deployment_evidence}}; known_issues={{extra.known_issues_snapshot}}; testing_constraints={{extra.authorized_test_constraints}}.\nCandidate: {{dedup_canonical_summary}}. Root cause: {{dedup_canonical_root_cause}} at {{dedup_canonical_location}}.\nTechnical verdict: {{verify_technical_verdict}}. Production reachability: {{verify_production_reachability}}.\nObserved effect: {{poc_observed_effect}}. Reproduction verdict: {{poc_poc_verdict}}. Reproduction evidence: {{poc_poc_evidence}}.\n\nSet eligibility_verdict=eligible only when the exact affected asset is in scope, the observed effect matches a named accepted impact, no exclusion or known-issue rule controls, and required deployment facts are evidenced. Use ineligible for a controlling exclusion or absent impact; use blocked for missing program/deployment facts. Assign severity only from the supplied program language and measured impact. Do not use popularity, theoretical TVL, scanner confidence, or remembered platform conventions."
+          }
+        ]
+      },
+      {
+        "depth": 7,
+        "multiOutput": true,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "explanation": "string",
+          "file_path": "string",
+          "line": "number",
+          "malicious_input_example": "string",
+          "summary": "string",
+          "trigger_flow": "array",
+          "vulnerability_type": "string",
+          "malicious_actor": "string",
+          "exploitable": "boolean",
+          "root_bug_fingerprint": "string",
+          "technical_verdict": "string",
+          "poc_verdict": "string",
+          "eligibility_verdict": "string",
+          "program_asset": "string",
+          "program_impact": "string",
+          "severity_candidate": "string",
+          "report_confidence": "string",
+          "remaining_assumptions": "array",
+          "evidence_artifacts": "array"
+        },
+        "steps": [
+          {
+            "name": "Report verified authorization finding",
+            "content": "Create one report only for an eligible candidate with technical_verdict=supported and poc_verdict reproduced or deterministically_proven. Re-read every cited source location. Point file_path and line to the faulty operation or missing protection. Explain the attacker-controlled production path, the failed invariant, why every material guard fails, the observed impact, and the exact program mapping. Distinguish repository facts, supplied runtime facts, reproduction evidence, and remaining assumptions.\n\ntrigger_flow must be an ordered attacker-to-impact trace. malicious_input_example must be the smallest safe representation of the exploit condition for an authorized isolated target or local fork. Set exploitable=true only when the stated actor can complete the chain under the evidenced production configuration. Preserve root_bug_fingerprint, verdicts, asset, impact, severity, confidence, assumptions, and artifact references from the ranked record.\n\nCandidate: id={{dedup_canonical_hypothesis_id}} fingerprint={{dedup_root_bug_fingerprint}}\nSummary={{dedup_canonical_summary}}; root={{dedup_canonical_root_cause}} at {{dedup_canonical_location}}\nVerdicts: technical={{verify_technical_verdict}}, reachability={{verify_production_reachability}}, PoC={{poc_poc_verdict}}, eligibility={{program_eligibility_verdict}}\nImpact={{poc_observed_effect}}; asset={{program_matched_asset}}; program impact={{program_matched_impact}}; severity={{program_severity_candidate}}\nTrace={{verify_verified_trace}}; control={{verify_attacker_control_evidence}}; guards={{verify_guard_analysis}}; PoC evidence={{poc_poc_evidence}}; reproduction={{poc_minimal_reproduction}}; assumptions={{poc_remaining_assumptions}}"
+          }
+        ]
+      }
+    ]
+  }
+}

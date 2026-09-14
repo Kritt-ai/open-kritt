@@ -1,0 +1,284 @@
+{
+  "kind": "open-kritt-workflow",
+  "version": 2,
+  "workflow": {
+    "name": "Bug Bounty End-to-End Evidence Pipeline v2",
+    "description": "Scope-aware architecture and attack-surface mapping, per-flow fresh-context hypothesis fan-out, root-cause deduplication, adversarial verification, deterministic PoC, program gating, relative ranking, and final reporting. Import-valid v2.2: globally unique stage output keys, one consume-all dedup boundary, immutable program extras after dedup, deterministic mapping, high-priority PoC gating, and explicit Web3 fork inputs.",
+    "levels": [
+      {
+        "depth": 0,
+        "multiOutput": false,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "scope_scope_contract_id": "string",
+          "scope_in_scope_assets": "array",
+          "scope_accepted_impacts": "array",
+          "scope_excluded_issues": "array",
+          "scope_known_issues": "array",
+          "scope_program_rules": "array",
+          "scope_payout_priorities": "array",
+          "scope_deployment_facts": "array",
+          "scope_authorized_test_constraints": "array",
+          "scope_scope_gaps": "array",
+          "scope_scope_evidence": "array"
+        },
+        "steps": [
+          {
+            "name": "Freeze program scope contract",
+            "content": "Repository: {{repo_full}} at commit {{commit_sha}}.\nProgram URL: {{extra.bug_bounty_url}}\nRules checked at: {{extra.program_rules_checked_at}}\nProgram snapshot: {{extra.program_rules_snapshot}}\nDeployment evidence: {{extra.deployment_evidence}}\nKnown-issues snapshot: {{extra.known_issues_snapshot}}\nAuthorized testing constraints: {{extra.authorized_test_constraints}}\n\nBuild the immutable scope contract for this run before analyzing code. Extract exact in-scope assets/components, accepted impacts, exclusions, known issues, testing restrictions, payout priorities, and supplied deployment facts. Separate supplied evidence from missing facts. Never infer current program rules, live deployments, TVL, traffic, configuration, or severity from memory. A silent snapshot creates a scope gap.\n\nReturn exactly one record. Preserve the wording or a close identifier for each controlling rule so later agents can map a technical effect to a named accepted impact. Do not analyze vulnerabilities."
+          }
+        ]
+      },
+      {
+        "depth": 1,
+        "multiOutput": false,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "arch_architecture_id": "string",
+          "arch_services_and_components": "array",
+          "arch_trust_boundaries": "array",
+          "arch_roles_and_privileged_actors": "array",
+          "arch_data_stores": "array",
+          "arch_external_integrations": "array",
+          "arch_critical_state": "array",
+          "arch_production_wiring_evidence": "array",
+          "arch_architecture_gaps": "array"
+        },
+        "steps": [
+          {
+            "name": "Map production architecture and trust boundaries",
+            "content": "Using the frozen scope contract, map the production architecture of {{repo_full}} at {{commit_sha}}. Scope assets={{scope_in_scope_assets}}; deployment facts={{scope_deployment_facts}}; gaps={{scope_scope_gaps}}. Identify services/components, executable construction and registration paths, trust boundaries, roles, privileged actors, data stores, external integrations, and critical state related to in-scope assets. Cite ordered path:line:symbol evidence for production wiring. Exclude tests, examples, dead code, and out-of-scope components. Return exactly one architecture record. Do not hunt vulnerabilities.\n\nUse deterministic enumeration before reasoning: ripgrep plus language-aware AST/compiler tooling when available. Perform {{extra.repeat_runs}} independent enumeration passes when supplied (default: 2), compare their coverage, and record any coverage gap."
+          }
+        ]
+      },
+      {
+        "depth": 2,
+        "multiOutput": true,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "surface_attack_surface_id": "string",
+          "surface_entrypoint_kind": "string",
+          "surface_entrypoint_label": "string",
+          "surface_entrypoint_handler": "string",
+          "surface_entrypoint_file_path": "string",
+          "surface_entrypoint_line": "number",
+          "surface_least_privileged_actor": "string",
+          "surface_attacker_controlled_inputs": "array",
+          "surface_state_or_privilege_effect": "string",
+          "surface_candidate_allowed_impacts": "array",
+          "surface_reachability_status": "string",
+          "surface_reachability_evidence": "array",
+          "surface_reachability_gaps": "array"
+        },
+        "steps": [
+          {
+            "name": "Map evidenced attack surface",
+            "content": "Map every distinct externally reachable production entrypoint in the in-scope architecture. Include HTTP/GraphQL/gRPC/RPC/WebSocket/webhook, protocol/message/queue consumers, parsers, public contract functions, and exposed CLI/package boundaries where an untrusted actor controls input. For each entrypoint prove registration and production reachability; identify the least-privileged actor, controlled fields, state or privilege effect, and only the accepted impacts plausibly connected to that effect. Mark reachability proven/conditional/unproven and separate evidence from gaps. Do not emit unproven items unless the gap is itself needed to evaluate a concrete registered path. Do not report vulnerabilities.\n\nUse deterministic enumeration before reasoning: ripgrep plus language-aware AST/compiler tooling when available. Perform {{extra.repeat_runs}} independent enumeration passes when supplied (default: 2), compare their coverage, and record any coverage gap."
+          }
+        ]
+      },
+      {
+        "depth": 3,
+        "multiOutput": true,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "flow_flow_id": "string",
+          "flow_flow_summary": "string",
+          "flow_flow_trace": "array",
+          "flow_validation_trace": "array",
+          "flow_authorization_trace": "array",
+          "flow_state_transition_trace": "array",
+          "flow_external_call_trace": "array",
+          "flow_terminal_action": "string",
+          "flow_input_at_sink": "string",
+          "flow_partial_failure_behavior": "string",
+          "flow_candidate_allowed_impacts": "array",
+          "flow_flow_evidence": "array",
+          "flow_flow_gaps": "array"
+        },
+        "steps": [
+          {
+            "name": "Trace one production flow per result",
+            "content": "Trace materially distinct production flows from {{surface_entrypoint_label}} at {{surface_entrypoint_file_path}}:{{surface_entrypoint_line}}. Actor={{surface_least_privileged_actor}}; controlled={{surface_attacker_controlled_inputs}}; reachability={{surface_reachability_status}}; evidence={{surface_reachability_evidence}}. Map Attacker Input -> Parsing/Normalization -> Validation -> Authorization -> Business Logic -> State Transition/External Call -> Terminal Effect. Include async continuations, transaction boundaries, retries, callbacks, and partial failures. Separate flows when guards, state transitions, privileged effects, or sinks differ. Return one record per flow with ordered path:line:symbol evidence. Do not report vulnerabilities."
+          }
+        ]
+      },
+      {
+        "depth": 4,
+        "multiOutput": true,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "hyp_hypothesis_id": "string",
+          "hyp_hypothesis_class": "string",
+          "hyp_hypothesis_summary": "string",
+          "hyp_root_cause": "string",
+          "hyp_root_cause_location": "string",
+          "hyp_broken_invariant": "string",
+          "hyp_attacker_sequence": "array",
+          "hyp_required_preconditions": "array",
+          "hyp_expected_technical_impact": "string",
+          "hyp_matched_allowed_impact_candidate": "string",
+          "hyp_candidate_guards": "array",
+          "hyp_verification_locations": "array",
+          "hyp_falsification_target": "string",
+          "hyp_evidence_gaps": "array"
+        },
+        "steps": [
+          {
+            "name": "Hypothesis fan-out A: boundary and invariant attacks",
+            "content": "Fresh-context task for exactly one flow. Generate one record per concrete Entry Point x Vulnerability Class hypothesis for {{flow_flow_summary}} with trace={{flow_flow_trace}}, actor={{surface_least_privileged_actor}}, input={{flow_input_at_sink}}, terminal={{flow_terminal_action}}, and allowed-impact candidates={{flow_candidate_allowed_impacts}}. Focus only on code-relevant authorization, tenant/ownership, state-machine, replay/race, partial rollback, external-call, parser/trust-boundary, injection, disclosure, and resource-asymmetry failures. Tie each hypothesis to a suspected root cause and exact verification locations. Name the strongest guard likely to kill it. Return no generic checklist or unsupported impact."
+          },
+          {
+            "name": "Hypothesis fan-out B: attacker sequence and variant analysis",
+            "content": "Independently analyze exactly one flow with fresh context: {{flow_flow_summary}}; trace={{flow_flow_trace}}; actor={{surface_least_privileged_actor}}; controlled input={{flow_input_at_sink}}; terminal={{flow_terminal_action}}; partial failure={{flow_partial_failure_behavior}}; allowed impacts={{flow_candidate_allowed_impacts}}. Start from realistic attacker sequences: alternate entrypoint, ordering, replay, duplicate submission, boundary value, canonicalization mismatch, callback, concurrency, stale state, and multi-component composition. Emit only hypotheses with a precise broken invariant, concrete root cause location, prerequisites, guards to inspect, falsification target, and an accepted-impact candidate. Do not see or rely on the other hypothesis run."
+          }
+        ]
+      },
+      {
+        "depth": 5,
+        "multiOutput": true,
+        "consumesAll": true,
+        "bindPrevious": false,
+        "outputFormat": {
+          "dedup_canonical_hypothesis_id": "string",
+          "dedup_root_bug_fingerprint": "string",
+          "dedup_canonical_summary": "string",
+          "dedup_canonical_root_cause": "string",
+          "dedup_canonical_location": "string",
+          "dedup_broken_invariant": "string",
+          "dedup_canonical_entrypoints": "array",
+          "dedup_canonical_flows": "array",
+          "dedup_canonical_attacker_sequence": "array",
+          "dedup_canonical_preconditions": "array",
+          "dedup_canonical_expected_impact": "string",
+          "dedup_candidate_allowed_impact": "string",
+          "dedup_canonical_candidate_guards": "array",
+          "dedup_canonical_verification_locations": "array",
+          "dedup_canonical_falsification_target": "string",
+          "dedup_canonical_evidence_gaps": "array",
+          "dedup_merged_hypothesis_ids": "array",
+          "dedup_triage_priority": "string"
+        },
+        "steps": [
+          {
+            "name": "Deduplicate and prioritize root causes",
+            "content": "Review all hypotheses from the preceding depth: {{multi_output_depth_4}}. Cluster records that share the faulty operation or missing guard, attacker primitive, broken invariant, and terminal effect. A changed endpoint, payload, victim, CWE label, or symptom is the same bug when the fix is the same. Emit one canonical record per root bug with a stable fingerprint derived from commit, path, symbol, invariant, and primitive. Preserve conflicting evidence and gaps. Prioritize for verification by attacker control, reachability, concrete accepted impact, and falsifiability. Discard generic hardening and unsupported effects."
+          }
+        ]
+      },
+      {
+        "depth": 6,
+        "multiOutput": false,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "verify_technical_verdict": "string",
+          "verify_production_reachability": "string",
+          "verify_verified_trace": "array",
+          "verify_attacker_control_evidence": "array",
+          "verify_guard_analysis": "array",
+          "verify_falsification_attempts": "array",
+          "verify_runtime_evidence": "array",
+          "verify_unresolved_assumptions": "array",
+          "verify_observed_effect": "string",
+          "verify_verified_file_path": "string",
+          "verify_verified_line": "number",
+          "verify_poc_plan": "array"
+        },
+        "steps": [
+          {
+            "name": "Independent adversarial verification",
+            "content": "You are a new verifier whose goal is to kill canonical hypothesis {{dedup_canonical_hypothesis_id}} ({{dedup_root_bug_fingerprint}}). Re-read source at {{dedup_canonical_verification_locations}} and reconstruct the full production path from {{dedup_canonical_entrypoints}} through {{dedup_canonical_flows}} to {{dedup_canonical_location}}. Prove actor control, parsing/normalization semantics, registration, every guard, state constraints, transaction behavior, downstream checks, and the terminal effect. Check feature flags, build tags, runtime configuration, dead/test code, dependency behavior, and alternate safeguards. Set supported only when the complete path and a concrete security effect are established; falsified when a mandatory fact breaks it; blocked when a necessary fact is unavailable. Produce a minimal authorized isolated PoC plan. This is evidence collection, not reporting."
+          }
+        ]
+      },
+      {
+        "depth": 7,
+        "multiOutput": false,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "poc_poc_verdict": "string",
+          "poc_poc_method": "string",
+          "poc_commands_or_test_cases": "array",
+          "poc_poc_evidence": "array",
+          "poc_observed_effect": "string",
+          "poc_expected_vs_observed": "string",
+          "poc_repeatability": "string",
+          "poc_artifact_paths": "array",
+          "poc_minimal_reproduction": "array",
+          "poc_remaining_assumptions": "array"
+        },
+        "steps": [
+          {
+            "name": "Deterministic PoC and repeatability gate",
+            "content": "Attempt the minimal authorized reproduction for a candidate only when technical_verdict=supported. Respect {{extra.authorized_test_constraints}}. Prefer an existing unit/integration harness, a new local regression test, a local service, protocol simulator, fuzzer, or blockchain fork pinned to {{commit_sha}}. Never test destructively against a live target. Record exact commands/test cases, inputs, relevant before/after state, output/trace, and artifact paths. Run the smallest decisive test at least twice when practical. Use poc_verdict=reproduced for observed impact, deterministically_proven when execution is impossible but a deterministic tool or proof establishes the effect, not_reproduced when the test contradicts it, and blocked when a required environment fact is missing. Do not write a final finding.\n\nCost gate: if {{dedup_triage_priority}} is not `high`, do not build or run a harness. Return poc_verdict=`skipped_by_priority` with the reason. For smart-contract candidates, use {{extra.fork_rpc_url}} and {{extra.fork_block}} when supplied."
+          }
+        ]
+      },
+      {
+        "depth": 8,
+        "multiOutput": false,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "program_eligibility_verdict": "string",
+          "program_asset_match": "boolean",
+          "program_matched_asset": "string",
+          "program_impact_match": "boolean",
+          "program_matched_impact": "string",
+          "program_exclusions_checked": "array",
+          "program_program_evidence": "array",
+          "program_eligibility_gaps": "array",
+          "program_severity_candidate": "string",
+          "program_severity_basis": "string",
+          "program_testing_constraints": "array"
+        },
+        "steps": [
+          {
+            "name": "Apply program eligibility gate",
+            "content": "Apply the immutable program scope contract to this technically verified candidate.\nProgram evidence is read directly from immutable extras after dedup: snapshot={{extra.program_rules_snapshot}}; checked_at={{extra.program_rules_checked_at}}; URL={{extra.bug_bounty_url}}; deployment={{extra.deployment_evidence}}; known_issues={{extra.known_issues_snapshot}}; testing_constraints={{extra.authorized_test_constraints}}.\nCandidate: {{dedup_canonical_summary}}. Root cause: {{dedup_canonical_root_cause}} at {{dedup_canonical_location}}.\nTechnical verdict: {{verify_technical_verdict}}. Production reachability: {{verify_production_reachability}}.\nObserved effect: {{poc_observed_effect}}. Reproduction verdict: {{poc_poc_verdict}}. Reproduction evidence: {{poc_poc_evidence}}.\n\nSet eligibility_verdict=eligible only when the exact affected asset is in scope, the observed effect matches a named accepted impact, no exclusion or known-issue rule controls, and required deployment facts are evidenced. Use ineligible for a controlling exclusion or absent impact; use blocked for missing program/deployment facts. Assign severity only from the supplied program language and measured impact. Do not use popularity, theoretical TVL, scanner confidence, or remembered platform conventions."
+          }
+        ]
+      },
+      {
+        "depth": 9,
+        "multiOutput": true,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "explanation": "string",
+          "file_path": "string",
+          "line": "number",
+          "malicious_input_example": "string",
+          "summary": "string",
+          "trigger_flow": "array",
+          "vulnerability_type": "string",
+          "malicious_actor": "string",
+          "exploitable": "boolean",
+          "root_bug_fingerprint": "string",
+          "technical_verdict": "string",
+          "poc_verdict": "string",
+          "eligibility_verdict": "string",
+          "program_asset": "string",
+          "program_impact": "string",
+          "severity_candidate": "string",
+          "report_confidence": "string",
+          "remaining_assumptions": "array",
+          "evidence_artifacts": "array"
+        },
+        "steps": [
+          {
+            "name": "Report only verified eligible findings",
+            "content": "Create one report only for an eligible candidate with technical_verdict=supported and poc_verdict reproduced or deterministically_proven. Re-read every cited source location. Point file_path and line to the faulty operation or missing protection. Explain the attacker-controlled production path, the failed invariant, why every material guard fails, the observed impact, and the exact program mapping. Distinguish repository facts, supplied runtime facts, reproduction evidence, and remaining assumptions.\n\ntrigger_flow must be an ordered attacker-to-impact trace. malicious_input_example must be the smallest safe representation of the exploit condition for an authorized isolated target or local fork. Set exploitable=true only when the stated actor can complete the chain under the evidenced production configuration. Preserve root_bug_fingerprint, verdicts, asset, impact, severity, confidence, assumptions, and artifact references from the ranked record.\n\nCandidate: id={{dedup_canonical_hypothesis_id}} fingerprint={{dedup_root_bug_fingerprint}}\nSummary={{dedup_canonical_summary}}; root={{dedup_canonical_root_cause}} at {{dedup_canonical_location}}\nVerdicts: technical={{verify_technical_verdict}}, reachability={{verify_production_reachability}}, PoC={{poc_poc_verdict}}, eligibility={{program_eligibility_verdict}}\nImpact={{poc_observed_effect}}; asset={{program_matched_asset}}; program impact={{program_matched_impact}}; severity={{program_severity_candidate}}\nTrace={{verify_verified_trace}}; control={{verify_attacker_control_evidence}}; guards={{verify_guard_analysis}}; PoC evidence={{poc_poc_evidence}}; reproduction={{poc_minimal_reproduction}}; assumptions={{poc_remaining_assumptions}}"
+          }
+        ]
+      }
+    ]
+  }
+}
