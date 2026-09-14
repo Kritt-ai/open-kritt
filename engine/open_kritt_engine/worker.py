@@ -1620,6 +1620,7 @@ class Worker:
                         getattr(prepared.workspace, "provider_account_provider", None),
                         getattr(prepared.workspace, "provider_account_home", None),
                         data_dir=getattr(self.config, "data_dir", None),
+                        env=prepared.workspace.env,
                     ):
                         harness_arguments = {
                             "prompt": prompt_filled,

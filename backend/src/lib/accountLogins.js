@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import { chmod, chown, lstat, mkdir, readFile, rm, stat } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 
+import { accountIsActive } from './accountActivity.js';
 import {
   mutateEnvironmentFile,
   PROJECT_ENV_FILE_PATH,
@@ -422,6 +423,7 @@ function sessionMessage(provider, status, instructions) {
 export class AccountLoginManager {
   constructor({
     spawnProcess = spawn,
+    isAccountActive = accountIsActive,
     codexPrimaryHome = CODEX_PRIMARY_HOME,
     codexAccountsRoot = CODEX_ACCOUNTS_ROOT,
     codexRuntimePrimaryHome = CODEX_RUNTIME_PRIMARY_HOME,
@@ -439,6 +441,7 @@ export class AccountLoginManager {
     timeoutMs = SESSION_TIMEOUT_MS,
   } = {}) {
     this.spawnProcess = spawnProcess;
+    this.isAccountActive = isAccountActive;
     this.codexPrimaryHome = codexPrimaryHome;
     this.codexAccountsRoot = codexAccountsRoot;
     this.codexRuntimePrimaryHome = codexRuntimePrimaryHome;
@@ -667,6 +670,11 @@ export class AccountLoginManager {
       ...(process.env.NODE_EXTRA_CA_CERTS ? { NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS } : {}),
       ...(process.env.SSL_CERT_FILE ? { SSL_CERT_FILE: process.env.SSL_CERT_FILE } : {}),
     };
+    const runtimeHome =
+      accountId === 'primary' ? this.codexRuntimePrimaryHome : join(this.codexRuntimeAccountsRoot, accountId, '.codex');
+    if (!this.isAccountActive('codex', runtimeHome)) {
+      throw loginError('This account is inactive. Activate it in Accounts before starting usage.', 409);
+    }
     const prompt = randomBytes(50).toString('hex');
     try {
       await new Promise((resolvePromise, rejectPromise) => {

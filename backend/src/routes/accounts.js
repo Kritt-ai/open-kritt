@@ -7,6 +7,7 @@ import {
   getAccountProvider,
   getAccountsOverview,
   getAccountsSummary,
+  setAccountActive,
 } from '../lib/accounts.js';
 import {
   removeManagedProviderCredential,
@@ -22,6 +23,7 @@ export function createAccountsRouter({
   removeCredential = removeManagedProviderCredential,
   loginManager = accountLoginManager,
   consumeReset = consumeCodexManualReset,
+  setActive = setAccountActive,
 } = {}) {
   const router = Router();
 
@@ -55,6 +57,15 @@ export function createAccountsRouter({
       return res.json(provider);
     } catch (error) {
       return next(error);
+    }
+  });
+
+  router.patch('/:provider/account/:activityId/active', async (req, res, next) => {
+    try {
+      res.json(await setActive(req.params.provider, req.params.activityId, req.body?.active));
+    } catch (error) {
+      if (error?.statusCode) return res.status(error.statusCode).json({ error: error.message });
+      next(error);
     }
   });
 

@@ -44,6 +44,25 @@ describe('resolveApiBase', () => {
 });
 
 describe('provider account API', () => {
+  it('sends the requested activity and surfaces a failed save', async () => {
+    const originalFetch = globalThis.fetch;
+    let request;
+    globalThis.fetch = async (url, options) => {
+      request = { url, options };
+      return { ok: false, status: 503, json: async () => ({ error: 'Account preferences could not be saved.' }) };
+    };
+    try {
+      await expect(api.setAccountActive('codex', 'sample/control', false)).rejects.toThrow(
+        'Account preferences could not be saved.'
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    expect(request.url).toBe('/api/accounts/codex/account/sample%2Fcontrol/active');
+    expect(request.options.method).toBe('PATCH');
+    expect(JSON.parse(request.options.body)).toEqual({ active: false });
+  });
+
   it('passes the expired Codex account when signing in again', async () => {
     const originalFetch = globalThis.fetch;
     let request;
