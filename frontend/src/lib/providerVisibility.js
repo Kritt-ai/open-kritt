@@ -6,7 +6,7 @@ export const PROVIDER_LABELS = {
   deepseek: 'DeepSeek',
 };
 
-export const DEFAULT_VISIBLE_PROVIDERS = ['codex', 'claude'];
+export const DEFAULT_VISIBLE_PROVIDERS = Object.keys(PROVIDER_LABELS);
 export const PROVIDER_VISIBILITY_KEY = 'ok-visible-providers';
 
 export function parseProviderVisibility(raw) {

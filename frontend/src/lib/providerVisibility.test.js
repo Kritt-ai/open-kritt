@@ -18,15 +18,17 @@ function fixture() {
 }
 
 describe('provider presentation preferences', () => {
-  it('starts with Codex and Claude Code and recovers from malformed storage', () => {
+  it('shows all supported providers by default and recovers from malformed storage', () => {
     for (const value of [undefined, null, 'broken', '{}', '{"version":2,"visible":[]}']) {
-      expect(parseProviderVisibility(value)).toEqual(['codex', 'claude']);
+      expect(parseProviderVisibility(value)).toEqual(['codex', 'claude', 'openrouter', 'xai', 'deepseek']);
     }
     expect(parseProviderVisibility('{"version":1,"visible":[]}')).toEqual([]);
+    expect(parseProviderVisibility('{"version":1,"visible":["codex","claude"]}')).toEqual(['codex', 'claude']);
     const html = renderToStaticMarkup(createElement(ProviderSelect, { configuredProviders: ['codex', 'openrouter'] }));
     expect(html).toContain('>Codex</option>');
     expect(html).toContain('>Claude Code — add in Accounts</option>');
-    expect(html).not.toContain('value="openrouter"');
+    expect(html).toContain('>OpenRouter</option>');
+    expect(html).toContain('>xAI — add in Accounts</option>');
     expect(html).not.toContain('value="deepseek"');
   });
 
@@ -34,6 +36,7 @@ describe('provider presentation preferences', () => {
     const { store, storage, events, values } = fixture();
     const selection = Object.freeze({ provider: 'openrouter', model: 'example/text-model' });
     const providers = Object.freeze(['codex', 'claude', 'openrouter', 'xai']);
+    store.setVisible('xai', false);
     store.setVisible('openrouter', true);
     store.setVisible('deepseek', true);
     expect(createProviderVisibilityStore({ storage, events }).getSnapshot().visible).toEqual([
@@ -54,7 +57,11 @@ describe('provider presentation preferences', () => {
     expect(store.getSnapshot().visible).not.toContain('unknown');
   });
 
-  it('keeps a selected hidden provider in the selector and offers a way to show configured providers', () => {
+  it('keeps selected providers available and offers controls to hide providers', () => {
+    expect(visibleProviderIds(['codex', 'claude', 'openrouter', 'xai'], ['codex'], 'openrouter')).toEqual([
+      'codex',
+      'openrouter',
+    ]);
     const html = renderToStaticMarkup(
       createElement(ProviderSelect, {
         value: 'openrouter',
@@ -69,10 +76,10 @@ describe('provider presentation preferences', () => {
         selected: 'openrouter',
       })
     );
-    expect(manager).toContain('2 configured hidden');
+    expect(manager).not.toContain('configured hidden');
     expect(manager).toContain('OpenRouter (configured)');
     expect(manager).toContain('DeepSeek (configured)');
-    expect(manager).toContain('remains available here while hidden');
+    expect(manager).toContain('Show or hide providers');
   });
 
   it('synchronizes subscribers and other tabs, including clearing storage', () => {
@@ -94,7 +101,7 @@ describe('provider presentation preferences', () => {
     const cleared = new Event('storage');
     Object.defineProperty(cleared, 'key', { value: null });
     events.dispatchEvent(cleared);
-    expect(store.getSnapshot().visible).toEqual(['codex', 'claude']);
+    expect(store.getSnapshot().visible).toEqual(['codex', 'claude', 'openrouter', 'xai', 'deepseek']);
     unsubscribe();
     expect(calls).toBe(3);
   });
@@ -105,8 +112,8 @@ describe('provider presentation preferences', () => {
         throw new Error('blocked');
       },
     });
-    expect(store.getSnapshot().visible).toEqual(['codex', 'claude']);
-    store.setVisible('deepseek', true);
-    expect(store.getSnapshot()).toEqual({ visible: ['codex', 'claude', 'deepseek'], persistenceError: true });
+    expect(store.getSnapshot().visible).toEqual(['codex', 'claude', 'openrouter', 'xai', 'deepseek']);
+    store.setVisible('deepseek', false);
+    expect(store.getSnapshot()).toEqual({ visible: ['codex', 'claude', 'openrouter', 'xai'], persistenceError: true });
   });
 });
