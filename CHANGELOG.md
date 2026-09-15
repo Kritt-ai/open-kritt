@@ -1,5 +1,44 @@
 # Changelog
 
+## [1.5.0](https://github.com/Kritt-ai/open-kritt/compare/v1.4.1...v1.5.0) (2026-09-15)
+
+
+### Features
+
+* **accounts:** add persisted Active controls for provider accounts ([#111](https://github.com/Kritt-ai/open-kritt/issues/111)) ([456e441](https://github.com/Kritt-ai/open-kritt/commit/456e441413fbc0e988d0733cbc877d43b421e59a))
+* add opt-in Codex Fast mode ([#110](https://github.com/Kritt-ai/open-kritt/issues/110)) ([43a0349](https://github.com/Kritt-ai/open-kritt/commit/43a03490c28b82964719e22b1f5e663a4fa232e8))
+* add provider visibility preferences and DeepSeek API checks ([#112](https://github.com/Kritt-ai/open-kritt/issues/112)) ([26cd31f](https://github.com/Kritt-ai/open-kritt/commit/26cd31f36effc9442b054d8e8b8ce8b1b2280f2e))
+* added post-scripts re-runs ([0a44d0c](https://github.com/Kritt-ai/open-kritt/commit/0a44d0c43e37d9ac5cfe10307ed84ba03f60ff52))
+* attach workflow context as workspace files ([a06b1ee](https://github.com/Kritt-ai/open-kritt/commit/a06b1ee503cc9d4d4a632c7bb709da7d2644b405))
+* attach workflow context as workspace files ([52ade8d](https://github.com/Kritt-ai/open-kritt/commit/52ade8d1dbb6792715175e464e350cb7267f8010))
+* deduplicate step 3 candidates ([aceb53f](https://github.com/Kritt-ai/open-kritt/commit/aceb53f6466eb2153d606959163536b88c7a763b))
+* **engine:** add OpenRouter Ox Alpha efforts ([5512556](https://github.com/Kritt-ai/open-kritt/commit/55125561bb5f4ba42c8c23d8486fd2c24aca0335))
+* **engine:** add OpenRouter Ox Alpha efforts ([8ef7213](https://github.com/Kritt-ai/open-kritt/commit/8ef7213ab0b3d3edb9ac2d968c54d4c0d90d1fe9))
+* **engine:** enable DeepSeek scan execution ([#117](https://github.com/Kritt-ai/open-kritt/issues/117)) ([e3e3cff](https://github.com/Kritt-ai/open-kritt/commit/e3e3cff6e17948320541975e66ce1f0d8c4da096))
+* Grok Build / xAI provider with device login + API key ([#70](https://github.com/Kritt-ai/open-kritt/issues/70)) ([afd8510](https://github.com/Kritt-ai/open-kritt/commit/afd8510ee557cd556658ef9aef52f0415a37930c))
+
+
+### Bug Fixes
+
+* accept valid duplicate scan payloads ([#119](https://github.com/Kritt-ai/open-kritt/issues/119)) ([43e1d19](https://github.com/Kritt-ai/open-kritt/commit/43e1d19a00ce50bd93253d1c6c3a48cfffbcc4c3))
+* **backend:** reject duplicate output format keys ([#49](https://github.com/Kritt-ai/open-kritt/issues/49)) ([1af38b4](https://github.com/Kritt-ai/open-kritt/commit/1af38b4314586a3dde2090b5998d5729ab6d1111)), closes [#45](https://github.com/Kritt-ai/open-kritt/issues/45)
+* **backend:** validate scan resource ids ([#48](https://github.com/Kritt-ai/open-kritt/issues/48)) ([feee07e](https://github.com/Kritt-ai/open-kritt/commit/feee07ee40a685cc8f8f0277abab96b21369cc2a)), closes [#44](https://github.com/Kritt-ai/open-kritt/issues/44)
+* **cli:** bound Docker diagnostics and validate reported versions ([4ff9b8b](https://github.com/Kritt-ai/open-kritt/commit/4ff9b8b939712e7d8d61bbc137f38052b125fe8d))
+* **cli:** fall back to a visible secret prompt when raw mode is unavailable ([#63](https://github.com/Kritt-ai/open-kritt/issues/63)) ([7556458](https://github.com/Kritt-ai/open-kritt/commit/7556458d8aa7461eebbe849a837be9c0b298b59c))
+* **cli:** validate Docker before login and startup ([13e8506](https://github.com/Kritt-ai/open-kritt/commit/13e85066a1c67075a23aa7d5a538a0573c135d9e))
+* **compose:** separate engine and runner image tags ([#84](https://github.com/Kritt-ai/open-kritt/issues/84)) ([69c9ad4](https://github.com/Kritt-ai/open-kritt/commit/69c9ad4e670e780f9b36e282928ab969f03f793d)), closes [#42](https://github.com/Kritt-ai/open-kritt/issues/42)
+* **database:** allow DeepSeek draft generation ([#118](https://github.com/Kritt-ai/open-kritt/issues/118)) ([7cf7c30](https://github.com/Kritt-ai/open-kritt/commit/7cf7c30325a467e8b2980bfd1dc28091d44fb345))
+* enforce structured OpenRouter scan output ([1ba10d4](https://github.com/Kritt-ai/open-kritt/commit/1ba10d410b4a0a309bacf5bc2d14ec1c27ed8a09))
+* **engine:** pin OpenRouter Claude harness models ([5e46b7b](https://github.com/Kritt-ai/open-kritt/commit/5e46b7b57e88b0aa71fcb86bcc86d888d4fe72bd))
+* **engine:** pin OpenRouter Claude harness models ([9c97455](https://github.com/Kritt-ai/open-kritt/commit/9c9745555b07616ef65a25300d1c970d06aefc62))
+* **engine:** prune only dangling images so tagged scan runners survive ([cd312b1](https://github.com/Kritt-ai/open-kritt/commit/cd312b1de41111f7763a00b7b4f3a0f1729f6d78))
+* explain resource waits and failures ([#114](https://github.com/Kritt-ai/open-kritt/issues/114)) ([6c8f545](https://github.com/Kritt-ai/open-kritt/commit/6c8f54557982b8c93973e181dfaf9b900b1a4193))
+* **frontend:** handle JSON values in extra inputs ([#115](https://github.com/Kritt-ai/open-kritt/issues/115)) ([253b4bf](https://github.com/Kritt-ai/open-kritt/commit/253b4bfe461cbfdea46450ac1e71e5a7a8359ca3))
+* **frontend:** show all providers by default ([#116](https://github.com/Kritt-ai/open-kritt/issues/116)) ([2ddc108](https://github.com/Kritt-ai/open-kritt/commit/2ddc1088512568f305f1d4f4da7fc64a96dae4f4))
+* improve runner resource handling and response recovery ([53bb85b](https://github.com/Kritt-ai/open-kritt/commit/53bb85b5f7618dd007b9f930d68a70604dc2fa14))
+* improve runtime reliability and Docker startup checks ([#94](https://github.com/Kritt-ai/open-kritt/issues/94)) ([0a9b0e1](https://github.com/Kritt-ai/open-kritt/commit/0a9b0e1f9dcc4a5df60b665fe5d3326362a1744f))
+* post scripts re-runs for failed should run only once ([baf69f1](https://github.com/Kritt-ai/open-kritt/commit/baf69f1af77f5e6a0d901c8a2e977d8fa6d97d5d))
+
 ## [1.4.1](https://github.com/Kritt-ai/open-kritt/compare/v1.4.0...v1.4.1) (2026-08-16)
 
 
