@@ -27,7 +27,7 @@ async function fixture(t) {
   return { credentialsPath: join(directory, 'providers.json'), environmentFilePath: join(directory, '.env') };
 }
 
-test('DeepSeek keys reuse protected storage without exposing a scan provider', async (t) => {
+test('DeepSeek keys reuse protected storage and expose an active scan provider account', async (t) => {
   const options = await fixture(t);
   await saveManagedProviderCredential('openrouter', 'fake-other-key', options);
   await saveManagedProviderCredential('deepseek', 'fake-deepseek-key', options);
@@ -39,12 +39,14 @@ test('DeepSeek keys reuse protected storage without exposing a scan provider', a
   assert.equal((await stat(options.credentialsPath)).mode & 0o777, 0o600);
   assert.equal((await stat(options.environmentFilePath)).mode & 0o777, 0o600);
   assert.match(await readFile(options.environmentFilePath, 'utf8'), /DEEPSEEK_API_KEY=fake-deepseek-key/);
-  assert.equal(configuredModelProviders({ ...options, env: {} }).includes('deepseek'), false);
+  assert.equal(configuredModelProviders({ ...options, env: {} }).includes('deepseek'), true);
   const overview = await getAccountProvider('deepseek', { statusOptions: { ...options, env: {} } });
   assert.equal(overview.loadError, null);
   assert.equal(overview.configured, true);
-  assert.deepEqual(overview.accounts, []);
-  assert.equal(overview.active, 0);
+  assert.equal(overview.accounts.length, 1);
+  assert.equal(overview.accounts[0].path, 'DEEPSEEK_API_KEY');
+  assert.equal(overview.accounts[0].active, true);
+  assert.equal(overview.active, 1);
   await removeManagedProviderCredential('deepseek', { ...options, disableEnvironment: true });
   assert.deepEqual(readManagedCredentialsSync(options.credentialsPath), { openrouter: 'fake-other-key' });
   const client = createDeepSeekClient({ ...options, env: { DEEPSEEK_API_KEY: 'fake-environment-key' } });

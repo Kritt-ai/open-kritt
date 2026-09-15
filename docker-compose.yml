@@ -35,6 +35,7 @@ services:
       OPEN_KRITT_CODEX_API_KEY_CONFIGURED: '${CODEX_API_KEY:+1}'
       OPEN_KRITT_OPENAI_API_KEY_CONFIGURED: '${OPENAI_API_KEY:+1}'
       OPEN_KRITT_ANTHROPIC_API_KEY_CONFIGURED: '${ANTHROPIC_API_KEY:+1}'
+      OPEN_KRITT_DEEPSEEK_API_KEY_CONFIGURED: '${DEEPSEEK_API_KEY:+1}'
       OPEN_KRITT_OPENROUTER_API_KEY_CONFIGURED: '${OPENROUTER_API_KEY:+1}'
       OPEN_KRITT_XAI_API_KEY_CONFIGURED: '${XAI_API_KEY:+1}'
       OPEN_KRITT_CODEX_LOGIN_CONFIGURED: '${CODEX_LOGIN_CONFIGURED:+1}'
@@ -66,7 +67,7 @@ services:
       - /app/node_modules
       # Init SQL so the backend can bootstrap the schema on a persisted/empty DB.
       - ./database/init:/app/database-init:ro
-      # OpenRouter API key saved from the frontend. Its value is never returned.
+      # Provider API keys saved from the frontend. Their values are never returned.
       - ${ENGINE_CREDENTIALS_HOST:-./.data/engine/credentials}:/credentials:z
       # Provider login homes are writable here only so Accounts can run the
       # official Codex/Claude/Grok login commands. The engine keeps its own mounts.
@@ -142,6 +143,7 @@ services:
       CODEX_API_KEY: ${CODEX_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       XAI_API_KEY: ${XAI_API_KEY:-}
       CURSOR_API_KEY: ${CURSOR_API_KEY:-}

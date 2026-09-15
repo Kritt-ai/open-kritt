@@ -29,7 +29,7 @@ describe('provider presentation preferences', () => {
     expect(html).toContain('>Claude Code — add in Accounts</option>');
     expect(html).toContain('>OpenRouter</option>');
     expect(html).toContain('>xAI — add in Accounts</option>');
-    expect(html).not.toContain('value="deepseek"');
+    expect(html).toContain('>DeepSeek — add in Accounts</option>');
   });
 
   it('shows, hides, and persists choices without touching accounts or selected values', () => {

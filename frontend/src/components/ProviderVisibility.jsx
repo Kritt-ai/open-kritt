@@ -32,7 +32,7 @@ export default function ProviderVisibility({ configuredProviders = [], selected 
               />
               {label}
               {configuredProviders.includes(id) ? ' (configured)' : ''}
-              {id === 'deepseek' ? ' · API checks in Accounts' : ''}
+              {id === 'deepseek' ? ' · Codex harness' : ''}
             </label>
           ))}
         </div>

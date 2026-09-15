@@ -42,7 +42,7 @@ export const PROVIDER_DEFINITIONS = {
     label: 'DeepSeek',
     envKeys: ['DEEPSEEK_API_KEY'],
     credentialLabel: 'DeepSeek API key',
-    description: 'DeepSeek model discovery and text API checks. Scan harnesses are not enabled.',
+    description: 'DeepSeek models through the Codex harness, with model discovery and API checks.',
     management: 'api_key',
   },
 };

@@ -9,6 +9,7 @@ API_ACCOUNT_KEYS = {
     "claude": ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"),
     "openrouter": ("OPENROUTER_API_KEY",),
     "xai": ("XAI_API_KEY",),
+    "deepseek": ("DEEPSEEK_API_KEY",),
 }
 
 
