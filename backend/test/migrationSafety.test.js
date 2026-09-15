@@ -13,3 +13,11 @@ test('database init migrations do not drop columns or tables', () => {
     assert.doesNotMatch(sql, /\bDROP\s+(?:COLUMN|TABLE)\b/i, `${filename} must remain forward-only`);
   }
 });
+
+test('DeepSeek generation storage permits only the Codex harness', () => {
+  const sql = fs.readFileSync(path.join(migrationDir, '033_generations_deepseek_codex.sql'), 'utf8');
+
+  assert.match(sql, /model_provider IN \([^)]*'deepseek'[^)]*\)/);
+  assert.match(sql, /model_provider = 'deepseek' AND harness = 'codex'/);
+  assert.doesNotMatch(sql, /model_provider = 'deepseek' AND harness = '(?:claude-code|grok-build)'/);
+});
