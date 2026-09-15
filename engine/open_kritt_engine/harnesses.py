@@ -183,6 +183,8 @@ TOOL_FREE_CODEX_DISABLED_FEATURES = (
 OPENROUTER_CLAUDE_BASE_URL = "https://openrouter.ai/api"
 OPENROUTER_CURSOR_BASE_URL = "https://openrouter.ai/api/v1/cursor"
 OPENROUTER_CODEX_BASE_URL = "https://openrouter.ai/api/v1"
+DEEPSEEK_CODEX_BASE_URL = "https://api.deepseek.com"
+DEEPSEEK_CODEX_MODEL_CATALOG = "/app/open_kritt_engine/deepseek_models.json"
 OPENROUTER_MODEL_ALIASES = {
     "glm-5.2": "z-ai/glm-5.2",
     "grok-4.5": "x-ai/grok-4.5",
@@ -201,7 +203,7 @@ CLAUDE_MODEL_ALIASES = {
     "opus-4.8": "claude-opus-4-8",
 }
 DEFAULT_MODEL_PROVIDER = "openrouter"
-MODEL_PROVIDERS = {"codex", "claude", "openrouter", "xai"}
+MODEL_PROVIDERS = {"codex", "claude", "openrouter", "xai", "deepseek"}
 GROK_BUILD_THINKING_EFFORTS = frozenset({"low", "medium", "high", "xhigh"})
 DEFAULT_GROK_BUILD_MODEL = "grok-4.6"
 GROK_BUILD_RUNTIME_ENV = {
@@ -1104,6 +1106,17 @@ def scan_model_provider(scan: dict[str, Any], fallback: str | None = None) -> st
     )
 
 
+def _append_deepseek_codex_config(command: list[str]) -> None:
+    """Add the fixed, non-secret Codex provider definition for DeepSeek."""
+
+    command.extend(["-c", 'model_providers.deepseek.name="DeepSeek"'])
+    command.extend(["-c", f'model_providers.deepseek.base_url="{DEEPSEEK_CODEX_BASE_URL}"'])
+    command.extend(["-c", 'model_providers.deepseek.env_key="DEEPSEEK_API_KEY"'])
+    command.extend(["-c", 'model_providers.deepseek.wire_api="responses"'])
+    command.extend(["-c", f'model_catalog_json="{DEEPSEEK_CODEX_MODEL_CATALOG}"'])
+    command.extend(["-c", 'web_search="disabled"'])
+
+
 def claude_model_provider(
     model: str, env: dict[str, str] | None = None, model_provider: str | None = None
 ) -> str | None:
@@ -1661,7 +1674,8 @@ def codex_exec_command(
     if normalize_model_provider(model_provider) == "openrouter":
         model = OPENROUTER_MODEL_ALIASES.get(model, model)
     command = ["codex"]
-    if allow_tools:
+    selected_provider = normalize_model_provider(model_provider)
+    if allow_tools and selected_provider != "deepseek":
         command.append("--search")
     command.extend(["exec", "--json", "-C", repo_dir, "-m", model])
     if allow_tools:
@@ -1692,6 +1706,8 @@ def codex_exec_command(
         command.extend(["-c", f'model_providers.openrouter.base_url="{OPENROUTER_CODEX_BASE_URL}"'])
         command.extend(["-c", 'model_providers.openrouter.env_key="OPENROUTER_API_KEY"'])
         command.extend(["-c", 'model_providers.openrouter.wire_api="responses"'])
+    if cli_model_provider == "deepseek":
+        _append_deepseek_codex_config(command)
     if cli_model_provider:
         command.extend(["-c", f"model_provider={json.dumps(cli_model_provider)}"])
     if thinking_effort and thinking_effort != "default":
@@ -1853,7 +1869,11 @@ class CodexHarness:
                     harness="codex",
                     default_code="invalid_output",
                     output_artifact=process_output,
-                    provider="openrouter" if normalize_model_provider(self.model_provider) == "openrouter" else None,
+                    provider=(
+                        normalize_model_provider(self.model_provider)
+                        if normalize_model_provider(self.model_provider) in {"openrouter", "deepseek"}
+                        else None
+                    ),
                 ) from payload_error
             return HarnessResult(payload=parsed_payload, usage=usage, codex_session_id=thread_id, output=process_output)
 
@@ -1890,6 +1910,8 @@ class CodexHarness:
             self.codex_model_provider,
             allow_tools=True,
         )
+        if cli_model_provider == "deepseek":
+            _append_deepseek_codex_config(cmd)
         if cli_model_provider:
             cmd.extend(["-c", f"model_provider={json.dumps(cli_model_provider)}"])
         if thinking_effort and thinking_effort != "default":
@@ -1937,7 +1959,11 @@ class CodexHarness:
                 harness="codex",
                 default_code="invalid_output",
                 output_artifact=process_output,
-                provider="openrouter" if normalize_model_provider(self.model_provider) == "openrouter" else None,
+                provider=(
+                    normalize_model_provider(self.model_provider)
+                    if normalize_model_provider(self.model_provider) in {"openrouter", "deepseek"}
+                    else None
+                ),
             ) from payload_error
         return HarnessResult(
             payload=parsed_payload, usage=usage, codex_session_id=thread_id or session_id, output=process_output

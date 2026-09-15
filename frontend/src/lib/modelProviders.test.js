@@ -56,14 +56,30 @@ const modelCatalog = configuredModelCatalog({
         { id: 'moonshotai/kimi-code', label: 'Moonshot: Kimi Code', thinkingEfforts: ['default'] },
       ],
     },
+    {
+      provider: 'deepseek',
+      input: 'select',
+      status: 'ready',
+      defaultModel: 'deepseek-flash',
+      models: [
+        {
+          id: 'deepseek-flash',
+          label: 'DeepSeek-Flash',
+          isDefault: true,
+          thinkingEfforts: ['low', 'high', 'max'],
+        },
+      ],
+    },
   ],
 });
 
 describe('configuredModelProviders', () => {
   it('uses only supported provider IDs returned by the API', () => {
     expect(
-      configuredModelProviders({ providers: ['OPENROUTER', 'unknown', 'claude', 'codex', 'codex', 'xai'] })
-    ).toEqual(['codex', 'claude', 'openrouter', 'xai']);
+      configuredModelProviders({
+        providers: ['OPENROUTER', 'unknown', 'claude', 'codex', 'codex', 'xai', 'deepseek'],
+      })
+    ).toEqual(['codex', 'claude', 'openrouter', 'xai', 'deepseek']);
   });
 
   it('handles empty and malformed availability responses', () => {
@@ -78,6 +94,7 @@ describe('model provider defaults', () => {
     expect(defaultModelForModelProvider('claude')).toBe('claude-sonnet-5');
     expect(defaultModelForModelProvider('openrouter')).toBe('z-ai/glm-5.2');
     expect(defaultModelForModelProvider('xai')).toBe('grok-4.6');
+    expect(defaultModelForModelProvider('deepseek')).toBe('deepseek-flash');
   });
 
   it('moves provider-owned model defaults with the provider', () => {
@@ -290,6 +307,16 @@ describe('model provider harnesses', () => {
   it('pairs xAI with the Grok Build harness', () => {
     expect(harnessesForModelProvider('xai')).toEqual(['grok-build']);
     expect(defaultHarnessForModelProvider('xai')).toBe('grok-build');
+  });
+
+  it('pairs DeepSeek with the Codex harness', () => {
+    expect(harnessesForModelProvider('deepseek')).toEqual(['codex']);
+    expect(defaultHarnessForModelProvider('deepseek')).toBe('codex');
+    expect(thinkingEffortsForModel(modelCatalog, 'deepseek', 'deepseek-flash', [], 'codex')).toEqual([
+      'low',
+      'high',
+      'max',
+    ]);
   });
 
   it('returns no harness for an unsupported provider', () => {

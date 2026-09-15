@@ -219,6 +219,31 @@ test('xAI device login keeps a default Grok model when the API catalog is empty'
   });
 });
 
+test('DeepSeek requires an exact model from its refreshed catalog', () => {
+  const catalog = {
+    provider: 'deepseek',
+    models: [
+      {
+        id: 'deepseek-flash',
+        label: 'deepseek-flash',
+        thinkingEfforts: ['low', 'high', 'max'],
+        isDefault: true,
+      },
+    ],
+    defaultModel: 'deepseek-flash',
+  };
+
+  assert.deepEqual(buildModelCatalogResponse(['deepseek'], [catalog]).providers[0], {
+    provider: 'deepseek',
+    input: 'select',
+    models: catalog.models,
+    defaultModel: 'deepseek-flash',
+    status: 'ready',
+  });
+  assert.equal(isCachedModel('deepseek', 'deepseek-flash', catalog), true);
+  assert.equal(isCachedModel('deepseek', 'unlisted-model', catalog), false);
+});
+
 test('a last refresh error retains a previously valid cached catalog', () => {
   const catalog = {
     provider: 'codex',

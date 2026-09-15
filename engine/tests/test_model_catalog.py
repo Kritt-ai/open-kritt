@@ -14,6 +14,7 @@ from open_kritt_engine.model_catalog import (
     codex_is_configured,
     fetch_anthropic_models,
     fetch_codex_models,
+    fetch_deepseek_models,
     fetch_openrouter_models,
     fetch_xai_models,
     model_supports_service_tier,
@@ -307,6 +308,37 @@ def _openrouter_model(model_id, *, name=None, output_modalities=None, reasoning=
     }
 
 
+def test_fetch_deepseek_models_uses_account_catalog_and_supported_efforts(monkeypatch):
+    requests = []
+
+    def fake_urlopen(request, timeout):
+        requests.append((request, timeout))
+        return io.BytesIO(
+            json.dumps(
+                {
+                    "data": [
+                        {"id": "deepseek-v4-pro"},
+                        {"id": "deepseek-flash"},
+                        {"id": "deepseek-flash"},
+                        {"id": ""},
+                    ]
+                }
+            ).encode("utf-8")
+        )
+
+    monkeypatch.setattr(model_catalog, "urlopen", fake_urlopen)
+    models, default_model = fetch_deepseek_models("deepseek-test-key", 2)
+
+    assert [model["id"] for model in models] == ["deepseek-v4-pro", "deepseek-flash"]
+    assert models[0]["thinkingEfforts"] == ["low", "high", "max"]
+    assert models[1]["isDefault"] is True
+    assert default_model == "deepseek-flash"
+    request, timeout = requests[0]
+    assert request.full_url == "https://api.deepseek.com/models"
+    assert request.get_header("Authorization") == "Bearer deepseek-test-key"
+    assert timeout == 2
+
+
 def test_fetch_openrouter_models_uses_account_catalog_and_keeps_all_text_models(monkeypatch):
     requests = []
 
@@ -484,29 +516,46 @@ def test_refresher_persists_only_configured_provider_catalogs():
     xai_models = [
         {"id": "grok-4.5", "label": "Grok 4.5", "thinkingEfforts": ["low", "medium", "high"], "isDefault": True}
     ]
+    deepseek_models = [
+        {
+            "id": "deepseek-flash",
+            "label": "deepseek-flash",
+            "thinkingEfforts": ["low", "high", "max"],
+            "isDefault": True,
+        }
+    ]
     refresher = ModelCatalogRefresher(
         db,
         env={
             "CODEX_API_KEY": "codex-key",
             "ANTHROPIC_API_KEY": "anthropic-key",
+            "DEEPSEEK_API_KEY": "deepseek-key",
             "OPENROUTER_API_KEY": "openrouter-key",
             "XAI_API_KEY": "xai-key",
         },
         fetch_codex=lambda: (codex_models, "gpt-5-codex"),
         fetch_anthropic=lambda: (claude_models, "claude-sonnet-4"),
+        fetch_deepseek=lambda: (deepseek_models, "deepseek-flash"),
         fetch_openrouter=lambda: (openrouter_models, "vendor/code-model"),
         fetch_xai=lambda: (xai_models, "grok-4.5"),
     )
 
-    assert refresher.refresh() == {"codex": True, "claude": True, "openrouter": True, "xai": True}
+    assert refresher.refresh() == {
+        "codex": True,
+        "claude": True,
+        "deepseek": True,
+        "openrouter": True,
+        "xai": True,
+    }
     assert db.catalogs == [
         {"provider": "codex", "models": codex_models, "default_model": "gpt-5-codex"},
         {"provider": "claude", "models": claude_models, "default_model": "claude-sonnet-4"},
+        {"provider": "deepseek", "models": deepseek_models, "default_model": "deepseek-flash"},
         {"provider": "openrouter", "models": openrouter_models, "default_model": "vendor/code-model"},
         {"provider": "xai", "models": xai_models, "default_model": "grok-4.5"},
     ]
     assert db.errors == []
-    assert [conn.commits for conn in db.connections] == [1, 1, 1, 1]
+    assert [conn.commits for conn in db.connections] == [1, 1, 1, 1, 1]
 
 
 def test_refresher_preserves_existing_catalog_on_provider_failure():

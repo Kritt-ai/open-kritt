@@ -321,6 +321,7 @@ def test_generation_environment_contains_only_selected_provider_credentials():
         "ENGINE_CODEX_HOME": "/codex-a,/codex-b",
         "OPENAI_API_KEY": "openai-secret",
         "ANTHROPIC_API_KEY": "anthropic-secret",
+        "DEEPSEEK_API_KEY": "deepseek-secret",
         "OPENROUTER_API_KEY": "openrouter-secret",
         "XAI_API_KEY": "xai-secret",
         "GITHUB_TOKEN": "github-secret",
@@ -329,6 +330,7 @@ def test_generation_environment_contains_only_selected_provider_credentials():
 
     codex_env = generation_environment("codex", source)
     openrouter_env = generation_environment("openrouter", source)
+    deepseek_env = generation_environment("deepseek", source)
     xai_env = generation_environment("xai", source)
 
     assert codex_env["CODEX_API_KEY"] == "openai-secret"
@@ -336,9 +338,10 @@ def test_generation_environment_contains_only_selected_provider_credentials():
     assert "ANTHROPIC_API_KEY" not in codex_env
     assert "OPENROUTER_API_KEY" not in codex_env
     assert openrouter_env["OPENROUTER_API_KEY"] == "openrouter-secret"
+    assert deepseek_env["DEEPSEEK_API_KEY"] == "deepseek-secret"
     assert xai_env["XAI_API_KEY"] == "xai-secret"
     assert "OPENROUTER_API_KEY" not in xai_env
-    for env in (codex_env, openrouter_env, xai_env):
+    for env in (codex_env, openrouter_env, deepseek_env, xai_env):
         assert "GITHUB_TOKEN" not in env
         assert "DATABASE_URL" not in env
 
@@ -657,6 +660,29 @@ def test_scan_codex_provider_mapping_preserves_custom_openrouter_config():
     assert 'service_tier="fast"' not in legacy
     assert codex[codex.index("-m") + 1] == "glm-5.2"
     assert openrouter[openrouter.index("-m") + 1] == "z-ai/glm-5.2"
+
+
+def test_deepseek_codex_command_uses_fixed_provider_without_search_or_secret():
+    command = codex_exec_command(
+        repo_dir="/tmp/repo",
+        model="deepseek-flash",
+        schema_path="/tmp/schema.json",
+        output_path="/tmp/output.json",
+        model_provider="deepseek",
+        thinking_effort="high",
+        allow_tools=True,
+    )
+    configs = [command[index + 1] for index, value in enumerate(command) if value == "-c"]
+
+    assert "--search" not in command
+    assert 'model_provider="deepseek"' in configs
+    assert 'model_providers.deepseek.name="DeepSeek"' in configs
+    assert f'model_providers.deepseek.base_url="{harnesses.DEEPSEEK_CODEX_BASE_URL}"' in configs
+    assert 'model_providers.deepseek.env_key="DEEPSEEK_API_KEY"' in configs
+    assert 'model_providers.deepseek.wire_api="responses"' in configs
+    assert f'model_catalog_json="{harnesses.DEEPSEEK_CODEX_MODEL_CATALOG}"' in configs
+    assert 'web_search="disabled"' in configs
+    assert not any("secret" in value for value in command)
 
 
 def test_tool_free_claude_command_has_no_default_tools(monkeypatch):

@@ -117,7 +117,10 @@ def test_corrupt_preferences_fail_closed(activity, tmp_path):
         read_account_activity()
 
 
-@pytest.mark.parametrize("provider,harness", [("codex", "codex"), ("claude", "claude-code"), ("xai", "grok-build")])
+@pytest.mark.parametrize(
+    "provider,harness",
+    [("codex", "codex"), ("claude", "claude-code"), ("xai", "grok-build"), ("deepseek", "codex")],
+)
 def test_key_only_workspace_never_copies_an_inactive_login(provider, harness, activity, monkeypatch, tmp_path):
     monkeypatch.setattr(workspace, "_configured_provider_homes", lambda *args, **kwargs: ["/sample/disabled"])
     monkeypatch.setenv(API_ACCOUNT_KEYS[provider][0], "synthetic-key")

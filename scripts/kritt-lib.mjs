@@ -10,15 +10,18 @@ export const PROVIDER_KEYS = [
   'CODEX_API_KEY',
   'OPENAI_API_KEY',
   'ANTHROPIC_API_KEY',
+  'DEEPSEEK_API_KEY',
   'OPENROUTER_API_KEY',
   'XAI_API_KEY',
 ];
 export const CODEX_LOGIN_STATUS_KEY = 'CODEX_LOGIN_CONFIGURED';
 export const MANAGED_PROVIDER_ENV_KEYS = {
+  deepseek: 'DEEPSEEK_API_KEY',
   openrouter: 'OPENROUTER_API_KEY',
   xai: 'XAI_API_KEY',
 };
 export const MANAGED_PROVIDER_LABELS = {
+  deepseek: 'DeepSeek API key',
   openrouter: 'OpenRouter API key',
   xai: 'xAI API key',
 };
@@ -55,6 +58,11 @@ export const ENVIRONMENT_ITEMS = [
     key: 'ANTHROPIC_API_KEY',
     label: 'Anthropic API key',
     info: 'Used by the Claude Code harness as an alternative to the guided Claude subscription login.',
+  },
+  {
+    key: 'DEEPSEEK_API_KEY',
+    label: 'DeepSeek API key',
+    info: 'Used by the Codex harness with models available to the configured DeepSeek account.',
   },
   {
     key: 'OPENROUTER_API_KEY',
@@ -1374,13 +1382,14 @@ export async function runSetup(options = {}) {
     write(context.io, '3) Codex API key');
     write(context.io, '4) OpenAI API key');
     write(context.io, '5) Anthropic API key');
-    write(context.io, '6) OpenRouter API key');
-    write(context.io, '7) xAI API key');
-    write(context.io, '8) GitHub token');
-    write(context.io, '9) Finish setup');
+    write(context.io, '6) DeepSeek API key');
+    write(context.io, '7) OpenRouter API key');
+    write(context.io, '8) xAI API key');
+    write(context.io, '9) GitHub token');
+    write(context.io, '10) Finish setup');
     const choice = (await context.prompter.ask('Choose an item: ')).toLowerCase();
 
-    if (choice === '9' || choice === 'q' || choice === 'quit') break;
+    if (choice === '10' || choice === 'q' || choice === 'quit') break;
     if (choice === '1') {
       await manageCodexLogin(context);
       continue;

@@ -311,11 +311,7 @@ export function buildAccountsOverview(statuses, executorAccounts, activity = [])
           .map((account) => safeAccount(account, status.id, activity))
           .filter((account) => account && account.statusKind !== 'missing')
       : [];
-    if (
-      status.id !== 'deepseek' &&
-      status.apiKeyConfigured &&
-      !accounts.some((account) => account.path === status.apiKeyPath)
-    ) {
+    if (status.apiKeyConfigured && !accounts.some((account) => account.path === status.apiKeyPath)) {
       accounts.push(
         safeAccount(
           {

@@ -35,7 +35,7 @@ export default function DeepSeekApiCheck({ configured }) {
   const listed = models.some((item) => item.id === model);
   return (
     <div className="account-empty" aria-busy={busy}>
-      <p>Model discovery and text API checks only. DeepSeek is not available in scan harnesses.</p>
+      <p>Load the live model list or run a small API check. DeepSeek scans and draft generation use Codex.</p>
       {!configured ? (
         <p>Add a DeepSeek API key to load models.</p>
       ) : (

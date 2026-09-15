@@ -1,22 +1,25 @@
 ---
-title: 'DeepSeek API checks'
-description: 'Save a DeepSeek key, discover models, and check text API access from Accounts.'
+title: 'DeepSeek'
+description: 'Save a DeepSeek key, discover models, and run scans or draft generation through Codex.'
 ---
 
-DeepSeek is available in **Accounts** for model discovery and a short text API
-check. It is not available for scan execution or draft generation, and no DeepSeek
-scan harness is offered.
+The **DeepSeek** provider uses `DEEPSEEK_API_KEY` and runs through the **Codex**
+harness. It is available for scans, workflow and post-script drafts, model discovery,
+and a short API check from Accounts.
 
 1. Open **Accounts**. If DeepSeek is hidden, select it under **Show or hide providers**.
 2. Obtain a key from the [DeepSeek platform](https://platform.deepseek.com/api_keys),
    then select **Add DeepSeek key** in Accounts.
 3. Select **Load DeepSeek models** to retrieve the current authenticated model list.
-4. Choose a model and select **Run text API check**. This sends the fixed message
+4. Create or duplicate a scan, choose **DeepSeek**, then select one of the models from
+   the live catalog. Codex is selected as the compatible harness.
+5. Optionally choose a model in Accounts and select **Run text API check**. This sends the fixed message
    “Reply with OK.” and may incur a small API charge. The check reports success or
    a sanitized error.
 
 Loading models and checking the API are explicit actions. Saving a key does not
-contact DeepSeek. The check sends no repository content, user prompts, or tools.
+contact DeepSeek. The diagnostic sends no repository content, user prompts, or tools.
+Scans and draft generation send their configured prompts and relevant workspace content.
 An unavailable model must be reselected; the application never substitutes one.
 
 ## Credentials and protocol
@@ -24,24 +27,26 @@ An unavailable model must be reselected; the application never substitutes one.
 Accounts uses the existing protected provider credential file and mirrors changes
 to the project `.env` when that persistence path is configured. Keys are not returned
 to the browser. A native backend can also read `DEEPSEEK_API_KEY` from its own process
-environment; Compose users should add the key through Accounts.
+environment. Compose users can add the key through Accounts or `./kritt setup`.
 
 The implementation uses Bearer authentication at the fixed
-`https://api.deepseek.com` origin, `GET /models`, and non-streaming
-`POST /chat/completions`. Redirects are rejected. Requests have a timeout and response
-size limit. The diagnostic disables thinking and caps output at 32 tokens.
+`https://api.deepseek.com` origin. The engine uses `GET /models` for the scan picker
+and DeepSeek's Responses compatibility for Codex jobs. The Accounts diagnostic uses
+non-streaming `POST /chat/completions`; it rejects redirects, applies a timeout and
+response-size limit, disables thinking, and caps output at 32 tokens.
 
 DeepSeek currently documents `deepseek-flash` and `deepseek-v4-pro`; the selector
 uses the live model list rather than assuming those names remain available.
-See the official [API introduction](https://api-docs.deepseek.com/),
+See the official [Codex integration guide](https://api-docs.deepseek.com/quick_start/agent_integrations/codex/),
+[Responses guide](https://api-docs.deepseek.com/guides/responses_api/),
+[API introduction](https://api-docs.deepseek.com/),
 [model listing](https://api-docs.deepseek.com/api/list-models/), and
 [Chat Completions reference](https://api-docs.deepseek.com/api/create-chat-completion/).
 
-DeepSeek also documents [Responses](https://api-docs.deepseek.com/guides/responses_api/)
-and [Anthropic-compatible APIs](https://api-docs.deepseek.com/guides/anthropic_api/).
-Compatibility is partial: Responses is stateless and ignores some parameters;
-the Anthropic interface can map unsupported model names and ignores some fields.
-Those protocols and coding harness integrations are not enabled by this feature.
+DeepSeek's Responses compatibility is stateless and ignores some parameters. The
+engine therefore uses fresh, isolated Codex jobs and disables Codex's built-in web
+search for this provider. Repository tools inside the disposable scan runner remain
+available to the Codex agent.
 
 ## Visibility
 

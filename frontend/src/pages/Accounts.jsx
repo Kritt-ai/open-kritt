@@ -310,24 +310,21 @@ export function ProviderCard({
     provider.configured && provider.accounts.some((account) => account.active && (account.available ?? account.active));
   const signInRequired =
     LOGIN_PROVIDERS.has(provider.id) && provider.accounts.some((account) => account.statusKind === 'expired');
-  const apiCheckOnly = provider.id === 'deepseek';
   const status = loading
     ? 'Loading'
     : loadError
       ? 'Unavailable'
-      : apiCheckOnly && provider.configured
-        ? 'Key configured'
-        : provider.configured && provider.active === 0 && provider.accounts.length > 0
-          ? 'Inactive'
-          : signInRequired
-            ? 'Sign-in required'
-            : provider.limited
-              ? 'Limited'
-              : ready
-                ? 'Ready'
-                : provider.configured
-                  ? 'Needs attention'
-                  : 'Not configured';
+      : provider.configured && provider.active === 0 && provider.accounts.length > 0
+        ? 'Inactive'
+        : signInRequired
+          ? 'Sign-in required'
+          : provider.limited
+            ? 'Limited'
+            : ready
+              ? 'Ready'
+              : provider.configured
+                ? 'Needs attention'
+                : 'Not configured';
   const statusColor =
     loading || loadError || provider.limited || (provider.configured && !ready)
       ? 'var(--pend)'
@@ -368,8 +365,6 @@ export function ProviderCard({
             <div style={{ fontWeight: 500 }}>Could not load {provider.label} accounts</div>
             <div style={{ color: 'var(--text-2)', fontSize: 12, marginTop: 4 }}>{loadError}</div>
           </div>
-        ) : apiCheckOnly ? (
-          <DeepSeekApiCheck key={`${provider.configured}:${credentialRevision}`} configured={provider.configured} />
         ) : (provider.configured || signInRequired) && provider.accounts.length ? (
           accountPages.pageItems.map((account, index) => (
             <AccountDetail
@@ -404,6 +399,9 @@ export function ProviderCard({
         )}
       </div>
       <Pagination {...accountPages} itemLabel="accounts" compact />
+      {provider.id === 'deepseek' && provider.configured && (
+        <DeepSeekApiCheck key={`${provider.configured}:${credentialRevision}`} configured={provider.configured} />
+      )}
 
       <div className="account-provider-actions">
         <Button onClick={onEdit}>{providerActionLabel(provider)}</Button>

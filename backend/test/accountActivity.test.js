@@ -53,7 +53,7 @@ test('corrupt preferences fail closed and failed writes preserve the saved state
 });
 
 test('saved activity remains separate from authentication health for every provider', () => {
-  for (const id of ['codex', 'claude', 'openrouter', 'xai']) {
+  for (const id of ['codex', 'claude', 'openrouter', 'xai', 'deepseek']) {
     const overview = buildAccountsOverview(
       [{ id, configured: true }],
       {
