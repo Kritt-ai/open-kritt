@@ -1,5 +1,41 @@
 import { describe, expect, it } from 'vitest';
-import { requiredScanExtraKeys } from './scanExtras.js';
+import { extraInputText, hasExtraValue, requiredScanExtraKeys } from './scanExtras.js';
+
+describe('extra input values', () => {
+  it.each([undefined, null, '', ' \n\t '])('treats %j as missing', (value) => {
+    expect(hasExtraValue(value)).toBe(false);
+  });
+
+  it.each(['note', '  note  ', 0, 23, false, true, [], {}, ['a', 'b'], { label: 'sample' }].map((value) => [value]))(
+    'accepts the supplied JSON value %j',
+    (value) => {
+      expect(hasExtraValue(value)).toBe(true);
+    }
+  );
+
+  it.each([
+    [undefined, ''],
+    [null, ''],
+    ['', ''],
+    ['  note\n', '  note\n'],
+    [0, '0'],
+    [false, 'false'],
+    [true, 'true'],
+    [[], '[]'],
+    [{}, '{}'],
+    [['a', 'b'], '[\n  "a",\n  "b"\n]'],
+    [{ label: 'sample' }, '{\n  "label": "sample"\n}'],
+  ])('displays %j as editable text', (value, expected) => {
+    expect(extraInputText(value)).toBe(expected);
+  });
+
+  it('leaves structured values unchanged when validating and displaying them', () => {
+    const value = Object.freeze({ label: 'sample', items: Object.freeze(['a', 'b']) });
+
+    expect(hasExtraValue(value)).toBe(true);
+    expect(JSON.parse(extraInputText(value))).toEqual(value);
+  });
+});
 
 describe('requiredScanExtraKeys', () => {
   it('unions workflow extras with references from every selected post-script', () => {
