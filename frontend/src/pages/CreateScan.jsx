@@ -14,7 +14,7 @@ import { modelOverridesEqual, reconcileModelOverrides, workflowDepths } from '..
 import { combineSeverityRanker } from '../lib/severityRanker.js';
 import { defaultRankerIds, defaultWorkflowId } from '../lib/scanPresentation.js';
 import { scanConfigurationDraft } from '../lib/scanDuplication.js';
-import { requiredScanExtraKeys } from '../lib/scanExtras.js';
+import { extraInputText, hasExtraValue, requiredScanExtraKeys } from '../lib/scanExtras.js';
 import { filterAgentSkills } from '../lib/agentSkillSearch.js';
 import { configuredMaxFiles, localRepoFilePreflight } from '../lib/localRepoFiles.js';
 import { useUnsavedChangesPrompt } from '../lib/useUnsavedChangesPrompt.js';
@@ -407,7 +407,7 @@ export default function CreateScan() {
     modelProviders,
     refData.modelCatalog
   );
-  const missingExtra = expectedExtra.filter((k) => !(form.extra[k] && form.extra[k].trim()));
+  const missingExtra = expectedExtra.filter((k) => !hasExtraValue(form.extra[k]));
 
   // Severity ranker: concatenate selected rankers' content (in selection order)
   // followed by the per-scan custom rules → the final severity_ranker string.
@@ -982,7 +982,7 @@ export default function CreateScan() {
                   {expectedExtra.map((k) => (
                     <Field key={k} label={`extra.${k}`}>
                       <textarea
-                        value={form.extra[k] || ''}
+                        value={extraInputText(form.extra[k])}
                         onChange={(e) => setExtra(k, e.target.value)}
                         placeholder="required"
                         spellCheck={false}
@@ -999,7 +999,7 @@ export default function CreateScan() {
                           lineHeight: 1.6,
                           outline: 'none',
                           resize: 'vertical',
-                          borderColor: form.extra[k] && form.extra[k].trim() ? 'var(--border)' : 'var(--fail)',
+                          borderColor: hasExtraValue(form.extra[k]) ? 'var(--border)' : 'var(--fail)',
                         }}
                       />
                     </Field>
