@@ -20,6 +20,8 @@ import accountsRouter from './routes/accounts.js';
 import settingsRouter from './routes/settings.js';
 import { ValidationError } from './lib/validation.js';
 
+export const JSON_BODY_LIMIT_BYTES = 8 * 1024 * 1024;
+
 export function prismaUniqueConflict(error) {
   if (error?.code !== 'P2002') return null;
   const rawTarget = error?.meta?.target;
@@ -67,7 +69,7 @@ export function createApp({ env = process.env } = {}) {
   const app = express();
 
   app.use(cors(corsOptions(env)));
-  app.use(express.json({ limit: '2mb' }));
+  app.use(express.json({ limit: JSON_BODY_LIMIT_BYTES }));
   app.use(
     pinoHttp({
       logger,
@@ -103,6 +105,9 @@ export function createApp({ env = process.env } = {}) {
   // Central error handler. Validation errors become 422 with a field list.
   // eslint-disable-next-line no-unused-vars
   app.use((err, req, res, next) => {
+    if (err?.type === 'entity.too.large') {
+      return res.status(413).json({ error: 'Request body exceeds the 8 MB limit.' });
+    }
     if (err instanceof ValidationError) {
       return res.status(422).json({ error: 'Validation failed.', errors: err.errors });
     }
