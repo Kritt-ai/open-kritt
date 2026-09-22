@@ -578,6 +578,7 @@ export class AccountLoginManager {
     session.child = child;
 
     const capture = (chunk) => {
+      if (session.settled || session.terminal || session.saving) return;
       session.output = `${session.output}${String(chunk)}`.slice(-MAX_CAPTURED_OUTPUT);
       const instructions = parseLoginInstructions(provider, session.output);
       if (instructions.authorizationUrl || instructions.requiresInput) session.status = 'waiting';
@@ -588,7 +589,8 @@ export class AccountLoginManager {
     child.once('error', (error) => this.fail(session, `Could not run ${provider} login: ${error.message}`));
     child.once('close', (code) => this.finish(session, code));
     session.timeout = setTimeout(() => {
-      if (session.settled) return;
+      if (session.settled || session.terminal || session.saving) return;
+      session.terminal = true;
       session.status = 'failed';
       session.message = 'Login expired. Start a new login and try again.';
       session.child?.kill('SIGTERM');
@@ -621,7 +623,12 @@ export class AccountLoginManager {
   cancel(id) {
     const session = this.sessions.get(id);
     if (!session) throw loginError('Login session not found.', 404);
-    if (!session.settled) {
+    if (session.saving && !session.settled) {
+      throw loginError('This login is already being saved. Wait for it to finish.', 409);
+    }
+    if (!session.settled && !session.terminal) {
+      session.terminal = true;
+      clearTimeout(session.timeout);
       session.status = 'canceled';
       session.message = 'Login canceled.';
       session.child?.kill('SIGTERM');
@@ -823,7 +830,7 @@ export class AccountLoginManager {
   }
 
   fail(session, message) {
-    if (session.settled) return;
+    if (session.settled || session.terminal) return;
     session.settled = true;
     clearTimeout(session.timeout);
     session.status = 'failed';
@@ -836,8 +843,9 @@ export class AccountLoginManager {
   }
 
   async finish(session, code) {
-    if (session.settled) return;
-    if (session.status === 'canceled') {
+    if (session.settled || session.finishing) return;
+    session.finishing = true;
+    if (session.terminal || session.status === 'canceled') {
       session.settled = true;
       clearTimeout(session.timeout);
       session.child = null;
@@ -864,9 +872,19 @@ export class AccountLoginManager {
       } else if (session.provider === 'xai') {
         usable = await usableJsonFile(join(session.grokHome, 'auth.json'));
       } else {
-        usable = await promoteClaudeCredential(session.claudeLoginHome, session.claudeHome || this.claudeHome);
+        const credentials = await Promise.all(
+          CLAUDE_CREDENTIAL_FILENAMES.map((name) => usableJsonFile(join(session.claudeLoginHome, name)))
+        );
+        usable = credentials.some(Boolean);
       }
+      if (session.terminal) return;
       if (!usable) throw new Error('The provider finished without saving usable login credentials.');
+      // Cancellation is accepted until persistence begins, never falsely after it.
+      session.saving = true;
+      clearTimeout(session.timeout);
+      if (session.provider === 'claude') {
+        await promoteClaudeCredential(session.claudeLoginHome, session.claudeHome || this.claudeHome);
+      }
       if (session.provider === 'codex') {
         if (!(await usableJsonFile(join(this.codexPrimaryHome, 'auth.json')))) {
           await removeCodexRuntimeHome(this.codexRuntimePrimaryHome, {
@@ -911,6 +929,12 @@ export class AccountLoginManager {
       if (session.claudeDirectory) await rm(session.claudeDirectory, { recursive: true, force: true });
       if (session.grokDirectory) await rm(session.grokDirectory, { recursive: true, force: true });
     } finally {
+      if (session.terminal) {
+        const directories = [session.codexDirectory, session.claudeDirectory, session.grokDirectory];
+        await Promise.all(
+          directories.filter(Boolean).map((directory) => rm(directory, { recursive: true, force: true }))
+        );
+      }
       if (session.claudeLoginHome) await rm(session.claudeLoginHome, { recursive: true, force: true });
       session.settled = true;
       clearTimeout(session.timeout);
