@@ -45,7 +45,9 @@ describe('generation drafts', () => {
 
     expect(builder.name).toBe('external-impact-research');
     expect(builder.levels.map((level) => level.depth)).toEqual([0, 1]);
-    expect(builder.levels[0].schema).toEqual([{ key: 'entrypoints', type: 'array' }]);
+    expect(builder.levels[0].schema).toEqual([
+      { key: 'entrypoints', type: 'array', definition: 'array', structured: false },
+    ]);
     expect(builder.levels[0].steps[0].id).toBe('draft-2');
     expect(builder.selStepId).toBe('draft-2');
   });
@@ -63,8 +65,8 @@ describe('generation drafts', () => {
       description: 'Grades exploitability.',
       content: 'Assess {{summary}}.',
       rows: [
-        { key: '_chip_exploitable', type: 'boolean' },
-        { key: 'reasoning', type: 'string' },
+        { key: '_chip_exploitable', type: 'boolean', definition: 'boolean', structured: false },
+        { key: 'reasoning', type: 'string', definition: 'string', structured: false },
       ],
     });
   });

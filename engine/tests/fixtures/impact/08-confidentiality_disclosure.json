@@ -1,0 +1,192 @@
+{
+  "name": "confidentiality_disclosure",
+  "scan": {
+    "id": 1,
+    "configuration": {
+      "investigation_kind": "internal_research",
+      "investigation_kind_source": "user",
+      "readiness_policy_version": "v2.7-impact-gate-1"
+    }
+  },
+  "d3": {
+    "verdict": "confirmed",
+    "reason": "debug route registered without auth middleware",
+    "reachability_evidence": "entry point reachable by an unprivileged caller",
+    "guard_analysis": "no guard prevents the path",
+    "impact_evidence": "debug route registered without auth middleware",
+    "negative_control_plan": "run the same path with the guard satisfied and expect a revert",
+    "missing_evidence": "",
+    "novelty_status": "novel_verified",
+    "scope_status": "in_scope_verified",
+    "bug_claim": "debug route registered without auth middleware",
+    "impact_claim": "an unauthenticated client obtains the signing key",
+    "impact_family": "confidentiality_loss",
+    "impact_objective": {
+      "claim": "an unauthenticated client obtains the signing key",
+      "source_type": "researcher_hypothesis",
+      "source_reference": "researcher_hypothesis reference for confidentiality_loss",
+      "affected_subject": "target component",
+      "terminal_outcome": "an unauthenticated client obtains the signing key",
+      "required_evidence": [
+        "captured before/after state",
+        "negative control",
+        "repeat run"
+      ]
+    },
+    "evidence_dimensions": [
+      {
+        "tag": "protected_data",
+        "status": "required",
+        "rationale": ""
+      },
+      {
+        "tag": "unauthorized_actor",
+        "status": "required",
+        "rationale": ""
+      },
+      {
+        "tag": "disclosure_boundary",
+        "status": "required",
+        "rationale": ""
+      },
+      {
+        "tag": "terminal_outcome",
+        "status": "required",
+        "rationale": ""
+      }
+    ],
+    "impact_chain_plan": [
+      {
+        "id": "hop-1",
+        "claim": "an unauthenticated request reaches the debug endpoint",
+        "status": "unverified",
+        "evidence_paths": [],
+        "covers": [
+          "unauthorized_actor",
+          "disclosure_boundary"
+        ],
+        "assessment": ""
+      },
+      {
+        "id": "hop-2",
+        "claim": "the endpoint returns the signing key",
+        "status": "unverified",
+        "evidence_paths": [],
+        "covers": [
+          "protected_data",
+          "terminal_outcome"
+        ],
+        "assessment": ""
+      }
+    ],
+    "unverified_assumptions": [],
+    "falsification_plan": "show the guard blocks the path or the terminal state does not change",
+    "first_unsupported_hop": "hop-1",
+    "impact_definition_status": "defined"
+  },
+  "d4": {
+    "poc_status": "reproduced",
+    "poc_command": "python3 poc.py",
+    "poc_expected": "terminal state changes",
+    "poc_observed": "response body contained the signing key (redacted in artifact)",
+    "poc_stdout": "",
+    "poc_stderr": "",
+    "poc_exit_code": 0,
+    "negative_control_command": "python3 poc.py --control",
+    "negative_control_observed": "rejected",
+    "negative_control_exit_code": 1,
+    "repeat_count": 3,
+    "poc_artifact_paths": [
+      "poc.py",
+      "attack.log",
+      "control.log",
+      "repeat.log"
+    ],
+    "poc_artifact_dir": "",
+    "remaining_limits": "",
+    "_reserved_poc": "model narrative of the run",
+    "bug_status": "reproduced",
+    "impact_status": "proven",
+    "blocker_kind": "none",
+    "observed_behavior": "the defective path executed",
+    "claimed_impact": "response body contained the signing key (redacted in artifact)",
+    "observed_terminal_outcome": "response body contained the signing key (redacted in artifact)",
+    "impact_chain": [
+      {
+        "id": "hop-1",
+        "claim": "an unauthenticated request reaches the debug endpoint",
+        "status": "proven",
+        "evidence_paths": [
+          "request.log"
+        ],
+        "covers": [
+          "unauthorized_actor",
+          "disclosure_boundary"
+        ],
+        "assessment": ""
+      },
+      {
+        "id": "hop-2",
+        "claim": "the endpoint returns the signing key",
+        "status": "proven",
+        "evidence_paths": [
+          "response-redacted.json"
+        ],
+        "covers": [
+          "protected_data",
+          "terminal_outcome"
+        ],
+        "assessment": ""
+      }
+    ],
+    "impact_artifact_paths": [
+      "request.log",
+      "response-redacted.json"
+    ],
+    "missing_impact_links": [],
+    "unverified_assumptions": [],
+    "negative_control_status": "passed",
+    "repeatability_status": "deterministic"
+  },
+  "manifest": {
+    "artifact_dir": "poc-artifacts/scan-1/finding-2/metadata-3",
+    "files": [
+      "poc.py",
+      "attack.log",
+      "control.log",
+      "repeat.log",
+      "request.log",
+      "response-redacted.json"
+    ],
+    "capture_complete": true
+  },
+  "d5": {
+    "submission_ready": true,
+    "scope_status": "unknown",
+    "severity": "high",
+    "novelty_status": "unknown",
+    "impact_evidence": "signing key returned to an unauthenticated request",
+    "missing_requirements": [],
+    "artifact_reference": "poc-artifacts/scan-1/finding-2/metadata-3",
+    "_reserved_report": "report body",
+    "scope_evidence": "",
+    "novelty_evidence": "",
+    "impact_match_status": "exact",
+    "impact_evidence_status": "verified",
+    "impact_mapping": [
+      {
+        "required_outcome": "unauthenticated client obtains the signing key",
+        "observed_outcome": "signing key returned to an unauthenticated request",
+        "status": "proven",
+        "evidence_paths": [
+          "response-redacted.json"
+        ]
+      }
+    ],
+    "report_readiness_reason": "required and observed outcomes compared"
+  },
+  "expected": {
+    "lifecycle_status": "report_ready",
+    "ready": true
+  }
+}

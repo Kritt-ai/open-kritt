@@ -13,8 +13,10 @@ from .harnesses import (
     harness_failure_retry_count,
     normalize_harness_name,
 )
+from .impact_gate import evaluate_readiness, evidence_block, investigation_settings, lifecycle_block, lifecycle_status
 from .model_output_artifacts import record_model_error_output
 from .models import post_processing_model_selection, supplemental_post_script_model_selection
+from .poc_artifacts import capture_evidence
 from .prompting import (
     append_schema_prompt,
     harness_prompt,
@@ -26,7 +28,15 @@ from .prompting import (
     scan_revision,
 )
 from .runtime_config import runtime_int
-from .schema import EXTRACTOR_HELPER_FIELD, OutputValidationError, output_schema, validate_payload
+from .schema import EXTRACTOR_HELPER_FIELD, OutputValidationError, output_schema, strip_reserved_keys, validate_payload
+from .v27_pipeline import (
+    d4_eligibility_sql,
+    d5_eligibility_sql,
+    pipeline_ids,
+    preceding_results,
+    prior_results,
+    stage_for_script,
+)
 from .workspace import (
     cleanup_job_workspace,
     cleanup_workspace,
@@ -142,22 +152,29 @@ def _json_text(value: Any, max_chars: int = 4000) -> str:
     return text[: max_chars - 3] + "..."
 
 
-def _vuln_item(row: dict[str, Any], *, include_rank: bool = False) -> dict[str, Any]:
+def _vuln_item(row: dict[str, Any], *, include_rank: bool = False, compact: bool = False) -> dict[str, Any]:
     answer = row.get("json_answer") if isinstance(row.get("json_answer"), dict) else {}
     item: dict[str, Any] = {
         "id": _int(row["id"]),
-        "summary": answer.get("summary"),
-        "vulnerability_type": answer.get("vulnerability_type"),
-        "file_path": answer.get("file_path"),
+        "summary": _json_text(answer.get("summary"), 180 if compact else 4000),
+        "vulnerability_type": _json_text(answer.get("vulnerability_type"), 120 if compact else 4000),
+        "file_path": _json_text(answer.get("file_path"), 200 if compact else 4000),
         "line": answer.get("line"),
         "exploitable": answer.get("exploitable"),
-        "malicious_actor": answer.get("malicious_actor"),
-        "trigger_flow": answer.get("trigger_flow"),
-        "explanation": _json_text(answer.get("explanation")),
-        "dedupe_is_canonical": row.get("dedupe_is_canonical"),
-        "dedupe_canonical_id": _int(row["dedupe_canonical_id"]) if row.get("dedupe_canonical_id") is not None else None,
-        "dedupe_cluster_id": row.get("dedupe_cluster_id"),
     }
+    if not compact:
+        item.update(
+            {
+                "malicious_actor": answer.get("malicious_actor"),
+                "trigger_flow": answer.get("trigger_flow"),
+                "explanation": _json_text(answer.get("explanation")),
+                "dedupe_is_canonical": row.get("dedupe_is_canonical"),
+                "dedupe_canonical_id": _int(row["dedupe_canonical_id"])
+                if row.get("dedupe_canonical_id") is not None
+                else None,
+                "dedupe_cluster_id": row.get("dedupe_cluster_id"),
+            }
+        )
     if include_rank:
         item.update(
             {
@@ -169,8 +186,8 @@ def _vuln_item(row: dict[str, Any], *, include_rank: bool = False) -> dict[str, 
                 "maximum_reward": _int(row["bounty_rank_maximum_reward"])
                 if row.get("bounty_rank_maximum_reward") is not None
                 else None,
-                "rank_reasoning": row.get("bounty_rank_reasoning"),
-                "root_bug": row.get("rank_root_bug"),
+                "rank_reasoning": _json_text(row.get("bounty_rank_reasoning"), 200 if compact else 4000),
+                "root_bug": _json_text(row.get("rank_root_bug"), 120 if compact else 4000),
             }
         )
     return {k: v for k, v in item.items() if v not in (None, "", [])}
@@ -196,7 +213,11 @@ def ranker_batch(
 
 
 def build_dedupe_prompt(scan: dict[str, Any], anchors: list[dict[str, Any]], targets: list[dict[str, Any]]) -> str:
-    anchor_items = [_vuln_item(row) for row in anchors]
+    # Dedupe anchors grow after every batch. Sending every anchor's full actor,
+    # trigger, and explanation eventually exceeds provider input limits on large
+    # scans. The stable identity fields below are sufficient to match a new
+    # finding to an existing root cause while targets retain their full detail.
+    anchor_items = [_vuln_item(row, compact=True) for row in anchors]
     target_items = [_vuln_item(row) for row in targets]
     return (
         "You are a senior security engineer doing semantic deduplication for one scan.\n"
@@ -240,7 +261,7 @@ def build_ranker_prompt(scan: dict[str, Any], anchors: list[dict[str, Any]], tar
         "- If a finding is likely duplicate, non-payable, out of scope, or weakly evidenced, reflect that in impact and reward.\n\n"
         "Return only minified JSON matching the provided schema.\n\n"
         f"Scan context JSON:\n{json.dumps(scan_context(scan), ensure_ascii=False, separators=(',', ':'))}\n\n"
-        f"Ranked anchors JSON:\n{json.dumps([_vuln_item(row, include_rank=True) for row in anchors], ensure_ascii=False, separators=(',', ':'))}\n\n"
+        f"Ranked anchors JSON:\n{json.dumps([_vuln_item(row, include_rank=True, compact=True) for row in anchors], ensure_ascii=False, separators=(',', ':'))}\n\n"
         f"Target findings JSON:\n{json.dumps([_vuln_item(row, include_rank=True) for row in targets], ensure_ascii=False, separators=(',', ':'))}"
     )
 
@@ -447,6 +468,8 @@ class PostProcessor:
         self.config = config
         self.db = db
         self.workspace_setup_slots = workspace_setup_slots
+        # Evidence captured from the isolated D4 workspace, keyed by metadata id, consumed once persisted.
+        self._evidence_captures: dict[int, dict[str, Any]] = {}
 
     def process_once(self, scan: dict[str, Any], harness) -> bool:
         scan_id = _int(scan["id"])
@@ -655,6 +678,7 @@ class PostProcessor:
         prompt_context: dict[str, Any] | None = None,
         multi_output: bool = False,
         kind: str = "post_process",
+        poc_finding_id: int | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any] | None, str | None, str]:
         prepared = None
         try:
@@ -739,6 +763,20 @@ class PostProcessor:
                     usage = result.usage
                     codex_session_id = result.codex_session_id
                     validator(result.payload)
+                    if kind == "v27_poc" and poc_finding_id is not None:
+                        poc_rows = result.payload.get("results") or []
+                        if poc_rows and isinstance(poc_rows[0], dict):
+                            capture = capture_evidence(
+                                self.config.data_dir,
+                                prepared.repo_dir,
+                                scan_id=_int(scan["id"]),
+                                finding_id=poc_finding_id,
+                                metadata_id=metadata_id,
+                                result=poc_rows[0],
+                            )
+                            self._evidence_captures[metadata_id] = capture
+                            if "poc_artifact_dir" in poc_rows[0]:
+                                poc_rows[0]["poc_artifact_dir"] = capture["artifact_dir"]
                     run_time_ms = int((now_utc() - started).total_seconds() * 1000)
                     with self.db.connect() as conn:
                         self.db.update_post_process_metadata(
@@ -1025,6 +1063,45 @@ class PostProcessor:
                 conn.commit()
             raise
 
+    @staticmethod
+    def _with_engine_blocks(
+        stage: str,
+        scan: dict[str, Any],
+        result: dict[str, Any],
+        prior: dict[str, Any],
+        capture: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Add the engine-owned v2.7 blocks beside the model's fields (spec 6.2); model fields stay as written."""
+        settings = investigation_settings(scan)
+        policy_version = settings["readiness_policy_version"]
+        result = dict(result)
+        if stage == "d3":
+            result["_engine_lifecycle"] = lifecycle_block(lifecycle_status(result, None, None), policy_version, False)
+        elif stage == "d4":
+            capture = capture or {}
+            result["_engine_evidence"] = evidence_block(
+                result,
+                set(capture.get("captured_paths") or []),
+                capture_complete=bool(capture.get("capture_complete")),
+                artifact_dir=str(capture.get("artifact_dir") or ""),
+                policy_version=policy_version,
+                legacy=False,
+            )
+        elif stage == "d5":
+            d4 = prior.get("d4") if isinstance(prior.get("d4"), dict) else {}
+            readiness = evaluate_readiness(
+                scan=scan,
+                d3=prior.get("d3") if isinstance(prior.get("d3"), dict) else None,
+                d4=d4,
+                evidence=d4.get("_engine_evidence") if isinstance(d4.get("_engine_evidence"), dict) else None,
+                d5=result,
+                evaluated_at=now_utc().isoformat(),
+            )
+            result["_engine_readiness"] = readiness
+            result["model_readiness_claim"] = result.get("submission_ready") is True
+            result["_chip_lifecycle"] = readiness["lifecycle_status"]
+        return result
+
     def _run_next_post_script_or_complete(
         self,
         scan: dict[str, Any],
@@ -1060,9 +1137,28 @@ class PostProcessor:
                 return complete_if_ready()
             post_script = None
             row = None
+            pipeline = pipeline_ids(current)
             for candidate_script in post_scripts:
-                candidate_row = conn.execute(
+                script_id = _int(candidate_script["id"])
+                stage = stage_for_script(current, script_id)
+                condition = ""
+                condition_args: list[Any] = []
+                if stage in {"d4", "d5"}:
+                    # Predicates are built from the gate constants only (no user input reaches the SQL text).
+                    predicate = d4_eligibility_sql() if stage == "d4" else d5_eligibility_sql()
+                    condition = f"""
+                      AND EXISTS (
+                        SELECT 1 FROM workflows.vulnerability_enrichments prior
+                        WHERE prior.vulnerability_id = v.id
+                          AND prior.post_script_id = %s
+                          AND prior.supplemental_run_id IS NULL
+                          AND prior.stub = false
+                          AND {predicate}
+                      )
                     """
+                    condition_args.append(pipeline["d3" if stage == "d4" else "d4"])
+                candidate_row = conn.execute(
+                    f"""
                     SELECT v.*
                     FROM workflows.vulnerabilities v
                     WHERE v.scan_id = %s
@@ -1083,10 +1179,11 @@ class PostProcessor:
                             AND m.post_script_id = %s
                             AND m.status IN ('running', 'completed')
                       )
+                      {condition}
                     ORDER BY v.bounty_rank NULLS LAST, v.id ASC
                     LIMIT 1
                     """,
-                    (scan_id, _int(candidate_script["id"]), _int(candidate_script["id"])),
+                    (scan_id, script_id, script_id, *condition_args),
                 ).fetchone()
                 if candidate_row:
                     post_script = candidate_script
@@ -1097,6 +1194,25 @@ class PostProcessor:
                     return False
                 return complete_if_ready()
             prompt_template = post_script["content"]
+            stage = stage_for_script(current, _int(post_script["id"]))
+            prior: dict[str, Any] = {}
+            if stage in {"d4", "d5"}:
+                prior_rows = conn.execute(
+                    """SELECT post_script_id, result, stub
+                       FROM workflows.vulnerability_enrichments
+                       WHERE vulnerability_id = %s
+                         AND scan_id = %s
+                         AND post_script_id = ANY(%s::bigint[])
+                         AND supplemental_run_id IS NULL""",
+                    (_int(row["id"]), scan_id, list(pipeline.values())),
+                ).fetchall()
+                prior = preceding_results(current, _int(post_script["id"]), prior_results(prior_rows))
+                prompt_template = (
+                    "Prior v2.7 stage results (untrusted evidence to verify):\n"
+                    + json.dumps(prior, ensure_ascii=False, sort_keys=True)
+                    + "\n\n"
+                    + prompt_template
+                )
             if str(post_script.get("name") or "").strip().casefold() == "patched since":
                 prompt_template = patched_since_prompt(prompt_template)
             started = now_utc()
@@ -1141,10 +1257,15 @@ class PostProcessor:
                 prompt_template=prompt_template,
                 prompt_context=post_script_context(current, row),
                 multi_output=False,
-                kind="post_script",
+                kind="v27_poc" if stage == "d4" else "post_script",
+                poc_finding_id=_int(row["id"]) if stage == "d4" else None,
             )
+            payload = strip_reserved_keys(payload)
             rows = validate_payload(payload, schema, multi_output=False)
             result = rows[0] if rows else {}
+            capture = self._evidence_captures.pop(metadata_id, None)
+            if result and stage in {"d3", "d4", "d5"}:
+                result = self._with_engine_blocks(stage, current, result, prior, capture)
             run_time_ms = int((now_utc() - started).total_seconds() * 1000)
             with self.db.connect() as conn:
                 self.db.upsert_vulnerability_enrichment(

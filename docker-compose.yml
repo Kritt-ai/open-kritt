@@ -1,4 +1,18 @@
 services:
+  # Optional local quota-aware gateway. Start with:
+  # docker compose --profile omniroute up -d omniroute
+  omniroute:
+    image: diegosouzapw/omniroute:3.8.50
+    profiles: ["omniroute"]
+    container_name: open-kritt-omniroute
+    restart: unless-stopped
+    ports:
+      - '${OMNIROUTE_BIND_ADDRESS:-127.0.0.1}:${OMNIROUTE_PORT:-20128}:20128'
+    environment:
+      OMNIROUTE_MEMORY_MB: ${OMNIROUTE_MEMORY_MB:-8192}
+    volumes:
+      - omniroute-data:/app/data
+
   frontend:
     build:
       context: ./frontend
@@ -30,6 +44,8 @@ services:
       BACKEND_HOST: 0.0.0.0
       BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS:-}
       DATABASE_URL: ${DATABASE_URL:-postgresql://open_kritt:open_kritt_password@db:5432/open_kritt?schema=public}
+      BACKEND_DB_CONNECTION_LIMIT: ${BACKEND_DB_CONNECTION_LIMIT:-5}
+      BACKEND_DB_POOL_TIMEOUT_SECONDS: ${BACKEND_DB_POOL_TIMEOUT_SECONDS:-10}
       # Raw environment keys stay in the engine. The backend receives non-secret
       # presence flags and manages the shared login/key stores used by Accounts.
       OPEN_KRITT_CODEX_API_KEY_CONFIGURED: '${CODEX_API_KEY:+1}'
@@ -37,6 +53,11 @@ services:
       OPEN_KRITT_ANTHROPIC_API_KEY_CONFIGURED: '${ANTHROPIC_API_KEY:+1}'
       OPEN_KRITT_DEEPSEEK_API_KEY_CONFIGURED: '${DEEPSEEK_API_KEY:+1}'
       OPEN_KRITT_OPENROUTER_API_KEY_CONFIGURED: '${OPENROUTER_API_KEY:+1}'
+      OPEN_KRITT_OMNIROUTE_API_KEY_CONFIGURED: '${OMNIROUTE_API_KEY:+1}'
+      OPEN_KRITT_OMNIROUTE_BASE_URL_CONFIGURED: '${OMNIROUTE_BASE_URL:+1}'
+      OMNIROUTE_BASE_URL: ${OMNIROUTE_BASE_URL:-http://omniroute:20128/v1}
+      OPEN_KRITT_OLLAMA_BASE_URL_CONFIGURED: '${OLLAMA_BASE_URL:+1}'
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11435}
       OPEN_KRITT_XAI_API_KEY_CONFIGURED: '${XAI_API_KEY:+1}'
       OPEN_KRITT_CODEX_LOGIN_CONFIGURED: '${CODEX_LOGIN_CONFIGURED:+1}'
       OPEN_KRITT_PROVIDER_CREDENTIALS_PATH: /credentials/providers.json
@@ -127,6 +148,9 @@ services:
       ENGINE_RETRY_COUNT: ${ENGINE_RETRY_COUNT:-2}
       ENGINE_CYBER_SAFETY_RETRY_COUNT: ${ENGINE_CYBER_SAFETY_RETRY_COUNT:-0}
       ENGINE_HARNESS_TIMEOUT_SECONDS: ${ENGINE_HARNESS_TIMEOUT_SECONDS:-7200}
+      # Comma-separated provider:model:harness[:thinking] fallbacks used after
+      # a quota/rate-limit error, e.g. claude:claude-sonnet-5:claude-code,codex:gpt-5-codex:codex
+      ENGINE_MODEL_FAILOVER_CHAIN: ${ENGINE_MODEL_FAILOVER_CHAIN:-}
       ENGINE_MODEL_CATALOG_REFRESH_SECONDS: ${ENGINE_MODEL_CATALOG_REFRESH_SECONDS:-300}
       ENGINE_MODEL_CATALOG_TIMEOUT_SECONDS: ${ENGINE_MODEL_CATALOG_TIMEOUT_SECONDS:-10}
       ENGINE_CODEX_AUTO_UPDATE: ${ENGINE_CODEX_AUTO_UPDATE:-false}
@@ -145,6 +169,9 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OMNIROUTE_API_KEY: ${OMNIROUTE_API_KEY:-}
+      OMNIROUTE_BASE_URL: ${OMNIROUTE_BASE_URL:-http://omniroute:20128/v1}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11435}
       XAI_API_KEY: ${XAI_API_KEY:-}
       CURSOR_API_KEY: ${CURSOR_API_KEY:-}
       CURSOR_AUTH_TOKEN: ${CURSOR_AUTH_TOKEN:-}
@@ -259,4 +286,5 @@ services:
       - ./database/init:/docker-entrypoint-initdb.d:ro
 
 volumes:
+  omniroute-data:
   engine-checkout-cache:

@@ -1576,3 +1576,25 @@ def test_generation_validation_errors_are_bounded_and_strip_controls():
     assert all("\x00" not in item["field"] for item in sanitized)
     assert all("\n" not in item["message"] and "\t" not in item["message"] for item in sanitized)
     assert all("\x1b" not in item["message"] for item in sanitized)
+
+
+def test_generation_output_fields_use_the_shared_field_definition_validator():
+    invalid = marked(
+        {
+            "results": [
+                raw_post_script(
+                    fields=[
+                        {"key": "_engine_readiness", "type": "string"},
+                        {"key": "_chip_lifecycle", "type": "string"},
+                    ]
+                )
+            ]
+        }
+    )
+
+    with pytest.raises(GenerationValidationError) as exc_info:
+        validate_generation_payload("post_script", invalid)
+
+    messages = [item["message"] for item in exc_info.value.errors if item["field"] == "outputFormat"]
+    assert any(message.startswith("outputFormat._engine_readiness: ") for message in messages)
+    assert any(message.startswith("outputFormat._chip_lifecycle: ") for message in messages)

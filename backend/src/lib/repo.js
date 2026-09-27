@@ -189,6 +189,14 @@ function lineageKey(stepId, prevId, prevTable, repeatRun) {
 // concrete step/input task has its own sequential repeat series; its accumulated
 // output reaches the next depth only after all configured repeats complete.
 export function summarizeExpectedWorkflowLineages(scan, steps, metadata, results) {
+  const { expectedLineages, completedLineages } = summarizeWorkflowLineageDetail(scan, steps, metadata, results);
+  return { expectedLineages, completedLineages };
+}
+
+// Same reconstruction, but also broken down per step and per
+// source->destination step edge so the scan graph can show where lineages are
+// still owed.
+export function summarizeWorkflowLineageDetail(scan, steps, metadata, results) {
   const completed = new Set(
     metadata
       .filter((row) => (row.kind || 'step') === 'step' && row.status === 'completed')
@@ -207,6 +215,8 @@ export function summarizeExpectedWorkflowLineages(scan, steps, metadata, results
   let states = [{ prevId: 0, prevTable: null, sourceStepId: null }];
   let previousDepthComplete = true;
   const expected = new Set();
+  const byStep = {};
+  const edges = {};
 
   for (const depth of depths) {
     const depthSteps = byDepth.get(depth) || [];
@@ -222,17 +232,25 @@ export function summarizeExpectedWorkflowLineages(scan, steps, metadata, results
       const routedStates = step.boundSourceStepId
         ? inputStates.filter((state) => `${state.sourceStepId ?? ''}` === `${step.boundSourceStepId}`)
         : inputStates;
+      const stepKey = step.id.toString();
+      byStep[stepKey] ??= { expected: 0, completed: 0 };
       for (const state of routedStates) {
+        if (state.sourceStepId != null) {
+          const edgeKey = `${state.sourceStepId}|${stepKey}`;
+          edges[edgeKey] = (edges[edgeKey] || 0) + 1;
+        }
         let taskComplete = true;
         const taskResults = [];
         for (const repeatRun of runs) {
           const key = lineageKey(step.id, state.prevId, state.prevTable, repeatRun);
           expected.add(key);
+          byStep[stepKey].expected += 1;
           if (!completed.has(key)) {
             taskComplete = false;
             depthComplete = false;
             continue;
           }
+          byStep[stepKey].completed += 1;
           taskResults.push(...(resultsByLineage.get(key) || []));
         }
         if (!taskComplete || step.isLastStep) continue;
@@ -251,7 +269,7 @@ export function summarizeExpectedWorkflowLineages(scan, steps, metadata, results
 
   let completedLineages = 0;
   for (const key of expected) if (completed.has(key)) completedLineages += 1;
-  return { expectedLineages: expected.size, completedLineages };
+  return { expectedLineages: expected.size, completedLineages, byStep, edges };
 }
 
 // Best-effort progress for running scans, derived from step_results partitions.
@@ -815,7 +833,7 @@ export async function assembleScans(scans) {
   const workflowIds = [...new Set(scans.map((s) => s.workflowId))];
   const postScriptIds = [...new Set(scans.flatMap((scan) => configuredPostScriptIds(scan)).map((id) => BigInt(id)))];
   const agentSkillIds = [...new Set(scans.flatMap((s) => s.agentSkillIds || []))];
-  const [workflows, postScripts, agentSkills, counts, resources] = await Promise.all([
+  const [workflows, postScripts, agentSkills, counts, resources, resolvedRevisions] = await Promise.all([
     prisma.workflow.findMany({
       where: { id: { in: workflowIds } },
       select: { id: true, name: true, stepIds: true },
@@ -836,10 +854,17 @@ export async function assembleScans(scans) {
     }),
     findingCountsByScan(scans.map((s) => s.id)),
     readResourceDiagnostics(),
+    prisma.stepMetadata.findMany({
+      where: { scanId: { in: scans.map((scan) => scan.id) }, checkedOutCommit: { not: null } },
+      orderBy: [{ scanId: 'asc' }, { updatedAt: 'desc' }, { id: 'desc' }],
+      distinct: ['scanId'],
+      select: { scanId: true, checkedOutCommit: true },
+    }),
   ]);
   const wfMap = new Map(workflows.map((w) => [w.id.toString(), w]));
   const psMap = new Map(postScripts.map((p) => [p.id.toString(), p]));
   const skillMap = new Map(agentSkills.map((skill) => [skill.id.toString(), skill]));
+  const revisionMap = new Map(resolvedRevisions.map((row) => [row.scanId.toString(), row.checkedOutCommit]));
   const stepsMap = await loadStepsMap(workflows.flatMap((w) => w.stepIds || []));
   const statusSummaries = await statusSummariesByScan(scans, stepsMap, wfMap);
 
@@ -862,6 +887,11 @@ export async function assembleScans(scans) {
       exploitable: 0,
     };
     const statusSummary = statusSummaries.get(s.id.toString());
+    const recordedRevision = revisionMap.get(s.id.toString()) || null;
+    const resolvedRevision =
+      (s.repoKind || 'remote') === 'local' && recordedRevision === 'LOCAL_SNAPSHOT'
+        ? s.commitSha || recordedRevision
+        : recordedRevision;
     const prog = await runningProgress(s, statusSummary);
     out.push({
       ...serializeScan(s, {
@@ -879,6 +909,7 @@ export async function assembleScans(scans) {
         progress: prog.progress,
         progressLabel: prog.progressLabel,
         statusSummary,
+        resolvedRevision,
       }),
       resourceNotice: resourceWaitingNotice(s.status, resources),
     });

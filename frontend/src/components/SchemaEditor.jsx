@@ -1,9 +1,13 @@
 import { useState, useEffect } from 'react';
 import { FIELD_TYPES, rowsToObject, objectToRows } from '../lib/keys.js';
 
+const rawJson = (rows) => JSON.stringify(rowsToObject(rows.filter((r) => r.key)), null, 2);
+
 // Editable output-format schema with a visual (key/type rows) and a raw-JSON mode.
 // `validateKey(key)` should return a message string for reserved-key violations,
 // or null/undefined when the key is acceptable. Empty + duplicate checks are built in.
+// Rows carrying a nested descriptor (`structured: true`) are shown read-only in
+// visual mode with their display type; the raw JSON mode edits them.
 export default function SchemaEditor({
   rows,
   onRowsChange,
@@ -13,12 +17,12 @@ export default function SchemaEditor({
   inputBg = 'var(--bg)',
   types = FIELD_TYPES,
 }) {
-  const [rawText, setRawText] = useState(null);
+  const [rawText, setRawText] = useState(() => (mode === 'raw' ? rawJson(rows) : null));
   const [rawErr, setRawErr] = useState(false);
 
   useEffect(() => {
     if (mode === 'raw' && rawText == null) {
-      setRawText(JSON.stringify(rowsToObject(rows.filter((r) => r.key)), null, 2));
+      setRawText(rawJson(rows));
     }
     if (mode === 'visual') {
       setRawText(null);
@@ -88,8 +92,9 @@ export default function SchemaEditor({
         <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
           {rows.map((row, idx) => {
             const err = rowError(row);
+            const structured = Boolean(row.structured);
             return (
-              <div key={idx}>
+              <div key={idx} data-structured={structured || undefined}>
                 <div style={{ display: 'flex', gap: 7, alignItems: 'center' }}>
                   <input
                     value={row.key}
@@ -113,9 +118,11 @@ export default function SchemaEditor({
                   <select
                     value={row.type}
                     onChange={(e) => setRow(idx, { type: e.target.value })}
+                    disabled={structured}
+                    title={structured ? 'Edit nested definitions in json mode' : undefined}
                     className="mono"
                     style={{
-                      width: 104,
+                      width: structured ? 132 : 104,
                       flex: 'none',
                       height: 34,
                       padding: '0 8px',
@@ -125,14 +132,33 @@ export default function SchemaEditor({
                       color: 'var(--text-2)',
                       fontSize: 12,
                       outline: 'none',
+                      cursor: structured ? 'not-allowed' : undefined,
                     }}
                   >
+                    {structured && <option value={row.type}>{row.type}</option>}
                     {types.map((t) => (
                       <option key={t} value={t}>
                         {t}
                       </option>
                     ))}
                   </select>
+                  {structured && (
+                    <span
+                      className="mono"
+                      title="Edit nested definitions in json mode"
+                      style={{
+                        flex: 'none',
+                        fontSize: 10,
+                        letterSpacing: '0.04em',
+                        padding: '2px 6px',
+                        borderRadius: 5,
+                        border: '1px solid var(--border)',
+                        color: 'var(--text-3)',
+                      }}
+                    >
+                      structured
+                    </span>
+                  )}
                   <span
                     onClick={() => removeRow(idx)}
                     style={{

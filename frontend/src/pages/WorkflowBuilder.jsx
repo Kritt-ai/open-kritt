@@ -8,6 +8,7 @@ import { Button, ErrorState, Spinner, Toggle } from '../components/ui.jsx';
 import { PromptEditor } from '../components/PromptEditor.jsx';
 import SchemaEditor from '../components/SchemaEditor.jsx';
 import { resultFromCompletedGeneration, workflowBuilderFromGeneration } from '../lib/generationDraft.js';
+import { fieldTypeName, isReservedOutputKey, validateFieldDefinition } from '../lib/fieldDefinitions.js';
 import {
   BUILTIN_KEYS,
   EXTRA_KEY,
@@ -23,6 +24,9 @@ import {
   isMultiOutputDepthKey,
   isValidKey,
 } from '../lib/keys.js';
+
+// The definition a schema row stands for: nested descriptor for structured rows, type name otherwise.
+const rowDefinition = (row) => (row.structured && row.definition != null ? row.definition : row.type);
 
 let UID = 100;
 const uid = () => `b${++UID}`;
@@ -545,7 +549,8 @@ export default function WorkflowBuilder() {
   const fieldError = (f) => {
     if (!f.key) return true;
     if (!isValidKey(f.key)) return true;
-    if (!FIELD_TYPES.includes(f.type)) return true;
+    if (isReservedOutputKey(f.key)) return true;
+    if (validateFieldDefinition(`outputFormat.${f.key}`, rowDefinition(f)).length > 0) return true;
     if (BUILTIN_KEYS.includes(f.key) || f.key === EXTRA_KEY || isMultiOutputDepthKey(f.key)) return true;
     if (globalKeyCount[f.key] > 1) return true;
     return false;
@@ -563,7 +568,7 @@ export default function WorkflowBuilder() {
   };
   const lastInvalidTypes = () => {
     const last = b.levels.find((l) => l.depth === maxDepth);
-    const actualTypes = new Map(last.schema.map((field) => [field.key, field.type]));
+    const actualTypes = new Map(last.schema.map((field) => [field.key, fieldTypeName(rowDefinition(field))]));
     return [...REQUIRED_VULN_KEYS, ...OPTIONAL_VULN_KEYS]
       .filter((key) => actualTypes.has(key) && actualTypes.get(key) !== REQUIRED_KEY_TYPES[key])
       .map((key) => ({ key, expected: REQUIRED_KEY_TYPES[key], actual: actualTypes.get(key) }));
@@ -622,14 +627,19 @@ export default function WorkflowBuilder() {
   const addRequired = (depth) =>
     mut((n) => {
       const l = n.levels.find((x) => x.depth === depth);
+      const resetType = (field, type) => {
+        field.type = type;
+        field.definition = type;
+        field.structured = false;
+      };
       REQUIRED_VULN_KEYS.forEach((k) => {
         const existing = l.schema.find((field) => field.key === k);
-        if (existing) existing.type = REQUIRED_KEY_TYPES[k] || 'string';
+        if (existing) resetType(existing, REQUIRED_KEY_TYPES[k] || 'string');
         else l.schema.push({ key: k, type: REQUIRED_KEY_TYPES[k] || 'string' });
       });
       OPTIONAL_VULN_KEYS.forEach((k) => {
         const existing = l.schema.find((field) => field.key === k);
-        if (existing) existing.type = REQUIRED_KEY_TYPES[k] || 'string';
+        if (existing) resetType(existing, REQUIRED_KEY_TYPES[k] || 'string');
       });
     });
 
@@ -1276,11 +1286,13 @@ export default function WorkflowBuilder() {
                 validateKey={(key) =>
                   !isValidKey(key)
                     ? 'invalid key name'
-                    : BUILTIN_KEYS.includes(key) || key === EXTRA_KEY || isMultiOutputDepthKey(key)
-                      ? 'reserved key'
-                      : globalKeyCount[key] > 1
-                        ? 'key already used in another step'
-                        : null
+                    : isReservedOutputKey(key)
+                      ? 'reserved key — engine-owned'
+                      : BUILTIN_KEYS.includes(key) || key === EXTRA_KEY || isMultiOutputDepthKey(key)
+                        ? 'reserved key'
+                        : globalKeyCount[key] > 1
+                          ? 'key already used in another step'
+                          : null
                 }
                 inputBg="var(--bg)"
                 types={FIELD_TYPES}

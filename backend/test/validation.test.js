@@ -1,5 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { RESERVED_POST_SCRIPT_KEYS } from '../src/lib/constants.js';
 import {
   validateSeverityRanker,
   validateScan,
@@ -749,4 +752,145 @@ test('validateScan enforces model provider and harness compatibility after norma
         )
     );
   }
+});
+
+// --- nested output-format descriptors (shared fixture) ---
+
+const descriptorFixture = JSON.parse(
+  readFileSync(fileURLToPath(new URL('../../test-fixtures/output-format-descriptors.json', import.meta.url)), 'utf8')
+);
+
+const impactChainDescriptor = {
+  type: 'array',
+  items: {
+    type: 'object',
+    fields: {
+      id: 'string',
+      claim: 'string',
+      status: { type: 'string', enum: ['proven', 'falsified', 'partial', 'unverified', 'blocked', 'not_applicable'] },
+      evidence_paths: { type: 'array', items: 'string' },
+      covers: { type: 'array', items: 'string' },
+      assessment: 'string',
+    },
+    required: ['id', 'claim', 'status', 'evidence_paths', 'covers', 'assessment'],
+  },
+};
+
+test('validateWorkflow preserves nested descriptors in the normalized output format', () => {
+  const valid = validateWorkflow(workflowWithTerminal({ ...terminalOutput, impact_chain: impactChainDescriptor }));
+  assert.deepEqual(valid.levels[0].outputFormat.impact_chain, impactChainDescriptor);
+  assert.equal(valid.levels[0].outputFormat.trigger_flow, 'array');
+});
+
+test('validateWorkflow accepts descriptor forms of the terminal key types', () => {
+  const valid = validateWorkflow(
+    workflowWithTerminal({ ...terminalOutput, trigger_flow: { type: 'array', items: 'string' } })
+  );
+  assert.deepEqual(valid.levels[0].outputFormat.trigger_flow, { type: 'array', items: 'string' });
+});
+
+test('validateWorkflow applies the shared descriptor fixture with depth-qualified paths', () => {
+  for (const item of descriptorFixture.cases) {
+    const outputFormat = { ...terminalOutput, ...item.outputFormat };
+    if (item.valid) {
+      const valid = validateWorkflow(workflowWithTerminal(outputFormat));
+      const normalized = valid.levels[0].outputFormat;
+      for (const key of Object.keys(item.normalizedEquals ?? {})) {
+        assert.deepEqual(normalized[key], item.normalizedEquals[key], item.name);
+      }
+      continue;
+    }
+    assert.throws(
+      () => validateWorkflow(workflowWithTerminal(outputFormat)),
+      (error) => {
+        assert.ok(error instanceof ValidationError, item.name);
+        assert.equal(error.errors[0].field, `levels[depth=0].${item.errorPath}`, item.name);
+        return true;
+      }
+    );
+  }
+});
+
+test('validatePostScript applies the shared descriptor fixture with outputFormat paths', () => {
+  const reserved = new Set(RESERVED_POST_SCRIPT_KEYS);
+  const cases = descriptorFixture.cases.filter((item) => !Object.keys(item.outputFormat).some((k) => reserved.has(k)));
+  assert.ok(cases.length >= descriptorFixture.cases.length - 1);
+  for (const item of cases) {
+    const body = { name: 'descriptor-script', content: 'Analyze {{summary}}.', outputFormat: item.outputFormat };
+    if (item.valid) {
+      const valid = validatePostScript(body);
+      for (const key of Object.keys(item.normalizedEquals ?? {})) {
+        assert.deepEqual(valid.outputFormat[key], item.normalizedEquals[key], item.name);
+      }
+      continue;
+    }
+    assert.throws(
+      () => validatePostScript(body),
+      (error) => {
+        assert.ok(error instanceof ValidationError, item.name);
+        assert.equal(error.errors[0].field, item.errorPath, item.name);
+        return true;
+      }
+    );
+  }
+});
+
+test('validatePostScript keeps descriptors and rejects engine-owned keys', () => {
+  const valid = validatePostScript({
+    name: 'chain-script',
+    content: 'Analyze {{summary}}.',
+    outputFormat: JSON.stringify({ impact_chain: impactChainDescriptor, _chip_severity: 'string' }),
+  });
+  assert.deepEqual(valid.outputFormat, { impact_chain: impactChainDescriptor, _chip_severity: 'string' });
+
+  for (const key of ['_engine_x', '_chip_lifecycle']) {
+    assert.throws(
+      () =>
+        validatePostScript({
+          name: 'engine-owned',
+          content: 'Analyze {{summary}}.',
+          outputFormat: { [key]: 'string' },
+        }),
+      (error) =>
+        error instanceof ValidationError &&
+        error.errors.some((item) => item.field === `outputFormat.${key}` && item.message.includes('reserved'))
+    );
+    assert.throws(
+      () => validateWorkflow(workflowWithTerminal({ ...terminalOutput, [key]: 'string' })),
+      (error) =>
+        error instanceof ValidationError &&
+        error.errors.some(
+          (item) => item.field === `levels[depth=0].outputFormat.${key}` && item.message.includes('reserved')
+        )
+    );
+  }
+});
+
+test('validators report unsupported plain types at the key path', () => {
+  assert.throws(
+    () => validateWorkflow(workflowWithTerminal({ ...terminalOutput, confidence: 'integer' })),
+    (error) =>
+      error instanceof ValidationError &&
+      error.errors.some(
+        (item) => item.field === 'levels[depth=0].outputFormat.confidence' && item.message.includes('unsupported type')
+      )
+  );
+  assert.throws(
+    () =>
+      validatePostScript({ name: 'bad-type', content: 'Analyze {{summary}}.', outputFormat: { _chip_x: 'integer' } }),
+    (error) =>
+      error instanceof ValidationError &&
+      error.errors.some((item) => item.field === 'outputFormat._chip_x' && item.message.includes('unsupported type'))
+  );
+  assert.throws(
+    () =>
+      validatePostScript({
+        name: 'markdown-type',
+        content: 'Analyze {{summary}}.',
+        outputFormat: { _reserved_report: { type: 'array', items: 'string' } },
+      }),
+    (error) =>
+      error instanceof ValidationError &&
+      error.errors.some((item) => item.field === 'outputFormat' && item.message.includes('Markdown'))
+  );
 });

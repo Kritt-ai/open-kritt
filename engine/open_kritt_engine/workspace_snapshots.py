@@ -9,6 +9,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .known_issues import ENGINE_WORKSPACE_DIR
+
 LOGGER = logging.getLogger("open_kritt_engine.workspace_snapshots")
 SNAPSHOT_LABEL = "open-kritt.workspace-snapshot"
 SNAPSHOT_KEY_LABEL = "open-kritt.workspace-snapshot-key"
@@ -227,6 +229,12 @@ def ensure_workspace_snapshot_image(
                 _run_docker(
                     ["cp", str(source_file), f"{builder}:/workspace/{filename}"],
                     timeout_seconds=60,
+                )
+            engine_files = Path(workspace_files_dir) / ENGINE_WORKSPACE_DIR
+            if engine_files.is_dir():
+                _run_docker(
+                    ["cp", str(engine_files), f"{builder}:/workspace/{ENGINE_WORKSPACE_DIR}"],
+                    timeout_seconds=120,
                 )
             changes = [
                 "--change",

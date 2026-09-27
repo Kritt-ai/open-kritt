@@ -6,7 +6,7 @@ import { prismaUniqueConflict } from '../src/app.js';
 import { DEFAULT_WORKFLOW_NAMES } from '../src/lib/defaultWorkflows.js';
 import { validateScanJobLimit, ValidationError } from '../src/lib/validation.js';
 import { agentSkillMutationState, countAgentSkillScanUsage } from '../src/routes/agentSkills.js';
-import { summarizeCanonicalFindings } from '../src/routes/overview.js';
+import { scanResearchKey, summarizeCanonicalFindings } from '../src/routes/overview.js';
 import { countPostScriptScanUsage, postScriptMutationState } from '../src/routes/postScripts.js';
 import {
   ACTIVE_SCAN_STATUSES,
@@ -1057,6 +1057,15 @@ test('overview counts canonical and unprocessed findings but excludes duplicates
       { dedupeIsCanonical: true, jsonAnswer: { exploitable: false } },
     ]),
     { findingsCount: 3, exploitableCount: 2 }
+  );
+});
+
+test('overview groups ordinary runs by research while isolating benchmarks', () => {
+  const base = { id: 20n, repoFull: 'account-abstraction', configuration: { program: 'Account Abstraction' } };
+  assert.equal(scanResearchKey(base), scanResearchKey({ ...base, id: 21n, repoFull: 'another-repo' }));
+  assert.notEqual(
+    scanResearchKey(base),
+    scanResearchKey({ ...base, id: 19n, configuration: { program: 'Account Abstraction', benchmark_mode: true } })
   );
 });
 

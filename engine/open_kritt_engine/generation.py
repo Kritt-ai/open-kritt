@@ -19,7 +19,7 @@ from .harnesses import HarnessError, harness_failure_retry_count, harness_for, n
 from .prompting import append_schema_prompt
 from .provider_credentials import provider_environment
 from .runtime_config import runtime_int
-from .schema import EXTRACTOR_HELPER_FIELD
+from .schema import EXTRACTOR_HELPER_FIELD, FIELD_TYPES, normalize_field_definition, validate_field_definition
 from .workspace import codex_home_for_job, grok_home_for_job, provider_account_lease
 
 BUILTIN_KEYS = (
@@ -50,9 +50,9 @@ POST_SCRIPT_GENERATION_INPUT_KEYS = frozenset(
 RESERVED_POST_SCRIPT_KEYS = POST_SCRIPT_GENERATION_INPUT_KEYS
 POST_SCRIPT_MARKDOWN_OUTPUT_KEYS = frozenset({"_reserved_report", "_reserved_poc"})
 POST_SCRIPT_CHIP_PREFIX = "_chip_"
-WORKFLOW_FIELD_TYPES = ("string", "number", "boolean", "array", "object")
+WORKFLOW_FIELD_TYPES = FIELD_TYPES
 POST_SCRIPT_FIELD_TYPES = WORKFLOW_FIELD_TYPES
-MODEL_PROVIDERS = frozenset({"codex", "claude", "openrouter", "xai", "deepseek"})
+MODEL_PROVIDERS = frozenset({"codex", "claude", "openrouter", "omniroute", "xai", "deepseek", "ollama"})
 THINKING_EFFORTS = frozenset({"default", "low", "medium", "high", "xhigh", "max", "ultra"})
 GENERATION_REQUEST_MAX_LENGTH = 20_000
 MODEL_ID_MAX_LENGTH = 200
@@ -65,13 +65,16 @@ MODEL_PROVIDER_HARNESSES = {
     "codex": frozenset({"codex"}),
     "claude": frozenset({"claude-code"}),
     "openrouter": frozenset({"codex", "claude-code"}),
+    "omniroute": frozenset({"codex", "claude-code"}),
     "xai": frozenset({"grok-build"}),
     "deepseek": frozenset({"codex"}),
+    "ollama": frozenset({"ollama"}),
 }
 HARNESS_THINKING_EFFORTS = {
     "codex": frozenset({"default", "low", "medium", "high", "xhigh", "max", "ultra"}),
     "claude-code": frozenset({"default", "low", "medium", "high", "xhigh", "max"}),
     "grok-build": frozenset({"low", "medium", "high", "xhigh"}),
+    "ollama": frozenset({"default"}),
 }
 
 IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
@@ -106,8 +109,10 @@ GENERATION_PROVIDER_ENV_KEYS = {
     "codex": frozenset({"CODEX_API_KEY", "OPENAI_API_KEY", "CODEX_HOME"}),
     "claude": frozenset({"ANTHROPIC_API_KEY"}),
     "openrouter": frozenset({"OPENROUTER_API_KEY"}),
+    "omniroute": frozenset({"OMNIROUTE_API_KEY", "OMNIROUTE_BASE_URL"}),
     "xai": frozenset({"XAI_API_KEY", "GROK_BIN", "GROK_HOME"}),
     "deepseek": frozenset({"DEEPSEEK_API_KEY"}),
+    "ollama": frozenset({"OLLAMA_BASE_URL"}),
 }
 
 
@@ -286,6 +291,11 @@ def generation_environment(
     return env
 
 
+def _field_type_name(definition: Any) -> str:
+    normalized = normalize_field_definition(definition)
+    return str(normalized["type"]) if isinstance(normalized, dict) else str(normalized)
+
+
 def _normalize_output_fields(
     raw_fields: list[dict[str, Any]], errors: list[dict[str, str]], field: str
 ) -> dict[str, str]:
@@ -431,8 +441,8 @@ def _validate_workflow_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
                 _error(errors, f"{field_prefix}.outputFormat", f'"{key}" is a reserved key.')
             if key_counts.get(key, 0) > 1:
                 _error(errors, f"{field_prefix}.outputFormat", f'"{key}" is used more than once across the workflow.')
-            if value_type not in WORKFLOW_FIELD_TYPES:
-                _error(errors, f"{field_prefix}.outputFormat", f'"{key}" has an unsupported type "{value_type}".')
+            for definition_error in validate_field_definition(f"{field_prefix}.outputFormat.{key}", value_type):
+                _error(errors, f"{field_prefix}.outputFormat", definition_error)
 
         if not level["steps"]:
             _error(errors, f"{field_prefix}.steps", "Each depth must contain at least one step.")
@@ -551,9 +561,9 @@ def _validate_post_script_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
             _error(errors, "outputFormat", f'"{key}" is not a valid key name.')
         if key in RESERVED_POST_SCRIPT_KEYS:
             _error(errors, "outputFormat", f'"{key}" is a reserved key and cannot be an output key.')
-        if value_type not in POST_SCRIPT_FIELD_TYPES:
-            _error(errors, "outputFormat", f'"{key}" has an unsupported type "{value_type}".')
-        if key in POST_SCRIPT_MARKDOWN_OUTPUT_KEYS and value_type != "string":
+        for definition_error in validate_field_definition(f"outputFormat.{key}", value_type):
+            _error(errors, "outputFormat", definition_error)
+        if key in POST_SCRIPT_MARKDOWN_OUTPUT_KEYS and _field_type_name(value_type) != "string":
             _error(errors, "outputFormat", f'"{key}" must use type "string" so it can be rendered as Markdown.')
         if key == POST_SCRIPT_CHIP_PREFIX:
             _error(errors, "outputFormat", f'"{POST_SCRIPT_CHIP_PREFIX}" must include a label after the prefix.')

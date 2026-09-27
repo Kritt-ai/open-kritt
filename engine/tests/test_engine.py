@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from open_kritt_engine import harnesses
+from open_kritt_engine import known_issues as known_issues_module
 from open_kritt_engine import post_processing as post_processing_module
 from open_kritt_engine import worker as worker_module
 from open_kritt_engine import workspace as workspace_module
@@ -315,6 +316,55 @@ def test_anchored_dedupe_batches_carry_canonicals_and_next_50():
     prompt = build_dedupe_prompt(scan(), anchors, targets)
     assert "Canonical anchors JSON" in prompt
     assert "Target findings JSON" in prompt
+
+
+def test_dedupe_prompt_compacts_large_anchor_history_below_codex_input_limit():
+    long_text = "x" * 10_000
+    anchors = []
+    for row_id in range(1, 1_601):
+        row = vuln(row_id, canonical=True, canonical_id=row_id)
+        row["json_answer"].update(
+            {
+                "summary": long_text,
+                "vulnerability_type": long_text,
+                "file_path": long_text,
+                "malicious_actor": long_text,
+                "trigger_flow": long_text,
+                "explanation": long_text,
+            }
+        )
+        anchors.append(row)
+    targets = [vuln(2_000)]
+
+    prompt = build_dedupe_prompt(scan(), anchors, targets)
+
+    assert len(prompt) < 1_048_576
+    assert "malicious_actor" not in prompt.split("Target findings JSON:", 1)[0]
+
+
+def test_ranker_prompt_compacts_large_anchor_history_below_codex_input_limit():
+    long_text = "x" * 10_000
+    anchors = []
+    for row_id in range(1, 801):
+        row = vuln(row_id, canonical=True, canonical_id=row_id, bounty_rank=row_id)
+        row["json_answer"].update(
+            {
+                "summary": long_text,
+                "vulnerability_type": long_text,
+                "file_path": long_text,
+                "malicious_actor": long_text,
+                "trigger_flow": long_text,
+                "explanation": long_text,
+            }
+        )
+        row["bounty_rank_reasoning"] = long_text
+        row["rank_root_bug"] = long_text
+        anchors.append(row)
+
+    prompt = build_ranker_prompt(scan(), anchors, [vuln(2_000, canonical=True, canonical_id=2_000)])
+
+    assert len(prompt) < 1_048_576
+    assert "malicious_actor" not in prompt.split("Target findings JSON:", 1)[0]
 
 
 def test_dedupe_validation_requires_every_target_once_and_maps_anchors():
@@ -691,6 +741,69 @@ def test_prepare_dependency_workspace_uses_cached_snapshot_image_without_copying
     assert Path(prepared.repo_dir).is_dir()
     assert {path.name for path in Path(prepared.repo_dir).iterdir()} == {"WORKSPACE.json", "WORKSPACE.md"}
     assert json.loads(prepared.manifest_json)["primary"]["path"] == "/workspace"
+
+
+def _checkout_with_audit_pdf(repo_full, commit_sha, base_dir, github_token=None):
+    path = Path(base_dir) / repo_full.replace("/", "__")
+    path.mkdir(parents=True, exist_ok=True)
+    (path / ".git").mkdir(exist_ok=True)
+    (path / "repo.txt").write_text(repo_full, encoding="utf-8")
+    (path / "audits").mkdir(exist_ok=True)
+    (path / "audits" / "2026-Quantstamp-audit.pdf").write_bytes(b"%PDF-1.4 audit")
+    return str(path), f"commit-{repo_full.split('/')[-1]}"
+
+
+def test_prepare_dependency_workspace_adds_known_issues_corpus_to_manifest_and_layout(monkeypatch, tmp_path):
+    def fake_copy_checkout(src_dir, dest_dir, *, shared=False, hardlink=False):
+        dest = Path(dest_dir)
+        if dest.exists():
+            shutil.rmtree(dest)
+        shutil.copytree(src_dir, dest)
+        return str(dest), "commit-repo"
+
+    monkeypatch.setattr(workspace_module, "checkout_repo", _checkout_with_audit_pdf)
+    monkeypatch.setattr(workspace_module, "copy_checkout", fake_copy_checkout)
+    monkeypatch.setattr(workspace_module, "_git_head_commit", fake_cache_git_head)
+    monkeypatch.setattr(known_issues_module, "pdftotext_converter", lambda _path: "SSV-17 stale balance\f")
+
+    prepared = prepare_dependency_workspace(
+        data_dir=str(tmp_path / "data"),
+        checkout_cache_dir=str(tmp_path / "cache"),
+        metadata_id=43,
+        scan=scan(),
+    )
+
+    entries = json.loads(prepared.manifest_json)["known_issues"]
+    assert [entry["source"] for entry in entries] == ["audits/2026-Quantstamp-audit.pdf"]
+    assert "known-issues/INDEX.md" in prepared.layout
+    text = Path(prepared.repo_dir) / entries[0]["text_path"]
+    assert "SSV-17 stale balance" in text.read_text(encoding="utf-8")
+
+
+def test_snapshot_workspace_places_known_issues_corpus_beside_workspace_files(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_snapshot_image(**kwargs):
+        captured.update(kwargs)
+        return "open-kritt-workspace-snapshot:test"
+
+    monkeypatch.setattr(workspace_module, "checkout_repo", _checkout_with_audit_pdf)
+    monkeypatch.setattr(workspace_module, "_git_head_commit", fake_cache_git_head)
+    monkeypatch.setattr(workspace_module, "ensure_workspace_snapshot_image", fake_snapshot_image)
+    monkeypatch.setattr(known_issues_module, "pdftotext_converter", lambda _path: "audit text\f")
+
+    prepared = prepare_dependency_workspace(
+        data_dir=str(tmp_path / "data"),
+        checkout_cache_dir=str(tmp_path / "cache"),
+        metadata_id=48,
+        scan={**scan(), "commit_sha": "abc123"},
+        use_snapshot_image=True,
+    )
+
+    assert json.loads(captured["manifest_json"])["known_issues"][0]["status"] == "converted"
+    corpus = Path(captured["workspace_files_dir"]) / ".open-kritt" / "known-issues"
+    assert (corpus / "INDEX.md").is_file()
+    assert "known-issues/INDEX.md" in prepared.layout
 
 
 def test_prewarm_scan_checkout_cache_only_populates_cache(monkeypatch, tmp_path):
@@ -1206,6 +1319,69 @@ def test_codex_harness_falls_back_to_jsonl_answer(monkeypatch):
 
     assert result.payload == marked({"stub": True, "stub_explanation": "No matching records.", "results": []})
     assert result.codex_session_id == "thread-1"
+
+
+def test_codex_harness_salvages_completed_jsonl_after_docker_transport_failure(monkeypatch):
+    payload = marked({"stub": True, "stub_explanation": "No matching records.", "results": []})
+
+    def fake_run_process(*_args, **_kwargs):
+        stdout = "\n".join(
+            [
+                json.dumps({"type": "thread.started", "thread_id": "thread-transport-failure"}),
+                json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": json.dumps(payload)}}),
+                json.dumps({"type": "turn.completed", "usage": {"total_tokens": 7}}),
+            ]
+        )
+        raise HarnessError(
+            "docker attach failed",
+            output=HarnessOutput(stdout=stdout, stderr="error waiting for container: unexpected EOF", returncode=125),
+            code="model_process_error",
+            exit_code=125,
+            harness="codex",
+        )
+
+    monkeypatch.setattr(harnesses, "_run_process", fake_run_process)
+
+    result = CodexHarness(timeout_seconds=5).run(
+        prompt="prompt",
+        schema=output_schema('{"thing":"string"}', multi_output=False),
+        repo_dir="/tmp",
+        model="gpt-test",
+    )
+
+    assert result.payload == payload
+    assert result.codex_session_id == "thread-transport-failure"
+    assert result.usage["total_tokens"] == 7
+    assert result.output.returncode == 125
+
+
+def test_codex_harness_does_not_salvage_jsonl_when_turn_failed(monkeypatch):
+    payload = marked({"stub": True, "stub_explanation": "No matching records.", "results": []})
+
+    def fake_run_process(*_args, **_kwargs):
+        stdout = "\n".join(
+            [
+                json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": json.dumps(payload)}}),
+                json.dumps({"type": "turn.failed", "error": {"message": "provider disconnected"}}),
+            ]
+        )
+        raise HarnessError(
+            "provider disconnected",
+            output=HarnessOutput(stdout=stdout, stderr="unexpected EOF", returncode=125),
+            code="model_process_error",
+            exit_code=125,
+            harness="codex",
+        )
+
+    monkeypatch.setattr(harnesses, "_run_process", fake_run_process)
+
+    with pytest.raises(HarnessError, match="provider disconnected"):
+        CodexHarness(timeout_seconds=5).run(
+            prompt="prompt",
+            schema=output_schema('{"thing":"string"}', multi_output=False),
+            repo_dir="/tmp",
+            model="gpt-test",
+        )
 
 
 def test_codex_harness_falls_back_to_latest_session_file(monkeypatch, tmp_path):
@@ -3008,6 +3184,7 @@ def test_worker_records_and_rotates_last_five_model_error_outputs(monkeypatch, t
         db=fake_db,
     )
     worker.runtime_retry_count = lambda: 6
+    worker.runtime_min_free_storage_bytes = lambda: 0
     monkeypatch.setattr(worker_module, "prepare_dependency_workspace", lambda **_kwargs: prepared)
     job = Job(
         step=step(1, 0, multi=False, output_format='{"thing":"string"}'),

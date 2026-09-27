@@ -1,4 +1,5 @@
 import fcntl
+import hashlib
 import logging
 import os
 import re
@@ -16,6 +17,7 @@ _THREAD_LOCKS: dict[str, threading.Lock] = {}
 _THREAD_LOCKS_GUARD = threading.Lock()
 LOGGER = logging.getLogger("open_kritt_engine.repository")
 LOCAL_SNAPSHOT_REVISION = "LOCAL_SNAPSHOT"
+LOCAL_SNAPSHOT_REVISION_PREFIX = "LOCAL_SNAPSHOT_SHA256:"
 GIT_ENV_KEYS = frozenset(
     {
         "PATH",
@@ -41,6 +43,40 @@ GIT_ENV_KEYS = frozenset(
 
 class RepoError(RuntimeError):
     pass
+
+
+def is_local_snapshot_revision(value: str | None) -> bool:
+    return value == LOCAL_SNAPSHOT_REVISION or bool(value and value.startswith(LOCAL_SNAPSHOT_REVISION_PREFIX))
+
+
+def local_snapshot_revision(root: str | Path) -> str:
+    """Return a stable identity for the exact Git-free snapshot tree."""
+
+    base = Path(root)
+    digest = hashlib.sha256()
+    for path in sorted(base.rglob("*"), key=lambda item: item.relative_to(base).as_posix()):
+        relative = path.relative_to(base).as_posix().encode("utf-8", "surrogateescape")
+        entry = path.lstat()
+        if path.is_symlink():
+            kind = b"symlink"
+            payload = os.readlink(path).encode("utf-8", "surrogateescape")
+        elif path.is_dir():
+            kind = b"directory"
+            payload = b""
+        elif path.is_file():
+            kind = b"file"
+            with path.open("rb") as source:
+                payload_hasher = hashlib.sha256()
+                while chunk := source.read(1024 * 1024):
+                    payload_hasher.update(chunk)
+            payload = payload_hasher.digest()
+        else:
+            raise RepoError(f"local snapshot contains an unsupported special file: {path}")
+        executable = b"1" if entry.st_mode & 0o111 else b"0"
+        for part in (kind, relative, executable, payload):
+            digest.update(len(part).to_bytes(8, "big"))
+            digest.update(part)
+    return f"{LOCAL_SNAPSHOT_REVISION_PREFIX}{digest.hexdigest()}"
 
 
 def normalize_repo_full(repo_full: str) -> str:
@@ -317,7 +353,7 @@ def snapshot_local_repo(
             source_fd = _open_local_repository(source_root, name)
             try:
                 _copy_local_tree_from_fd(source_fd, repo_dir, source_root / name)
-                return str(repo_dir), LOCAL_SNAPSHOT_REVISION
+                return str(repo_dir), local_snapshot_revision(repo_dir)
             finally:
                 os.close(source_fd)
 
@@ -331,7 +367,7 @@ def copy_local_snapshot(src_dir: str, dest_dir: str) -> tuple[str, str]:
         _copy_local_tree_from_fd(source_fd, destination, source)
     finally:
         os.close(source_fd)
-    return str(destination), LOCAL_SNAPSHOT_REVISION
+    return str(destination), local_snapshot_revision(destination)
 
 
 def _open_local_repository(source_root: Path, name: str) -> int:

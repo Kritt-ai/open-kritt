@@ -154,7 +154,11 @@ the project under the GNU AGPL v3.0. This summary does not replace reading the t
   Lint-only for the engine until fixed.
 - **Reserved key patterns** in scan/enrichment results are meaningful, not arbitrary:
   `_reserved_report` / `_reserved_poc` (rendered as markdown tabs) and `_chip_*`
-  (post-script chips). Don't rename or strip them.
+  (post-script chips). Don't rename or strip them. Keys starting with `_engine_`
+  (`_engine_lifecycle`, `_engine_evidence`, `_engine_readiness`) and the exact key
+  `_chip_lifecycle` are engine-owned: output formats may not declare them, the engine
+  strips them from model payloads before writing its own blocks, and legacy results get
+  them synthesized at read time (`legacy: true`) without ever being rewritten.
 - **Custom, dependency-free Markdown renderer** lives at
   `frontend/src/components/Markdown.jsx` (escapes untrusted report/PoC text). Prefer it
   over adding a markdown dependency.

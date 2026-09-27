@@ -1,0 +1,197 @@
+{
+  "name": "single_resource_unit_without_exhaustion",
+  "scan": {
+    "id": 1,
+    "configuration": {
+      "investigation_kind": "public_bounty",
+      "investigation_kind_source": "user",
+      "readiness_policy_version": "v2.7-impact-gate-1"
+    }
+  },
+  "d3": {
+    "verdict": "confirmed",
+    "reason": "slot allocation skips the fee check",
+    "reachability_evidence": "entry point reachable by an unprivileged caller",
+    "guard_analysis": "no guard prevents the path",
+    "impact_evidence": "slot allocation skips the fee check",
+    "negative_control_plan": "run the same path with the guard satisfied and expect a revert",
+    "missing_evidence": "",
+    "novelty_status": "novel_verified",
+    "scope_status": "in_scope_verified",
+    "bug_claim": "slot allocation skips the fee check",
+    "impact_claim": "the connection pool is exhausted and honest clients are refused",
+    "impact_family": "resource_exhaustion",
+    "impact_objective": {
+      "claim": "the connection pool is exhausted and honest clients are refused",
+      "source_type": "bounty_rule",
+      "source_reference": "bounty_rule reference for resource_exhaustion",
+      "affected_subject": "target component",
+      "terminal_outcome": "the connection pool is exhausted and honest clients are refused",
+      "required_evidence": [
+        "captured before/after state",
+        "negative control",
+        "repeat run"
+      ]
+    },
+    "evidence_dimensions": [
+      {
+        "tag": "pool_size",
+        "status": "required",
+        "rationale": ""
+      },
+      {
+        "tag": "attacker_cost_per_iteration",
+        "status": "required",
+        "rationale": ""
+      },
+      {
+        "tag": "iterations_required",
+        "status": "required",
+        "rationale": ""
+      },
+      {
+        "tag": "replenishment",
+        "status": "required",
+        "rationale": ""
+      },
+      {
+        "tag": "recovery",
+        "status": "required",
+        "rationale": ""
+      },
+      {
+        "tag": "terminal_outcome",
+        "status": "required",
+        "rationale": ""
+      }
+    ],
+    "impact_chain_plan": [
+      {
+        "id": "hop-1",
+        "claim": "attacker can allocate a pool slot for free",
+        "status": "unverified",
+        "evidence_paths": [],
+        "covers": [
+          "attacker_cost_per_iteration"
+        ],
+        "assessment": ""
+      },
+      {
+        "id": "hop-2",
+        "claim": "the pool is exhausted and honest requests fail",
+        "status": "unverified",
+        "evidence_paths": [],
+        "covers": [
+          "pool_size",
+          "iterations_required",
+          "replenishment",
+          "recovery",
+          "terminal_outcome"
+        ],
+        "assessment": ""
+      }
+    ],
+    "unverified_assumptions": [],
+    "falsification_plan": "show the guard blocks the path or the terminal state does not change",
+    "first_unsupported_hop": "hop-1",
+    "impact_definition_status": "defined"
+  },
+  "d4": {
+    "poc_status": "reproduced",
+    "poc_command": "python3 poc.py",
+    "poc_expected": "terminal state changes",
+    "poc_observed": "one slot consumed without payment",
+    "poc_stdout": "",
+    "poc_stderr": "",
+    "poc_exit_code": 0,
+    "negative_control_command": "python3 poc.py --control",
+    "negative_control_observed": "rejected",
+    "negative_control_exit_code": 1,
+    "repeat_count": 3,
+    "poc_artifact_paths": [
+      "poc.py",
+      "attack.log",
+      "control.log",
+      "repeat.log"
+    ],
+    "poc_artifact_dir": "",
+    "remaining_limits": "",
+    "_reserved_poc": "model narrative of the run",
+    "bug_status": "reproduced",
+    "impact_status": "partial",
+    "blocker_kind": "none",
+    "observed_behavior": "the defective path executed",
+    "claimed_impact": "one slot consumed without payment",
+    "observed_terminal_outcome": "one slot consumed without payment",
+    "impact_chain": [
+      {
+        "id": "hop-1",
+        "claim": "attacker can allocate a pool slot for free",
+        "status": "proven",
+        "evidence_paths": [
+          "attack.log"
+        ],
+        "covers": [
+          "attacker_cost_per_iteration"
+        ],
+        "assessment": ""
+      },
+      {
+        "id": "hop-2",
+        "claim": "the pool is exhausted and honest requests fail",
+        "status": "partial",
+        "evidence_paths": [
+          "attack.log"
+        ],
+        "covers": [],
+        "assessment": "only one slot was consumed; the pool of 4096 was never exhausted"
+      }
+    ],
+    "impact_artifact_paths": [],
+    "missing_impact_links": [
+      "hop-2"
+    ],
+    "unverified_assumptions": [],
+    "negative_control_status": "passed",
+    "repeatability_status": "deterministic"
+  },
+  "manifest": {
+    "artifact_dir": "poc-artifacts/scan-1/finding-2/metadata-3",
+    "files": [
+      "poc.py",
+      "attack.log",
+      "control.log",
+      "repeat.log"
+    ],
+    "capture_complete": true
+  },
+  "d5": {
+    "submission_ready": false,
+    "scope_status": "in_scope_verified",
+    "severity": "high",
+    "novelty_status": "novel_verified",
+    "impact_evidence": "one slot consumed",
+    "missing_requirements": [],
+    "artifact_reference": "poc-artifacts/scan-1/finding-2/metadata-3",
+    "_reserved_report": "report body",
+    "scope_evidence": "asset listed in the engagement",
+    "novelty_evidence": "no prior report found",
+    "impact_match_status": "partial",
+    "impact_evidence_status": "insufficient",
+    "impact_mapping": [
+      {
+        "required_outcome": "pool exhausted",
+        "observed_outcome": "one slot consumed",
+        "status": "missing",
+        "evidence_paths": [
+          "attack.log"
+        ]
+      }
+    ],
+    "report_readiness_reason": "required and observed outcomes compared"
+  },
+  "expected": {
+    "lifecycle_status": "impact_partial",
+    "ready": false
+  }
+}

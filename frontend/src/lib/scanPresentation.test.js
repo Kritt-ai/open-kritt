@@ -50,6 +50,12 @@ describe('isScanDeletable', () => {
     expect(['paused', 'failed', 'stopped', 'completed'].every(isScanDeletable)).toBe(true);
   });
 
+  it('accepts the scan objects passed by overview actions', () => {
+    expect(isScanDeletable({ id: '20', status: 'stopped' })).toBe(true);
+    expect(isScanDeletable({ id: '21', status: 'running' })).toBe(false);
+    expect(isScanDeletable(null)).toBe(false);
+  });
+
   it('keeps active and waiting scans from being deleted', () => {
     expect(
       ['queued', 'pending', 'prewarming_cache', 'running', 'rate_limited', 'post_processing'].some(isScanDeletable)

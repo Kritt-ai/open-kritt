@@ -1,0 +1,199 @@
+{
+  "name": "local_crash_without_degradation",
+  "scan": {
+    "id": 1,
+    "configuration": {
+      "investigation_kind": "public_bounty",
+      "investigation_kind_source": "user",
+      "readiness_policy_version": "v2.7-impact-gate-1"
+    }
+  },
+  "d3": {
+    "verdict": "confirmed",
+    "reason": "unchecked length in the packet parser",
+    "reachability_evidence": "entry point reachable by an unprivileged caller",
+    "guard_analysis": "no guard prevents the path",
+    "impact_evidence": "unchecked length in the packet parser",
+    "negative_control_plan": "run the same path with the guard satisfied and expect a revert",
+    "missing_evidence": "",
+    "novelty_status": "novel_verified",
+    "scope_status": "in_scope_verified",
+    "bug_claim": "unchecked length in the packet parser",
+    "impact_claim": "the node stops serving peers",
+    "impact_family": "availability_loss",
+    "impact_objective": {
+      "claim": "the node stops serving peers",
+      "source_type": "bounty_rule",
+      "source_reference": "bounty_rule reference for availability_loss",
+      "affected_subject": "target component",
+      "terminal_outcome": "the node stops serving peers",
+      "required_evidence": [
+        "captured before/after state",
+        "negative control",
+        "repeat run"
+      ]
+    },
+    "evidence_dimensions": [
+      {
+        "tag": "attacker_workload",
+        "status": "required",
+        "rationale": ""
+      },
+      {
+        "tag": "measurable_degradation",
+        "status": "required",
+        "rationale": ""
+      },
+      {
+        "tag": "duration",
+        "status": "required",
+        "rationale": ""
+      },
+      {
+        "tag": "affected_component",
+        "status": "required",
+        "rationale": ""
+      },
+      {
+        "tag": "recovery",
+        "status": "required",
+        "rationale": ""
+      },
+      {
+        "tag": "terminal_outcome",
+        "status": "required",
+        "rationale": ""
+      }
+    ],
+    "impact_chain_plan": [
+      {
+        "id": "hop-1",
+        "claim": "malformed packet crashes the parser",
+        "status": "unverified",
+        "evidence_paths": [],
+        "covers": [
+          "attacker_workload",
+          "affected_component"
+        ],
+        "assessment": ""
+      },
+      {
+        "id": "hop-2",
+        "claim": "the node stops serving peers for a measurable time",
+        "status": "unverified",
+        "evidence_paths": [],
+        "covers": [
+          "measurable_degradation",
+          "duration",
+          "recovery",
+          "terminal_outcome"
+        ],
+        "assessment": ""
+      }
+    ],
+    "unverified_assumptions": [],
+    "falsification_plan": "show the guard blocks the path or the terminal state does not change",
+    "first_unsupported_hop": "hop-1",
+    "impact_definition_status": "defined"
+  },
+  "d4": {
+    "poc_status": "reproduced",
+    "poc_command": "python3 poc.py",
+    "poc_expected": "terminal state changes",
+    "poc_observed": "worker panic with immediate restart; no request failures",
+    "poc_stdout": "",
+    "poc_stderr": "",
+    "poc_exit_code": 0,
+    "negative_control_command": "python3 poc.py --control",
+    "negative_control_observed": "rejected",
+    "negative_control_exit_code": 1,
+    "repeat_count": 3,
+    "poc_artifact_paths": [
+      "poc.py",
+      "attack.log",
+      "control.log",
+      "repeat.log"
+    ],
+    "poc_artifact_dir": "",
+    "remaining_limits": "",
+    "_reserved_poc": "model narrative of the run",
+    "bug_status": "reproduced",
+    "impact_status": "not_proven",
+    "blocker_kind": "none",
+    "observed_behavior": "the defective path executed",
+    "claimed_impact": "worker panic with immediate restart; no request failures",
+    "observed_terminal_outcome": "worker panic with immediate restart; no request failures",
+    "impact_chain": [
+      {
+        "id": "hop-1",
+        "claim": "malformed packet crashes the parser",
+        "status": "proven",
+        "evidence_paths": [
+          "crash.log"
+        ],
+        "covers": [
+          "attacker_workload",
+          "affected_component"
+        ],
+        "assessment": ""
+      },
+      {
+        "id": "hop-2",
+        "claim": "the node stops serving peers for a measurable time",
+        "status": "unverified",
+        "evidence_paths": [],
+        "covers": [],
+        "assessment": "the supervisor restarted the worker in 40ms; no peer request failed"
+      }
+    ],
+    "impact_artifact_paths": [
+      "crash.log"
+    ],
+    "missing_impact_links": [
+      "hop-2"
+    ],
+    "unverified_assumptions": [],
+    "negative_control_status": "passed",
+    "repeatability_status": "deterministic"
+  },
+  "manifest": {
+    "artifact_dir": "poc-artifacts/scan-1/finding-2/metadata-3",
+    "files": [
+      "poc.py",
+      "attack.log",
+      "control.log",
+      "repeat.log",
+      "crash.log"
+    ],
+    "capture_complete": true
+  },
+  "d5": {
+    "submission_ready": false,
+    "scope_status": "in_scope_verified",
+    "severity": "high",
+    "novelty_status": "novel_verified",
+    "impact_evidence": "worker restarted instantly",
+    "missing_requirements": [],
+    "artifact_reference": "poc-artifacts/scan-1/finding-2/metadata-3",
+    "_reserved_report": "report body",
+    "scope_evidence": "asset listed in the engagement",
+    "novelty_evidence": "no prior report found",
+    "impact_match_status": "none",
+    "impact_evidence_status": "insufficient",
+    "impact_mapping": [
+      {
+        "required_outcome": "node stops serving peers",
+        "observed_outcome": "worker restarted instantly",
+        "status": "missing",
+        "evidence_paths": [
+          "crash.log"
+        ]
+      }
+    ],
+    "report_readiness_reason": "required and observed outcomes compared"
+  },
+  "expected": {
+    "lifecycle_status": "bug_proven_impact_unproven",
+    "ready": false
+  }
+}

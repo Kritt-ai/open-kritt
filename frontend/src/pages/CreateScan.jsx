@@ -15,6 +15,11 @@ import { combineSeverityRanker } from '../lib/severityRanker.js';
 import { defaultRankerIds, defaultWorkflowId } from '../lib/scanPresentation.js';
 import { scanConfigurationDraft } from '../lib/scanDuplication.js';
 import { extraInputText, hasExtraValue, requiredScanExtraKeys } from '../lib/scanExtras.js';
+import {
+  INVESTIGATION_KINDS,
+  investigationConfiguration,
+  investigationKindRecommendation,
+} from '../lib/investigationKind.js';
 import { filterAgentSkills } from '../lib/agentSkillSearch.js';
 import { configuredMaxFiles, localRepoFilePreflight } from '../lib/localRepoFiles.js';
 import { useUnsavedChangesPrompt } from '../lib/useUnsavedChangesPrompt.js';
@@ -106,6 +111,7 @@ export default function CreateScan() {
     post_processing_thinking_effort: 'medium',
     model_overrides: {},
     extra: {},
+    investigationKind: '', // gated workflows: explicit choice required, never defaulted
     rankerIds: [],
     rankerExtra: '', // severity ranker: ordered ranker ids + per-scan custom rules
     jobLimit: '',
@@ -449,17 +455,22 @@ export default function CreateScan() {
           : { kind: 'local', repo_full: dep.repo_full, commit_sha: null }
       );
 
-  const canCreate =
-    hasConfiguredProvider &&
-    modelConfigurationValid &&
-    !!form.workflowId &&
-    selectedPostScriptIds.length > 0 &&
-    targetValid &&
-    dependenciesValid &&
-    jobLimitValid &&
-    missingExtra.length === 0 &&
-    !!combinedRanker.trim() &&
-    !saving;
+  const readinessGate = selectedWorkflow?.readinessGate || null;
+  const blockedReason = createScanBlockedReason({
+    hasConfiguredProvider,
+    modelConfigurationValid,
+    workflowId: form.workflowId,
+    postScriptCount: selectedPostScriptIds.length,
+    targetValid,
+    repoKind: form.repoKind,
+    dependenciesValid,
+    jobLimitValid,
+    missingExtraCount: missingExtra.length,
+    readinessGate,
+    investigationKind: form.investigationKind,
+    rankerText: combinedRanker,
+  });
+  const canCreate = blockedReason === null && !saving;
 
   const addDep = () => {
     setDirty(true);
@@ -514,6 +525,9 @@ export default function CreateScan() {
     }
     if (configuration && typeof configuration === 'object' && !Array.isArray(configuration)) {
       configuration = { ...configuration, post_script_ids: selectedPostScriptIds, agent_skill_ids: form.agentSkillIds };
+      if (readinessGate) {
+        configuration = { ...configuration, ...investigationConfiguration(form.investigationKind, readinessGate) };
+      }
     }
     const payload = {
       workflowId: form.workflowId,
@@ -552,27 +566,7 @@ export default function CreateScan() {
     submitScan(payload);
   };
 
-  const blockedLabel = !hasConfiguredProvider
-    ? 'Add a provider in Accounts'
-    : !modelConfigurationValid
-      ? 'Complete the model configuration'
-      : !form.workflowId
-        ? 'Select a workflow'
-        : selectedPostScriptIds.length === 0
-          ? 'Select a post-script'
-          : !targetValid
-            ? form.repoKind === 'remote'
-              ? 'Enter a valid repo'
-              : 'Select a local repository'
-            : !dependenciesValid
-              ? 'Fix dependency rows'
-              : !jobLimitValid
-                ? 'Fix maximum model jobs'
-                : missingExtra.length
-                  ? `Fill ${missingExtra.length} required extra`
-                  : !combinedRanker.trim()
-                    ? 'Add severity ranking rules'
-                    : 'Create scan';
+  const blockedLabel = blockedReason ?? 'Create scan';
 
   const togglePostScript = (id) => {
     setDirty(true);
@@ -969,6 +963,15 @@ export default function CreateScan() {
           {/* ===================== EXTRA ===================== */}
           <Label>5 · EXTRA</Label>
           <div style={{ marginBottom: 28 }}>
+            {readinessGate && (
+              <div style={{ marginBottom: 18 }}>
+                <InvestigationKindField
+                  value={form.investigationKind}
+                  extra={form.extra}
+                  onChange={(investigationKind) => set({ investigationKind })}
+                />
+              </div>
+            )}
             {expectedExtra.length > 0 ? (
               <>
                 <div style={{ fontSize: 12.5, color: 'var(--text-2)', margin: '-4px 0 12px' }}>
@@ -1479,6 +1482,85 @@ export default function CreateScan() {
 }
 
 // ---- small building blocks ----
+// Pure: the first reason the create button is blocked, or null when the form is ready.
+export function createScanBlockedReason({
+  hasConfiguredProvider,
+  modelConfigurationValid,
+  workflowId,
+  postScriptCount,
+  targetValid,
+  repoKind,
+  dependenciesValid,
+  jobLimitValid,
+  missingExtraCount,
+  readinessGate,
+  investigationKind,
+  rankerText,
+}) {
+  if (!hasConfiguredProvider) return 'Add a provider in Accounts';
+  if (!modelConfigurationValid) return 'Complete the model configuration';
+  if (!workflowId) return 'Select a workflow';
+  if (!postScriptCount) return 'Select a post-script';
+  if (!targetValid) return repoKind === 'remote' ? 'Enter a valid repo' : 'Select a local repository';
+  if (!dependenciesValid) return 'Fix dependency rows';
+  if (!jobLimitValid) return 'Fix maximum model jobs';
+  if (missingExtraCount) return `Fill ${missingExtraCount} required extra`;
+  if (readinessGate && !investigationKind) return 'Choose the investigation kind';
+  if (!`${rankerText ?? ''}`.trim()) return 'Add severity ranking rules';
+  return null;
+}
+
+// Investigation kind select for gated workflows. Starts empty on purpose: the
+// hint recommends a kind from the extras, but the user must choose explicitly.
+export function InvestigationKindField({ value, extra, onChange }) {
+  const recommendation = investigationKindRecommendation(extra);
+  const recommended = INVESTIGATION_KINDS.find((kind) => kind.value === recommendation.value);
+  const chosen = INVESTIGATION_KINDS.find((kind) => kind.value === value);
+  return (
+    <Field label="investigation kind · required">
+      <select
+        value={value || ''}
+        onChange={(e) => onChange(e.target.value)}
+        aria-label="Investigation kind"
+        className="mono"
+        style={{
+          width: '100%',
+          maxWidth: 360,
+          height: 38,
+          padding: '0 10px',
+          border: `1px solid ${value ? 'var(--border)' : 'var(--fail)'}`,
+          borderRadius: 7,
+          background: 'var(--bg)',
+          color: value ? 'var(--text)' : 'var(--text-3)',
+          fontSize: 12.5,
+          outline: 'none',
+        }}
+      >
+        <option value="" disabled>
+          Choose the investigation kind
+        </option>
+        {INVESTIGATION_KINDS.map((kind) => (
+          <option key={kind.value} value={kind.value}>
+            {kind.label}
+          </option>
+        ))}
+      </select>
+      <div style={{ fontSize: 11, lineHeight: 1.45, color: 'var(--text-3)', marginTop: 6 }}>
+        {chosen ? (
+          <div style={{ color: 'var(--text-2)', marginBottom: 3 }}>{chosen.description}</div>
+        ) : (
+          <div style={{ marginBottom: 3 }}>
+            This workflow runs the readiness gate; every finding is judged under the kind you choose here.
+          </div>
+        )}
+        <div>
+          Recommended: {recommended?.label || recommendation.value} — {recommendation.reason}
+        </div>
+      </div>
+    </Field>
+  );
+}
+
 export function AgentSkillSearchInput({ value, onChange, listId }) {
   return (
     <div style={{ position: 'relative', marginBottom: 8 }}>

@@ -13,12 +13,16 @@ import {
 } from '../lib/validation.js';
 import { assembleScans, assembleScan } from '../lib/repo.js';
 import { repoDisplayName, serializeSupplementalPostScriptRun, serializeVulnerability } from '../lib/serialize.js';
+import { loadPocArtifacts } from '../lib/pocArtifactExport.js';
+import { loadScanGraph } from '../lib/scanGraph.js';
 import { SCAN_STATUSES, extractExtraKeys } from '../lib/constants.js';
 import { localRepoNames } from '../lib/localRepos.js';
 import { assertModelSelectionAvailable } from '../lib/modelSelection.js';
 import { lockWorkflowForScan } from '../lib/workflowLocks.js';
 import { lockPostScriptForScan } from '../lib/postScriptLocks.js';
 import { lockAgentSkillForScan } from '../lib/agentSkillLocks.js';
+import { resolveV27Pipeline } from '../lib/v27Pipeline.js';
+import { assertImmutableInvestigationKeys, investigationKindForScan } from '../lib/investigationKind.js';
 import { lockScanForMutation } from '../lib/scanLocks.js';
 import {
   createFindingExport,
@@ -378,9 +382,12 @@ export async function listSupplementalPostScriptRuns(db, scanId) {
   return runs.map((run) => serializeSupplementalPostScriptRun(run, byRun.get(run.id.toString()) || []));
 }
 
+// `scan` (the owning scan row, with its configuration) lets the serializer
+// resolve v2.7 pipeline stages and readiness; without it findings carry no
+// readiness decision.
 export async function serializedScanVulnerabilities(
   scanId,
-  { includeDuplicates = false, maxFindings = null, maxRelatedRecords = null, db = prisma } = {}
+  { includeDuplicates = false, maxFindings = null, maxRelatedRecords = null, scan = null, db = prisma } = {}
 ) {
   const bounded = Number.isSafeInteger(maxFindings) && maxFindings > 0;
   const relatedBounded = Number.isSafeInteger(maxRelatedRecords) && maxRelatedRecords > 0;
@@ -434,6 +441,7 @@ export async function serializedScanVulnerabilities(
     serializeVulnerability(vulnerability, {
       enrichments: enrichmentsByVulnerability.get(vulnerability.id.toString()) || [],
       duplicateIds: duplicateIdsByCanonical.get(vulnerability.id.toString()) || [],
+      scan,
     })
   );
 }
@@ -635,6 +643,10 @@ export async function patchScanIfPresent(tx, scanId, body, { assertAvailable, av
     }
   }
 
+  // Investigation kind and readiness policy are snapshotted at creation; a
+  // resubmission with identical values is harmless, anything else is rejected.
+  assertImmutableInvestigationKeys(existing.configuration, body?.configuration);
+
   const availabilityChecker = assertAvailable || transactionModelAvailabilityChecker(tx, availabilityOptions);
   const hasModelOverrides =
     Object.prototype.hasOwnProperty.call(body, 'model_overrides') ||
@@ -747,6 +759,18 @@ router.get('/:id', async (req, res, next) => {
   }
 });
 
+// GET /api/scans/:id/graph — workflow step nodes, lineage edges, and the
+// post-processing funnel for the scan graph view.
+router.get('/:id/graph', async (req, res, next) => {
+  try {
+    const scan = await prisma.scan.findUnique({ where: { id: BigInt(req.params.id) } });
+    if (!scan) return res.status(404).json({ error: 'Scan not found.' });
+    res.json(await loadScanGraph(prisma, scan));
+  } catch (e) {
+    next(e);
+  }
+});
+
 // GET /api/scans/:id/vulnerabilities — ranked findings for a scan.
 router.get('/:id/vulnerabilities', async (req, res, next) => {
   try {
@@ -754,7 +778,7 @@ router.get('/:id/vulnerabilities', async (req, res, next) => {
     const scan = await prisma.scan.findUnique({ where: { id } });
     if (!scan) return res.status(404).json({ error: 'Scan not found.' });
     const includeDuplicates = req.query.includeDuplicates === '1' || req.query.includeDuplicates === 'true';
-    res.json(await serializedScanVulnerabilities(id, { includeDuplicates }));
+    res.json(await serializedScanVulnerabilities(id, { includeDuplicates, scan }));
   } catch (e) {
     next(e);
   }
@@ -843,6 +867,7 @@ router.get('/:id/export', async (req, res, next) => {
           repoKind: true,
           workflowId: true,
           postScriptId: true,
+          configuration: true,
           insertedAt: true,
           updatedAt: true,
         },
@@ -882,6 +907,7 @@ router.get('/:id/export', async (req, res, next) => {
         serializedScanVulnerabilities(id, {
           maxFindings: MAX_FINDING_EXPORT_FINDINGS,
           maxRelatedRecords: MAX_FINDING_EXPORT_RELATED_RECORDS,
+          scan,
         }),
       ]);
       const exportScan = {
@@ -896,7 +922,8 @@ router.get('/:id/export', async (req, res, next) => {
         insertedAt: scan.insertedAt,
         updatedAt: scan.updatedAt,
       };
-      const bundle = createFindingExport(exportScan, findings);
+      const pocArtifacts = await loadPocArtifacts(exportScan.id, findings);
+      const bundle = createFindingExport(exportScan, findings, { pocArtifacts });
       const archiveDate = new Date(exportScan.updatedAt || Date.now());
       const archive = new ZipArchive({ zlib: { level: 6 } });
       archive.on('warning', (warning) => {
@@ -970,23 +997,26 @@ router.post('/', async (req, res, next) => {
       });
     }
 
-    const configurationObject =
-      valid.configuration && typeof valid.configuration === 'object' && !Array.isArray(valid.configuration)
-        ? valid.configuration
-        : {};
-    const configuredPostScriptIds = [
-      ...new Set(
-        [
-          `${valid.postScriptId}`,
-          ...(Array.isArray(configurationObject.post_script_ids)
-            ? configurationObject.post_script_ids
-            : Array.isArray(configurationObject.post_scripts)
-              ? configurationObject.post_scripts
-              : []
-          ).map((id) => `${id}`),
-        ].filter((id) => id.trim() !== '')
-      ),
-    ];
+    const v27Pipeline = await resolveV27Pipeline(prisma, valid.workflowId);
+    const investigation = investigationKindForScan(valid.configuration, v27Pipeline);
+    if (investigation.errors.length) throw new ValidationError(investigation.errors);
+    const configurationObject = investigation.configuration;
+    const primaryPostScriptId = v27Pipeline?.d3 ?? `${valid.postScriptId}`;
+    const configuredPostScriptIds = v27Pipeline
+      ? [v27Pipeline.d3, v27Pipeline.d4, v27Pipeline.d5]
+      : [
+          ...new Set(
+            [
+              `${valid.postScriptId}`,
+              ...(Array.isArray(configurationObject.post_script_ids)
+                ? configurationObject.post_script_ids
+                : Array.isArray(configurationObject.post_scripts)
+                  ? configurationObject.post_scripts
+                  : []
+              ).map((id) => `${id}`),
+            ].filter((id) => id.trim() !== '')
+          ),
+        ];
     const invalidPostScriptIds = configuredPostScriptIds.filter((id) => !/^\d+$/.test(id));
     const queryPostScriptIds = configuredPostScriptIds.filter((id) => /^\d+$/.test(id));
     const requestedAgentSkills =
@@ -1026,7 +1056,7 @@ router.post('/', async (req, res, next) => {
       const agentSkillMap = new Map(agentSkills.map((skill) => [skill.id.toString(), skill]));
       const missingPostScriptIds = queryPostScriptIds.filter((id) => !postScriptMap.has(id));
       const missingAgentSkillIds = queryAgentSkillIds.filter((id) => !agentSkillMap.has(id));
-      const postScript = postScriptMap.get(`${valid.postScriptId}`);
+      const postScript = postScriptMap.get(primaryPostScriptId);
       const errors = [];
       if (!workflow) errors.push({ field: 'workflowId', message: 'Workflow does not exist.' });
       if (!postScript) errors.push({ field: 'postScriptId', message: 'Post-script does not exist.' });
@@ -1101,6 +1131,7 @@ router.post('/', async (req, res, next) => {
           configuration: {
             ...configurationObject,
             post_script_ids: configuredPostScriptIds,
+            ...(v27Pipeline ? { v27_pipeline: { d3: v27Pipeline.d3, d4: v27Pipeline.d4, d5: v27Pipeline.d5 } } : {}),
             agent_skill_ids: configuredAgentSkillIds,
             post_processing_thinking_effort: valid.postProcessingThinkingEffort,
             ...(valid.postProcessingModelOverride

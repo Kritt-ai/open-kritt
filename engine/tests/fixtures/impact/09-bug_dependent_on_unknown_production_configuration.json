@@ -1,0 +1,188 @@
+{
+  "name": "bug_dependent_on_unknown_production_configuration",
+  "scan": {
+    "id": 1,
+    "configuration": {
+      "investigation_kind": "public_bounty",
+      "investigation_kind_source": "user",
+      "readiness_policy_version": "v2.7-impact-gate-1"
+    }
+  },
+  "d3": {
+    "verdict": "confirmed",
+    "reason": "legacy fee mode skips the settlement check",
+    "reachability_evidence": "entry point reachable by an unprivileged caller",
+    "guard_analysis": "no guard prevents the path",
+    "impact_evidence": "legacy fee mode skips the settlement check",
+    "negative_control_plan": "run the same path with the guard satisfied and expect a revert",
+    "missing_evidence": "",
+    "novelty_status": "novel_verified",
+    "scope_status": "in_scope_verified",
+    "bug_claim": "legacy fee mode skips the settlement check",
+    "impact_claim": "treasury balance decreases and the attacker balance increases",
+    "impact_family": "funds_loss",
+    "impact_objective": {
+      "claim": "treasury balance decreases and the attacker balance increases",
+      "source_type": "bounty_rule",
+      "source_reference": "bounty_rule reference for funds_loss",
+      "affected_subject": "target component",
+      "terminal_outcome": "treasury balance decreases and the attacker balance increases",
+      "required_evidence": [
+        "captured before/after state",
+        "negative control",
+        "repeat run"
+      ]
+    },
+    "evidence_dimensions": [
+      {
+        "tag": "balance_before",
+        "status": "required",
+        "rationale": ""
+      },
+      {
+        "tag": "balance_after",
+        "status": "required",
+        "rationale": ""
+      },
+      {
+        "tag": "asset_ownership",
+        "status": "required",
+        "rationale": ""
+      },
+      {
+        "tag": "net_change",
+        "status": "required",
+        "rationale": ""
+      },
+      {
+        "tag": "recipient_control",
+        "status": "required",
+        "rationale": ""
+      },
+      {
+        "tag": "terminal_outcome",
+        "status": "required",
+        "rationale": ""
+      }
+    ],
+    "impact_chain_plan": [
+      {
+        "id": "hop-1",
+        "claim": "the fee bypass executes when FEE_MODE=legacy",
+        "status": "unverified",
+        "evidence_paths": [],
+        "covers": [
+          "balance_before",
+          "asset_ownership"
+        ],
+        "assessment": ""
+      },
+      {
+        "id": "hop-2",
+        "claim": "treasury funds move to the attacker",
+        "status": "unverified",
+        "evidence_paths": [],
+        "covers": [
+          "balance_after",
+          "net_change",
+          "recipient_control",
+          "terminal_outcome"
+        ],
+        "assessment": ""
+      }
+    ],
+    "unverified_assumptions": [
+      {
+        "id": "a-1",
+        "assumption": "production runs with FEE_MODE=legacy",
+        "kind": "configuration",
+        "material": true,
+        "status": "open"
+      }
+    ],
+    "falsification_plan": "show the guard blocks the path or the terminal state does not change",
+    "first_unsupported_hop": "hop-1",
+    "impact_definition_status": "defined"
+  },
+  "d4": {
+    "poc_status": "reproduced",
+    "poc_command": "python3 poc.py",
+    "poc_expected": "terminal state changes",
+    "poc_observed": "bypass reproduced under FEE_MODE=legacy only",
+    "poc_stdout": "",
+    "poc_stderr": "",
+    "poc_exit_code": 0,
+    "negative_control_command": "python3 poc.py --control",
+    "negative_control_observed": "rejected",
+    "negative_control_exit_code": 1,
+    "repeat_count": 3,
+    "poc_artifact_paths": [
+      "poc.py",
+      "attack.log",
+      "control.log",
+      "repeat.log"
+    ],
+    "poc_artifact_dir": "",
+    "remaining_limits": "",
+    "_reserved_poc": "model narrative of the run",
+    "bug_status": "reproduced",
+    "impact_status": "blocked",
+    "blocker_kind": "missing_configuration",
+    "observed_behavior": "the defective path executed",
+    "claimed_impact": "bypass reproduced under FEE_MODE=legacy only",
+    "observed_terminal_outcome": "bypass reproduced under FEE_MODE=legacy only",
+    "impact_chain": [
+      {
+        "id": "hop-1",
+        "claim": "the fee bypass executes when FEE_MODE=legacy",
+        "status": "proven",
+        "evidence_paths": [
+          "attack.log"
+        ],
+        "covers": [
+          "balance_before",
+          "asset_ownership"
+        ],
+        "assessment": ""
+      },
+      {
+        "id": "hop-2",
+        "claim": "treasury funds move to the attacker",
+        "status": "blocked",
+        "evidence_paths": [],
+        "covers": [],
+        "assessment": "requires FEE_MODE=legacy; the production value is unknown and cannot be verified locally"
+      }
+    ],
+    "impact_artifact_paths": [],
+    "missing_impact_links": [
+      "hop-2"
+    ],
+    "unverified_assumptions": [
+      {
+        "id": "a-1",
+        "assumption": "production runs with FEE_MODE=legacy",
+        "kind": "configuration",
+        "material": true,
+        "status": "open"
+      }
+    ],
+    "negative_control_status": "passed",
+    "repeatability_status": "deterministic"
+  },
+  "manifest": {
+    "artifact_dir": "poc-artifacts/scan-1/finding-2/metadata-3",
+    "files": [
+      "poc.py",
+      "attack.log",
+      "control.log",
+      "repeat.log"
+    ],
+    "capture_complete": true
+  },
+  "d5": null,
+  "expected": {
+    "lifecycle_status": "impact_blocked_by_configuration",
+    "ready": false
+  }
+}

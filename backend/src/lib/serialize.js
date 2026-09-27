@@ -7,6 +7,8 @@ import {
   GENERATION_REQUEST_MAX_LENGTH,
 } from './constants.js';
 import { validateGeneratedPostScript, validateGeneratedWorkflow, ValidationError } from './validation.js';
+import { READINESS_POLICY_VERSION, V27_WORKFLOW_NAME } from './v27Pipeline.js';
+import { findingReadiness, findingStageResults, stageForEnrichment, withEngineBlocks } from './impactReadiness.js';
 
 // "2h ago" style relative time from a Date.
 export function timeAgo(date) {
@@ -25,6 +27,8 @@ export function timeAgo(date) {
   return `${Math.floor(months / 12)}y`;
 }
 
+// Descriptor-preserving: nested definitions survive, legacy type-only values
+// keep their meaning ({ type: 'array' } -> 'array').
 function safeParseFormat(text) {
   try {
     return normalizeOutputFormat(text);
@@ -71,6 +75,9 @@ export function serializeWorkflow(workflow, steps, { scanCount = 0, lastUsed = n
       return { depth: d, count: cnt, bound, label: `d${d}${cnt > 1 ? ` ×${cnt}` : ''}` };
     }),
     steps: serializedSteps,
+    // The engine-enforced readiness gate (spec 4.2). The UI keys every
+    // gate-specific behaviour on this field; null means no gate runs.
+    readinessGate: workflow.name === V27_WORKFLOW_NAME ? READINESS_POLICY_VERSION : null,
     scanCount,
     lastUsed,
     isDefault,
@@ -300,9 +307,17 @@ export function serializeScan(
     progress = null,
     progressLabel = null,
     statusSummary = null,
+    resolvedRevision = null,
   } = {}
 ) {
   const commit = scan.commitSha || '';
+  const revision = resolvedRevision || commit;
+  const snapshotPrefix = 'LOCAL_SNAPSHOT_SHA256:';
+  const revisionShort = revision.startsWith(snapshotPrefix)
+    ? `sha256:${revision.slice(snapshotPrefix.length, snapshotPrefix.length + 12)}`
+    : revision.length > 7
+      ? revision.slice(0, 7)
+      : revision;
   const agentSkillIds = (scan.agentSkillIds || []).map((id) => id.toString());
   const configuration =
     scan.configuration && typeof scan.configuration === 'object' && !Array.isArray(scan.configuration)
@@ -322,6 +337,8 @@ export function serializeScan(
     repoDisplay: repoDisplayName(scan.repoFull, scan.repoKind),
     commitSha: commit,
     commitShort: commit.length > 7 ? commit.slice(0, 7) : commit,
+    resolvedRevision: revision,
+    revisionShort,
     repoScope: scan.repoScope,
     dependencies: serializeDependencies(scan),
     configuration,
@@ -384,14 +401,21 @@ export function serializeScan(
   };
 }
 
-function serializeEnrichment(e) {
+// `scan` (the owning scan row or its serialized form) resolves the v2.7
+// pipeline stage of each enrichment; stage results carry their engine block,
+// synthesized at read time for legacy rows (spec 6.2). `prior` holds the
+// earlier stage results so a legacy D5 decision can report the D4 lifecycle.
+function serializeEnrichment(e, { scan = null, prior = {} } = {}) {
+  const stage = stageForEnrichment(e, scan);
+  const result = e.result && typeof e.result === 'object' ? e.result : null;
   return {
     id: e.id.toString(),
     scanId: e.scanId.toString(),
     vulnerabilityId: e.vulnerabilityId.toString(),
     postScriptId: e.postScriptId.toString(),
     postScriptName: e.postScriptName,
-    result: e.result && typeof e.result === 'object' ? e.result : null,
+    stage,
+    result: stage && result ? withEngineBlocks(e, { stage, scan, prior }) : result,
     stub: Boolean(e.stub),
     stubExplanation: e.stubExplanation ?? null,
     supplementalRunId: e.supplementalRunId?.toString() ?? null,
@@ -404,7 +428,10 @@ function serializeEnrichment(e) {
 export function serializeVulnerability(v, options = {}) {
   const answer = v.jsonAnswer && typeof v.jsonAnswer === 'object' ? v.jsonAnswer : {};
   const post = v.postScriptAnswer && typeof v.postScriptAnswer === 'object' ? v.postScriptAnswer : null;
-  const enrichments = (options.enrichments || []).map(serializeEnrichment);
+  const scan = options.scan ?? null;
+  const rawEnrichments = options.enrichments || [];
+  const prior = findingStageResults({ enrichments: rawEnrichments }, scan);
+  const enrichments = rawEnrichments.map((enrichment) => serializeEnrichment(enrichment, { scan, prior }));
   const supplementalEnrichments = enrichments.filter((enrichment) => enrichment.supplemental);
   return {
     id: v.id.toString(),
@@ -449,6 +476,9 @@ export function serializeVulnerability(v, options = {}) {
       rankedAt: v.bountyRankTs ?? null,
     },
     enrichments,
+    // Engine readiness decision from the latest v2.7 stage; null when the
+    // finding has no pipeline stage (spec 7).
+    readiness: findingReadiness({ enrichments: rawEnrichments }, scan),
     supplementalPostScripts: {
       count: supplementalEnrichments.length,
       runIds: [...new Set(supplementalEnrichments.map((enrichment) => enrichment.supplementalRunId))],

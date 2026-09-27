@@ -65,7 +65,8 @@
           "post-scripts/difference-from-workflow",
           "post-scripts/recommended-usage",
           "post-scripts/reserved-post-scripts",
-          "post-scripts/chips"
+          "post-scripts/chips",
+          "post-scripts/structured-output-fields"
         ]
       },
       {
@@ -90,7 +91,8 @@
           "scans/model-and-harness",
           "scans/skills",
           "scans/post-scripts",
-          "scans/rankers"
+          "scans/rankers",
+          "scans/investigation-kind-and-readiness"
         ]
       },
       {

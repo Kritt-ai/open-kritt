@@ -546,6 +546,42 @@ class Worker:
             maximum=86400,
         )
 
+    def model_failover_chain(self) -> tuple[ModelSelection, ...]:
+        """Resolve the optional provider:model:harness[:thinking] failover chain."""
+        raw = runtime_value("ENGINE_MODEL_FAILOVER_CHAIN", "", data_dir=getattr(self.config, "data_dir", None)) or ""
+        selections = []
+        for item in str(raw).split(","):
+            parts = [part.strip() for part in item.split(":")]
+            if len(parts) < 3 or not all(parts[:3]):
+                continue
+            provider = parts[0].lower()
+            harness = normalize_harness_name(parts[2])
+            compatible = {
+                "codex": {"codex"},
+                "claude": {"claude-code"},
+                "openrouter": {"codex", "claude-code"},
+                "omniroute": {"codex", "claude-code"},
+                "xai": {"grok-build"},
+                "ollama": {"ollama"},
+            }
+            if harness not in compatible.get(provider, set()):
+                continue
+            selections.append(
+                ModelSelection(
+                    model=parts[1],
+                    model_provider=provider,
+                    harness=harness,
+                    thinking_effort=parts[3] if len(parts) > 3 and parts[3] else "medium",
+                )
+            )
+        return tuple(selections)
+
+    def failover_selection(self, current: ModelSelection) -> ModelSelection | None:
+        for selection in self.model_failover_chain():
+            if selection != current:
+                return selection
+        return None
+
     def runtime_codex_max_subagents(self) -> int:
         return runtime_int(
             "ENGINE_CODEX_MAX_SUBAGENTS_PER_SESSION",
@@ -1122,6 +1158,13 @@ class Worker:
                 )
         return not blocked
 
+    def _scan_accepts_new_harness_attempt(self, scan_id: int) -> bool:
+        """Return whether a retry may launch another model container."""
+
+        with self.db.connect() as conn:
+            scan = self.db.load_scan(conn, scan_id)
+        return bool(scan and scan["status"] not in NON_RUNNABLE_SCAN_STATUSES)
+
     def _scheduler_state(self) -> threading.Lock:
         if not hasattr(self, "_scan_scheduler_lock"):
             self._scan_scheduler_lock = threading.Lock()
@@ -1432,13 +1475,44 @@ class Worker:
                 if not self._worker_can_pick_job(worker_id):
                     return did_work
                 model_selection = model_selection_for_depth(current, getattr(job, "depth", 0))
-                did_claim = self.execute_job(
-                    scan=current,
-                    workflow_id=workflow.id,
-                    job=job,
-                    harness=self._harness_for_model_selection(model_selection),
-                    model_selection=model_selection,
-                )
+                try:
+                    did_claim = self.execute_job(
+                        scan=current,
+                        workflow_id=workflow.id,
+                        job=job,
+                        harness=self._harness_for_model_selection(model_selection),
+                        model_selection=model_selection,
+                    )
+                except RateLimitExhausted as limit_error:
+                    candidates = [
+                        selection for selection in self.model_failover_chain() if selection != model_selection
+                    ]
+                    if not candidates:
+                        raise
+                    failover_error = None
+                    for fallback in candidates:
+                        LOGGER.warning(
+                            "scan %s switching from %s/%s to failover %s/%s after provider limit",
+                            scan_id,
+                            model_selection.model_provider,
+                            model_selection.model,
+                            fallback.model_provider,
+                            fallback.model,
+                        )
+                        try:
+                            did_claim = self.execute_job(
+                                scan=current,
+                                workflow_id=workflow.id,
+                                job=job,
+                                harness=self._harness_for_model_selection(fallback),
+                                model_selection=fallback,
+                            )
+                            failover_error = None
+                            break
+                        except RateLimitExhausted as fallback_error:
+                            failover_error = fallback_error
+                    if failover_error is not None:
+                        raise failover_error from limit_error
                 if did_claim:
                     return True
             if not did_claim:
@@ -1611,6 +1685,19 @@ class Worker:
                 codex_session_id = None
                 result = None
                 try:
+                    if not self._scan_accepts_new_harness_attempt(int(scan["id"])):
+                        with self.db.connect() as conn:
+                            self.db.update_metadata(
+                                conn,
+                                metadata_id,
+                                status="stopped",
+                                error="scan stopped before the next harness attempt",
+                                run_time_ms=int((now_utc() - started).total_seconds() * 1000),
+                                raw_token_usage=None,
+                                phase="interrupted",
+                            )
+                            conn.commit()
+                        return True
                     if not self._new_scan_container_allowed(int(scan["id"])):
                         with self.db.connect() as conn:
                             self.db.update_metadata(
@@ -1892,12 +1979,22 @@ class Worker:
                 )
                 if restored:
                     LOGGER.info("restored %s checkout cache entries for scan %s", len(restored), scan_id)
-                prewarm_scan_checkout_cache(
+                prewarmed = prewarm_scan_checkout_cache(
                     checkout_cache_dir=getattr(self.config, "checkout_cache_dir", None),
                     scan=resolved_scan,
                     github_token=getattr(self.config, "github_token", None),
                     data_dir=self.config.data_dir,
                 )
+                primary_commit = prewarmed.get("primary", {}).get("commit")
+                if primary_commit:
+                    with self.db.connect() as conn:
+                        self.db.record_scan_checkout_revisions(
+                            conn,
+                            scan_id,
+                            primary_commit=primary_commit,
+                            dependencies=prewarmed.get("dependencies") or [],
+                        )
+                        conn.commit()
                 saved = save_persistent_scan_checkout_cache(
                     checkout_cache_dir=getattr(self.config, "checkout_cache_dir", None),
                     checkout_cache_persist_dir=getattr(self.config, "checkout_cache_persist_dir", None),

@@ -409,6 +409,29 @@ class _StorageDatabase:
         return True
 
 
+class _ScanStatusDatabase:
+    def __init__(self, status):
+        self.status = status
+
+    @contextmanager
+    def connect(self):
+        yield _Connection()
+
+    def load_scan(self, _conn, scan_id):
+        return {"id": scan_id, "status": self.status} if self.status is not None else None
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [("running", True), ("stopped", False), ("failed", False), (None, False)],
+)
+def test_worker_does_not_launch_retry_for_non_runnable_scan(status, expected):
+    worker = Worker.__new__(Worker)
+    worker.db = _ScanStatusDatabase(status)
+
+    assert worker._scan_accepts_new_harness_attempt(58) is expected
+
+
 def test_worker_blocks_new_scan_containers_below_storage_floor(monkeypatch):
     database = _StorageDatabase()
     worker = Worker.__new__(Worker)
@@ -794,7 +817,8 @@ def test_claim_scan_skips_deferred_rate_limits_and_clears_due_timestamp_on_claim
     assert "::timestamptz <= now()" in pending_query
     assert "updated_at + make_interval" in pending_query
     assert conn.calls[2][1] == (QUOTA_RETRY_MAX_SECONDS,)
-    assert "reasoning - 'error' - 'retry_after'" in pending_query
+    assert "reasoning - 'error' - 'retry_after' - 'resume_status'" in pending_query
+    assert "reasoning->>'resume_status' = 'post_processing'" in pending_query
     assert "last_resumed_at" in pending_query
 
 
@@ -878,7 +902,7 @@ def test_logical_job_limit_stops_only_after_admitted_jobs_finish():
 
 
 def test_defer_scan_records_retry_deadline_without_schema_changes():
-    conn = _RecordingConnection(rows=({"reasoning": None}, {"id": 58}))
+    conn = _RecordingConnection(rows=({"status": "running", "reasoning": None}, {"id": 58}))
 
     deferred = Database("").defer_scan_after_rate_limit(
         conn,
@@ -899,8 +923,24 @@ def test_defer_scan_records_retry_deadline_without_schema_changes():
         "limit_kind": "rate_limited",
         "error": "provider rate limited",
         "retry_count": 1,
+        "resume_status": "running",
     }
     assert params[1:] == (RATE_LIMIT_RETRY_BASE_SECONDS, 58)
+
+
+def test_defer_scan_preserves_post_processing_resume_status():
+    conn = _RecordingConnection(rows=({"status": "post_processing", "reasoning": None}, {"id": 58}))
+
+    assert Database("").defer_scan_after_rate_limit(
+        conn,
+        58,
+        retry_after_seconds=45.0,
+        error="runner constrained",
+        limit_kind="runner_resource_limited",
+    )
+
+    reasoning = conn.calls[1][1][0].obj
+    assert reasoning["resume_status"] == "post_processing"
 
 
 @pytest.mark.parametrize("limit_kind", ["provider_throttled", "subagent_limited"])
@@ -974,5 +1014,5 @@ def test_completed_scan_clears_transient_rate_limit_reasoning_but_preserves_auto
 
     query, params = conn.calls[0]
     assert "reasoning->>'code' = 'rate_limited'" in query
-    assert "reasoning - 'code' - 'limit_kind' - 'error' - 'retry_after' - 'retry_count'" in query
+    assert "reasoning - 'code' - 'limit_kind' - 'error' - 'retry_after' - 'retry_count' - 'resume_status'" in query
     assert params == ["completed", 58]

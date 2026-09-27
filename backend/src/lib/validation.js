@@ -9,7 +9,6 @@ import {
   RESERVED_POST_SCRIPT_KEYS,
   POST_SCRIPT_MARKDOWN_OUTPUT_KEYS,
   POST_SCRIPT_CHIP_PREFIX,
-  FIELD_TYPES,
   EXTRA_KEY,
   THINKING_EFFORTS,
   DEFAULT_THINKING_EFFORT,
@@ -38,6 +37,7 @@ import {
   multiOutputDepthKey,
   isMultiOutputDepthKey,
 } from './constants.js';
+import { FIELD_TYPES, fieldTypeName, isReservedOutputKey, validateFieldDefinition } from './fieldDefinitions.js';
 
 class ValidationError extends Error {
   constructor(errors) {
@@ -48,6 +48,19 @@ class ValidationError extends Error {
   }
 }
 export { ValidationError };
+
+// Errors for one output-format key: engine-owned keys are rejected at the key
+// path, then the (possibly nested) definition is validated recursively so every
+// error carries its full descriptor path.
+function outputFieldErrors(prefix, key, definition) {
+  const path = `${prefix}.${key}`;
+  const errors = [];
+  if (isReservedOutputKey(key)) {
+    errors.push({ field: path, message: `"${key}" is reserved for engine-owned output and can't be declared.` });
+  }
+  errors.push(...validateFieldDefinition(path, definition));
+  return errors;
+}
 
 function modelSelectionValidation(body, fieldPrefix = '') {
   const errors = [];
@@ -471,14 +484,13 @@ export function validateWorkflow(body) {
     const keys = Object.keys(lvl.outputFormat);
     if (keys.length === 0)
       push(`levels[depth=${lvl.depth}].outputFormat`, 'Output format must define at least one key.');
-    for (const [k, type] of Object.entries(lvl.outputFormat)) {
+    for (const [k, definition] of Object.entries(lvl.outputFormat)) {
       if (!isValidKey(k)) push(`levels[depth=${lvl.depth}].outputFormat`, `"${k}" is not a valid key name.`);
       if (BUILTIN_KEYS.includes(k) || k === EXTRA_KEY || isMultiOutputDepthKey(k))
         push(`levels[depth=${lvl.depth}].outputFormat`, `"${k}" is a reserved key.`);
       if (keyCount[k] > 1)
         push(`levels[depth=${lvl.depth}].outputFormat`, `"${k}" is used more than once across the workflow.`);
-      if (!FIELD_TYPES.includes(type))
-        push(`levels[depth=${lvl.depth}].outputFormat`, `"${k}" has an unsupported type "${type}".`);
+      errors.push(...outputFieldErrors(`levels[depth=${lvl.depth}].outputFormat`, k, definition));
     }
   }
 
@@ -524,15 +536,16 @@ export function validateWorkflow(body) {
     for (const key of REQUIRED_VULN_KEYS) {
       if (!have.has(key)) continue;
       const expected = REQUIRED_KEY_TYPES[key];
-      const actual = terminal.outputFormat[key];
+      const actual = fieldTypeName(terminal.outputFormat[key]);
       if (actual !== expected) {
         push('terminal.outputFormat', `Terminal key "${key}" must use type "${expected}", not "${actual}".`);
       }
     }
-    if (have.has('exploitable') && terminal.outputFormat.exploitable !== REQUIRED_KEY_TYPES.exploitable) {
+    const exploitableType = fieldTypeName(terminal.outputFormat.exploitable);
+    if (have.has('exploitable') && exploitableType !== REQUIRED_KEY_TYPES.exploitable) {
       push(
         'terminal.outputFormat',
-        `Terminal key "exploitable" must use type "${REQUIRED_KEY_TYPES.exploitable}", not "${terminal.outputFormat.exploitable}".`
+        `Terminal key "exploitable" must use type "${REQUIRED_KEY_TYPES.exploitable}", not "${exploitableType}".`
       );
     }
   }
@@ -591,14 +604,14 @@ export function validatePostScript(body) {
   const keys = Object.keys(outputFormat);
   if (keys.length === 0) push('outputFormat', 'Output format must define at least one key.');
   const seen = new Set();
-  for (const [k, type] of Object.entries(outputFormat)) {
+  for (const [k, definition] of Object.entries(outputFormat)) {
     if (!isValidKey(k)) push('outputFormat', `"${k}" is not a valid key name.`);
     if (RESERVED_POST_SCRIPT_KEYS.includes(k))
       push('outputFormat', `"${k}" is a reserved key and can't be an output key.`);
     if (seen.has(k)) push('outputFormat', `"${k}" is a duplicate output key.`);
     seen.add(k);
-    if (!FIELD_TYPES.includes(type)) push('outputFormat', `"${k}" has an unsupported type "${type}".`);
-    if (POST_SCRIPT_MARKDOWN_OUTPUT_KEYS.includes(k) && type !== 'string') {
+    errors.push(...outputFieldErrors('outputFormat', k, definition));
+    if (POST_SCRIPT_MARKDOWN_OUTPUT_KEYS.includes(k) && fieldTypeName(definition) !== 'string') {
       push('outputFormat', `"${k}" must use type "string" so it can be rendered as Markdown.`);
     }
     if (k === POST_SCRIPT_CHIP_PREFIX) {

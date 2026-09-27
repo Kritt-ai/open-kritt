@@ -1,0 +1,44 @@
+{
+  "warning": "GRADING DATA ONLY. NEVER PASS THIS FILE OR ITS CONTENTS TO A SCAN.",
+  "findings": [
+    {
+      "report_id": "SOMNIAAC-131",
+      "root_cause_class": "cross-session challenge replay",
+      "faulty_boundary": "peer handshake authentication",
+      "attacker_primitive": "relay one connection's challenge to another peer and return that peer's valid signature",
+      "broken_invariant": "a valid challenge signature is accepted without binding it to the connection/session being authenticated",
+      "terminal_effect": "the attacker completes an authenticated transport connection while impersonating another peer",
+      "minimum_hit_requirements": [
+        "identifies replay or relay across two distinct handshake connections",
+        "identifies missing connection/session context binding in signed data",
+        "explains false peer identity as the terminal effect"
+      ]
+    },
+    {
+      "report_id": "SOMNIAAC-132",
+      "root_cause_class": "handshake state-machine stage bypass",
+      "faulty_boundary": "FinishedHandshakeMessage processing in somnia/transport/peer_network.cc",
+      "attacker_primitive": "send the initial challenge stage, skip the response/signature-verification stage, then send FinishedHandshakeMessage",
+      "broken_invariant": "READY_TO_FINISH can be reached before verified_peer_address is populated and completion does not require the missing stage",
+      "terminal_effect": "verified_peer_address is dereferenced while null, terminating the node",
+      "minimum_hit_requirements": [
+        "identifies the skipped RespondToChallenge stage or equivalent transition flaw",
+        "connects READY_TO_FINISH to an unset verified peer address",
+        "identifies the null dereference/node crash path"
+      ]
+    },
+    {
+      "report_id": "SOMNIAAC-225",
+      "root_cause_class": "non-canonical bitset deserialization",
+      "faulty_boundary": "Bitset wire Decode and ForEachTrue iteration",
+      "attacker_primitive": "declare a capacity smaller than the final storage cell and set tail bits above that capacity",
+      "broken_invariant": "decoded bit data and iteration are not constrained to indexes below the declared capacity",
+      "terminal_effect": "an out-of-range participant index reaches epoch vote lookup and triggers a fatal RELEASE_ASSERT",
+      "minimum_hit_requirements": [
+        "identifies set tail bits beyond declared bitset capacity",
+        "identifies missing decode canonicalization or iterator bounds enforcement",
+        "traces the out-of-range participant index to a fatal assertion/node crash"
+      ]
+    }
+  ]
+}

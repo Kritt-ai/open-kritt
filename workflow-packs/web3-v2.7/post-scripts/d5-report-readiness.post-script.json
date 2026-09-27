@@ -1,0 +1,33 @@
+{
+  "name": "v2.7 D5 Scope Severity and Report Readiness",
+  "description": "Compare the required impact against the observed impact, assess scope, severity and novelty, and claim report readiness; the engine makes the final readiness decision.",
+  "content": "Repository: {{repo_full}} at commit {{commit_sha}}. Scope: {{repo_scope}}. Dependencies: {{dependencies}}. Configuration: {{configuration}}.\nCanonical candidate: {{summary}}. Claimed type: {{vulnerability_type}}. Fault: {{file_path}}:{{line}}.\nActor: {{malicious_actor}}. Claimed trigger: {{malicious_input_example}}. Trace: {{trigger_flow}}.\nExplanation and root-cause fingerprint: {{explanation}}.\nThe engine supplies the D3 and D4 results above this prompt. This stage runs only after D4 reported bug_status=reproduced and the engine captured the evidence artifacts. D4 impact_status may be proven, partial, or not_proven; reaching this stage does not mean the finding is ready. Your job is an explicit required-versus-observed comparison, not a restatement of the candidate.\nBuild impact_mapping with one entry per required outcome: the terminal_outcome of impact_objective plus every entry of its required_evidence. For each entry set required_outcome (quoted from D3), observed_outcome (what D4 actually observed in observed_terminal_outcome, impact_chain, and the saved artifacts; write that nothing was observed when that is the case), status (proven when the artifacts show it, missing when nothing shows it, contradicted when the artifacts show the opposite), and evidence_paths (artifact-relative paths from D4 impact_chain, impact_artifact_paths, or poc_artifact_paths; never prose). Set impact_match_status to exact when every mapping entry is proven and D4 impact_status=proven, partial when some entries are proven, none when no entry is proven, or rules_unavailable when D3 impact_definition_status was not defined. Set impact_evidence_status to verified when the saved artifacts support every proven entry, insufficient when the artifacts do not show the required outcome, or contradictory when any entry is contradicted. Summarize the comparison in impact_evidence.\nCheck the exact repository/asset and the supplied scope rules, eligible impact, known issues/audits, and severity against OBSERVED behavior only. Do not claim theft, critical severity, novelty, or eligibility solely from a candidate description, and never derive severity from the required impact when only a weaker observed impact was shown; rate what was proven. Use scope_status=in_scope_verified only with an exact supplied rule and the affected asset; otherwise use unverified or out_of_scope. Use novelty_status=novel_verified only with concrete checked sources; otherwise use unverified or known_duplicate. Before any novelty verdict, read .open-kritt/known-issues/INDEX.md when it exists and search the listed text files for the root cause, affected function, and broken invariant; cite the searched files and what you found in novelty_evidence. Use novelty_status=novel_verified only after you searched every converted corpus file and any other concrete known-issue source. A source the index marks unreadable, or a known-issue source you could not read, keeps novelty unverified unless another checked source proves a duplicate. Cite those checks in scope_evidence and novelty_evidence.\nFill missing_requirements as an array of strings, one entry per unmet requirement: a missing scope or eligibility rule, an unverified deployment prerequisite, a material open assumption, a hop in D4 missing_impact_links, a required evidence dimension with no covering proven hop, or a mapping entry that is missing or contradicted. Return an empty array only when nothing is missing.\nsubmission_ready is your claim only. The engine evaluates readiness from its own rules, stores your claim beside its decision, and can override you; it never lowers its bar because you claimed true. Claim true only when D4 impact_status=proven, impact_match_status=exact, impact_evidence_status=verified, scope and novelty evidence are concrete, and missing_requirements is empty. Explain the claim in report_readiness_reason with one or two sentences that name the first unmet requirement when the claim is false.\nCopy the D4 artifact directory exactly as supplied by the engine (artifact_dir in the engine evidence block, otherwise poc_artifact_dir) into artifact_reference. Produce a reviewer-ready draft in _reserved_report with preconditions, exact local commands, attack result, negative control, repeatability, required versus observed outcome, assumptions, limitations, and impact. The report must not overstate beyond D4 evidence; when the bug reproduced but the impact was not proven, say so plainly in the first paragraph.\n",
+  "outputFormat": {
+    "submission_ready": "boolean",
+    "scope_status": "string",
+    "severity": "string",
+    "novelty_status": "string",
+    "impact_evidence": "string",
+    "missing_requirements": { "type": "array", "items": "string" },
+    "artifact_reference": "string",
+    "_reserved_report": "string",
+    "scope_evidence": "string",
+    "novelty_evidence": "string",
+    "impact_match_status": { "type": "string", "enum": ["exact", "partial", "none", "rules_unavailable"] },
+    "impact_evidence_status": { "type": "string", "enum": ["verified", "insufficient", "contradictory"] },
+    "impact_mapping": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "fields": {
+          "required_outcome": "string",
+          "observed_outcome": "string",
+          "status": { "type": "string", "enum": ["proven", "missing", "contradicted"] },
+          "evidence_paths": { "type": "array", "items": "string" }
+        },
+        "required": ["required_outcome", "observed_outcome", "status", "evidence_paths"]
+      }
+    },
+    "report_readiness_reason": "string"
+  }
+}

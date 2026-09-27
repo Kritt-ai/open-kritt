@@ -1,0 +1,106 @@
+{
+  "name": "v2.7 D3 Hostile Canonical Verification",
+  "description": "Verify only a canonical root cause after built-in semantic deduplication, then define the proof target: bug claim, impact claim, impact objective, evidence dimensions and impact chain plan. No PoC work at this stage.",
+  "content": "Repository: {{repo_full}} at commit {{commit_sha}}. Scope: {{repo_scope}}. Dependencies: {{dependencies}}. Configuration: {{configuration}}.\nCanonical candidate: {{summary}}. Claimed type: {{vulnerability_type}}. Fault: {{file_path}}:{{line}}.\nActor: {{malicious_actor}}. Claimed trigger: {{malicious_input_example}}. Trace: {{trigger_flow}}.\nExplanation and root-cause fingerprint: {{explanation}}.\nRe-read every cited production operation and attacker-to-impact hop at the pinned commit. Try to disprove the candidate using dominating guards, authorization and interceptors, default deployment configuration, DB constraints, transaction/lock semantics, recovery paths, and intended behavior. Use a negative-control hypothesis. Check known issues/audits and the supplied scope rules only when evidence is available. Do not build or run a PoC here.\nReturn exactly one verdict: confirmed, plausible_needs_poc, known_duplicate, out_of_scope, configuration_only, privileged_only, false_positive, or insufficient_evidence. confirmed means source-level support for the bug and a concrete attack path; it never means a dynamically proven impact and still requires D4 reproduction. plausible_needs_poc means a concrete fault and plausible impact with a named fact requiring reproduction. Do not rescue speculation with this label. Reject an unreachable or guarded candidate before D4.\nSeparate two claims and keep them separate for the rest of the pipeline. bug_claim states the defective behavior at the fault (what the code does wrong). impact_claim states the security consequence this investigation must demonstrate (what an attacker gains or the system loses). A crash, a bypassed check, an error message, or one consumed unit is part of a bug claim, never an impact claim.\nDefine the proof target in impact_objective: claim; source_type (bounty_rule, audit_spec, threat_model, engagement_scope, or researcher_hypothesis); source_reference (the exact rule, specification section, scope line, or hypothesis text relied on); affected_subject (the asset, role, component, or data whose state changes); terminal_outcome (the single observable end state that proves the impact); required_evidence (every observation that must be captured to prove terminal_outcome). Use source_type=bounty_rule only when an eligible-impact rule was supplied in the scan inputs, and quote it in source_reference. When no rule, specification, or scope was supplied, set impact_definition_status=unavailable; never relabel the objective as researcher_hypothesis to make it look defined. Set impact_definition_status=defined only when claim, terminal_outcome, and required_evidence are all concrete and unambiguous; use ambiguous when the source could match more than one outcome or severity.\nClassify impact_family as exactly one of unauthorized_action, funds_loss, availability_loss, resource_exhaustion, consensus_failure, integrity_violation, confidentiality_loss, privilege_escalation, temporary_freezing, permanent_freezing, or other. Resolve evidence_dimensions from the default dimensions of that family: unauthorized_action = initial_actor, permission_boundary, protected_operation, unauthorized_result; funds_loss = balance_before, balance_after, asset_ownership, net_change, recipient_control; availability_loss = attacker_workload, measurable_degradation, duration, affected_component, recovery; resource_exhaustion = pool_size, attacker_cost_per_iteration, iterations_required, replenishment, recovery; consensus_failure = conflicting_state, halt_or_divergence, affected_participants, recovery_requirements; integrity_violation = trusted_value_before, trusted_value_after, unauthorized_mutation, downstream_consumer; confidentiality_loss = protected_data, unauthorized_actor, disclosure_boundary; privilege_escalation = initial_role, acquired_capability, protected_operation; temporary_freezing = affected_value, duration, release_conditions, recovery_path; permanent_freezing = affected_value, irrecoverability_under_recovery_model; other = terminal_outcome. Every family also requires terminal_outcome. Emit one entry per dimension with tag, status (required or not_applicable), and a rationale whenever status is not_applicable. Use only tags from the family list plus terminal_outcome; never substitute a weaker or invented tag. required_evidence in impact_objective remains authoritative for the investigation; evidence_dimensions is how the family defaults are resolved against it.\nPlan the proof in impact_chain_plan as ordered hops from the least-privileged actor's first action to terminal_outcome. Each hop has a unique id, a claim, a status, evidence_paths, covers, and an assessment. Status is normally unverified at this stage; use proven only for a hop already supported by source-level evidence with at least one evidence path; falsified, partial, blocked, and not_applicable require a non-empty assessment. evidence_paths holds artifact-relative file paths only, never prose. covers lists the evidence dimension tags a reproduction of this hop would satisfy. Every hedged word in your reasoning (could, may, might, potentially, likely, probably) must become an explicit unverified hop or a structured assumption; hedged prose is not evidence and must not remain only in prose.\nRecord every deployment, configuration, dependency, actor, and economic precondition in unverified_assumptions with id, assumption, kind (deployment, configuration, dependency, actor, economic, or other), material (true when the impact fails without it), and status (open, resolved, or falsified). Do not describe assumptions only in prose.\nSet first_unsupported_hop to the id of the first hop in impact_chain_plan that lacks source-level support, or an empty string when every hop is supported. Write falsification_plan as the concrete observation D4 can make that would show the impact does not occur (for example, an unchanged balance, a rejected call, a recovered service, a mismatching state root).\nStill fill reason, reachability_evidence, guard_analysis, impact_evidence, negative_control_plan, missing_evidence, novelty_status, and scope_status as before. Use scope_status=in_scope_verified and novelty_status=novel_verified only with concrete checked sources; otherwise use unverified, out_of_scope, or known_duplicate. Before any novelty verdict, read .open-kritt/known-issues/INDEX.md when it exists and search the listed text files for the root cause, affected function, and broken invariant; cite the searched files and what you found in novelty_evidence. Use novelty_status=novel_verified only after you searched every converted corpus file and any other concrete known-issue source. A source the index marks unreadable, or a known-issue source you could not read, keeps novelty unverified unless another checked source proves a duplicate.\n",
+  "outputFormat": {
+    "verdict": "string",
+    "reason": "string",
+    "reachability_evidence": "string",
+    "guard_analysis": "string",
+    "impact_evidence": "string",
+    "negative_control_plan": "string",
+    "missing_evidence": "string",
+    "novelty_status": "string",
+    "scope_status": "string",
+    "bug_claim": "string",
+    "impact_claim": "string",
+    "impact_family": {
+      "type": "string",
+      "enum": [
+        "unauthorized_action",
+        "funds_loss",
+        "availability_loss",
+        "resource_exhaustion",
+        "consensus_failure",
+        "integrity_violation",
+        "confidentiality_loss",
+        "privilege_escalation",
+        "temporary_freezing",
+        "permanent_freezing",
+        "other"
+      ]
+    },
+    "impact_objective": {
+      "type": "object",
+      "fields": {
+        "claim": "string",
+        "source_type": {
+          "type": "string",
+          "enum": ["bounty_rule", "audit_spec", "threat_model", "engagement_scope", "researcher_hypothesis"]
+        },
+        "source_reference": "string",
+        "affected_subject": "string",
+        "terminal_outcome": "string",
+        "required_evidence": { "type": "array", "items": "string" }
+      },
+      "required": [
+        "claim",
+        "source_type",
+        "source_reference",
+        "affected_subject",
+        "terminal_outcome",
+        "required_evidence"
+      ]
+    },
+    "evidence_dimensions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "fields": {
+          "tag": "string",
+          "status": { "type": "string", "enum": ["required", "not_applicable"] },
+          "rationale": "string"
+        },
+        "required": ["tag", "status", "rationale"]
+      }
+    },
+    "impact_chain_plan": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "fields": {
+          "id": "string",
+          "claim": "string",
+          "status": {
+            "type": "string",
+            "enum": ["proven", "falsified", "partial", "unverified", "blocked", "not_applicable"]
+          },
+          "evidence_paths": { "type": "array", "items": "string" },
+          "covers": { "type": "array", "items": "string" },
+          "assessment": "string"
+        },
+        "required": ["id", "claim", "status", "evidence_paths", "covers", "assessment"]
+      }
+    },
+    "unverified_assumptions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "fields": {
+          "id": "string",
+          "assumption": "string",
+          "kind": {
+            "type": "string",
+            "enum": ["deployment", "configuration", "dependency", "actor", "economic", "other"]
+          },
+          "material": "boolean",
+          "status": { "type": "string", "enum": ["open", "resolved", "falsified"] }
+        },
+        "required": ["id", "assumption", "kind", "material", "status"]
+      }
+    },
+    "falsification_plan": "string",
+    "first_unsupported_hop": "string",
+    "impact_definition_status": { "type": "string", "enum": ["defined", "ambiguous", "unavailable"] }
+  }
+}

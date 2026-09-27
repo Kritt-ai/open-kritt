@@ -1,0 +1,104 @@
+---
+title: "Structured output fields"
+description: "Declare nested arrays, objects, and enums in a workflow or post-script output format."
+---
+
+An output format maps each key to a **field definition**. The simplest definition is one of
+the five type names - `string`, `number`, `boolean`, `array`, `object`. When a stage needs
+to return a list of records with a fixed shape, or a value restricted to a known set, use a
+**descriptor** instead.
+
+## Syntax
+
+A descriptor is a JSON object with a `type` and, depending on the type, one of the keys
+below:
+
+```json
+{
+  "type": "array | object | string | number | boolean",
+  "items": "<field definition>",
+  "fields": { "<key>": "<field definition>" },
+  "required": ["<key>"],
+  "enum": ["<value>"]
+}
+```
+
+Field definitions nest, so an array of objects whose fields are themselves arrays or enums
+is one descriptor:
+
+```json
+"impact_chain": {
+  "type": "array",
+  "items": {
+    "type": "object",
+    "fields": {
+      "id": "string",
+      "claim": "string",
+      "status": {
+        "type": "string",
+        "enum": ["proven", "falsified", "partial", "unverified", "blocked", "not_applicable"]
+      },
+      "evidence_paths": { "type": "array", "items": "string" },
+      "covers": { "type": "array", "items": "string" },
+      "assessment": "string"
+    },
+    "required": ["id", "claim", "status", "evidence_paths", "covers", "assessment"]
+  }
+}
+```
+
+The engine turns a descriptor into real JSON Schema (`items`, `properties`, `required`,
+`additionalProperties: false`, `enum`) and validates every model answer against it at
+extraction time, so a malformed record is rejected before it is stored.
+
+## Rules
+
+- `items` is allowed only under `array`; `fields` and `required` only under `object`;
+  `enum` only under `string`. Any other descriptor key is rejected.
+- An `array` descriptor **must** declare `items`.
+- An `object` descriptor **must** declare a non-empty `fields` map. Declared objects never
+  accept extra properties. Free-form metadata objects inside a structured schema are not
+  supported.
+- `required` defaults to every declared field. Every entry must name a key in `fields`.
+- `enum` must be a non-empty array of unique strings.
+- A descriptor with only `type` means the same as the bare type name.
+- Depth is capped at **4** and the total number of fields at **64**, both measured over the
+  complete descriptor for one key (not per branch).
+- Validation errors carry the full path, for example
+  `outputFormat.impact_chain.items.fields.status.enum`.
+
+## Reserved keys
+
+Two key patterns are owned by the engine and can never be declared in an output format:
+
+- any key starting with `_engine_` (for example `_engine_lifecycle`, `_engine_evidence`,
+  `_engine_readiness`), and
+- the exact key `_chip_lifecycle`.
+
+The engine drops these keys from any model answer before persisting it and then writes its
+own blocks. The other `_chip_*` keys stay a normal, user-declarable feature; see
+[chips](/post-scripts/chips). The gated v2.7 stages that write these blocks are described
+in [investigation kind and readiness](/scans/investigation-kind-and-readiness).
+
+## Editor behaviour
+
+The schema editor in the workflow builder and post-script editor shows a structured
+definition as a read-only row with a display type such as `array<object>`, `string(enum)`,
+or `object{3}` and a **structured** badge. Switch to the raw JSON mode to add or edit a
+descriptor; the visual mode keeps editing plain rows exactly as before.
+
+AI-generated workflows and post-scripts still produce the flat `{ key, type }` list. Nested
+descriptors are written by hand or imported.
+
+## Compatibility
+
+The five bare type names keep their exact meaning. `"array"` and the legacy
+`{ "type": "array" }` still mean *array of strings*; `"object"` and `{ "type": "object" }`
+still mean *free-form object*. New structured definitions never rely on those defaults -
+always declare `items` and `fields` explicitly.
+
+Existing stored formats, exports, and imports behave identically: a format survives
+normalize → export → import with the same meaning. Byte-level whitespace or key order is
+not preserved.
+
+Next: [why severity rankers?](/severity-ranker/why)

@@ -1,0 +1,79 @@
+{
+  "kind": "open-kritt-workflow",
+  "version": 2,
+  "workflow": {
+    "name": "Recall-First External Flow Security Review v2.6",
+    "description": "The exact execution topology and output contracts of upstream external-flow-analysis, with more systematic attack-surface enumeration, flow tracing, and adversarial investigation methods. This controlled variant changes prompts only so benchmark differences measure method quality rather than workflow shape.",
+    "levels": [
+      {
+        "depth": 0,
+        "multiOutput": true,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "entrypoint_kind": "string",
+          "entrypoint_label": "string",
+          "entrypoint_handler": "string",
+          "entrypoint_file_path": "string",
+          "entrypoint_line": "number",
+          "entrypoint_actor": "string",
+          "entrypoint_input": "string",
+          "entrypoint_reachability": "string"
+        },
+        "steps": [
+          {
+            "name": "Map external entrypoints precisely",
+            "content": "You are mapping the complete externally reachable attack surface of {{repo_full}} at commit {{commit_sha}}.\n\nRepository scope: {{repo_scope}}\nDependencies: {{dependencies}}\nRuntime configuration: {{configuration}}\n\nFind each distinct production entrypoint through which an actor outside the deployed process or a less-trusted subsystem can directly or indirectly cause the application to receive, persist, or later process attacker-influenced input. Systematically inspect startup and registration code, interfaces and generated adapters, dispatch tables, public HTTP/GraphQL/gRPC/RPC/WebSocket/webhook routes, peer and validator protocols, transactions and message handlers, block/consensus callbacks, queues and events, parsers and decoders, snapshot/import paths, public contract functions, callbacks, upgrade/governance handlers, and public package or CLI boundaries used in production. Include input written by one operation and consumed later by another component.\n\nFor every entrypoint:\n- Identify the concrete ingress, registration path, and first application handler.\n- State the least-privileged realistic external actor and the exact fields, bytes, messages, ordering, or state they control.\n- Give the exact source path and line for the handler or registration.\n- Prove external reachability with ordered path:line:symbol evidence under the supplied configuration or runtime defaults.\n- Follow workspace dependencies and cross-component wiring; if referenced source is absent, say so in entrypoint_reachability while preserving the proven caller-side entrypoint.\n\nPerform a deliberate second enumeration pass by searching both protocol-facing names and indirect registration patterns. Do not merge distinct handlers, protocol phases, callbacks, or routes merely because they share a dispatcher. Exclude tests, examples, benchmarks, dead code, and interfaces proven limited to the same trusted process. Do not hunt vulnerabilities yet. Return a stub only after both enumeration passes find no production entrypoint."
+          }
+        ],
+        "isLastStep": false
+      },
+      {
+        "depth": 1,
+        "multiOutput": true,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "flow_summary": "string",
+          "flow_trace": "array",
+          "flow_terminal_action": "string",
+          "flow_file_path": "string",
+          "flow_line": "number",
+          "flow_input_to_sink": "string",
+          "flow_security_relevance": "string"
+        },
+        "steps": [
+          {
+            "name": "Trace adversarially distinct production flows",
+            "content": "You are tracing every materially distinct production execution flow from one externally reachable entrypoint in {{repo_full}}.\n\nEntrypoint:\n- kind: {{entrypoint_kind}}\n- label: {{entrypoint_label}}\n- handler: {{entrypoint_handler}}\n- location: {{entrypoint_file_path}}:{{entrypoint_line}}\n- external actor: {{entrypoint_actor}}\n- controlled input: {{entrypoint_input}}\n- reachability evidence: {{entrypoint_reachability}}\n\nTrace the controlled input through parsing and normalization, identity or domain binding, validation, authorization, dispatch, state reads, state transitions, persistence, asynchronous work, external or cross-component calls, and terminal actions. Include deferred consumption, callbacks, retries, replay handling, failure and rollback paths, multi-stage protocols, consensus phases, and values validated by one component then reinterpreted by another.\n\nSeparate flows whenever a condition changes a guard, protocol phase, state transition, privilege, sink, representation, failure mode, or security consequence. For each normal flow, deliberately enumerate adversarial variants: skip, repeat, reorder, race, replay, partial completion, stale state, cross-session or cross-domain reuse, empty/truncated/boundary input, alternate encoding, and malformed-but-accepted input. Preserve a variant as its own flow when it reaches different code or violates a distinct assumption.\n\nFor each flow:\n- Summarize the operation, important precondition or state, and terminal effect.\n- Provide an ordered flow_trace using `path:line symbol - behavior`, including guards and security-sensitive operations.\n- Identify the terminal action and the externally controlled value as it reaches that action.\n- Point to the most security-relevant source location.\n- In flow_security_relevance, name the invariant or assumption worth attacking and any unavailable source that prevents complete tracing.\n\nGround every hop in production code. Do not assume a missing dependency is safe. Exclude impossible, test-only, local-only, and dead paths. Do not report vulnerabilities yet."
+          }
+        ],
+        "isLastStep": false
+      },
+      {
+        "depth": 2,
+        "multiOutput": true,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "explanation": "string",
+          "file_path": "string",
+          "line": "number",
+          "malicious_input_example": "string",
+          "summary": "string",
+          "trigger_flow": "array",
+          "vulnerability_type": "string",
+          "malicious_actor": "string",
+          "exploitable": "boolean"
+        },
+        "steps": [
+          {
+            "name": "Investigate the flow with an adversarial invariant matrix",
+            "content": "You are investigating one externally reachable production flow in {{repo_full}} for concrete security vulnerabilities.\n\nEntrypoint:\n- kind: {{entrypoint_kind}}\n- label: {{entrypoint_label}}\n- handler: {{entrypoint_handler}}\n- location: {{entrypoint_file_path}}:{{entrypoint_line}}\n- external actor: {{entrypoint_actor}}\n- controlled input: {{entrypoint_input}}\n\nFlow under review:\n- summary: {{flow_summary}}\n- trace: {{flow_trace}}\n- terminal action: {{flow_terminal_action}}\n- focal location: {{flow_file_path}}:{{flow_line}}\n- input to sink: {{flow_input_to_sink}}\n- security relevance: {{flow_security_relevance}}\n\nRe-read the exact source around every important hop, caller, callee, guard, and state transition. Then attack the flow using all of these lenses before concluding it is safe:\n\n1. Identity and authority: actor/account/session/object binding, ownership, confused deputy, signer or subject mismatch, stale authorization, alternate entrypoint, and weaker checks than the later operation assumes.\n2. Protocol and state machine: stage skipping, repeat, reorder, replay across sessions or domains, duplicate acceptance, partial completion, rollback gaps, retry/callback behavior, and validate-in-one-state/execute-in-another.\n3. Parsing and representation: length/offset arithmetic, empty or truncated input, trailing or unused bits, non-canonical or alternate encodings, duplicate fields, signed/unsigned conversion, malformed-but-decodable structures, parser differentials, and validate-then-reinterpret gaps.\n4. Crash and resource boundaries: nil/missing values, unchecked lookup results, index/slice bounds, assertions, panic/exception/fatal paths, recursion, attacker-amplified allocation or work, and values persisted earlier then consumed in a privileged or consensus-critical phase.\n5. Cross-component invariants: conservation, uniqueness, monotonicity, quorum/finality, epoch/height/time, cache or snapshot consistency, atomicity, nondeterminism, rounding, stale derived state, partial writes, and inconsistent state or representations between components.\n\nFor each candidate, identify the exact faulty operation, what its guard truly proves, the stronger property the operation requires, the least-privileged actor, the shortest malicious input or sequence, and the complete ingress-to-impact trace. Try once to falsify the candidate by finding a dominating validation, unreachable branch, recovery boundary, or impossible attacker precondition. Keep distinct root causes separate.\n\nEmit every concrete code-grounded technical vulnerability before deduplication, deterministic reproduction, severity, or bounty-program eligibility. A remotely induced node or consensus-process crash remains a technical finding even if generic denial-of-service language may later affect eligibility. Set exploitable=true only when the actor-controlled end-to-end trigger is established. When the faulty operation and reachable trigger are concrete but one material deployment, dependency, or runtime fact remains missing, emit the candidate with exploitable=false and state the precise evidence gap in explanation instead of silently discarding it. Never invent unavailable source behavior. Return a stub only after every lens above has been applied and no concrete vulnerable operation remains.\n\nPoint file_path and line to the actual faulty operation, make trigger_flow an ordered array of concrete path:line:symbol hops, and make malicious_input_example a minimal realistic payload or sequence."
+          }
+        ],
+        "isLastStep": true
+      }
+    ]
+  }
+}

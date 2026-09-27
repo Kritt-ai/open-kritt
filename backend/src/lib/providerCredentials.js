@@ -31,6 +31,13 @@ export const PROVIDER_DEFINITIONS = {
     description: 'OpenRouter-compatible models through a project API key.',
     management: 'api_key',
   },
+  omniroute: {
+    label: 'OmniRoute',
+    envKeys: ['OMNIROUTE_API_KEY'],
+    credentialLabel: 'OmniRoute access token',
+    description: 'Local OmniRoute gateway with quota-aware routing and provider fallback.',
+    management: 'api_key',
+  },
   xai: {
     label: 'xAI',
     envKeys: ['XAI_API_KEY'],
@@ -47,7 +54,7 @@ export const PROVIDER_DEFINITIONS = {
   },
 };
 
-const MANAGED_CREDENTIAL_PROVIDERS = new Set(['openrouter', 'xai', 'deepseek']);
+const MANAGED_CREDENTIAL_PROVIDERS = new Set(['openrouter', 'omniroute', 'xai', 'deepseek']);
 
 const MAX_CREDENTIAL_LENGTH = 16 * 1024;
 let writeQueue = Promise.resolve();

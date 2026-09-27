@@ -1,0 +1,236 @@
+{
+  "kind": "open-kritt-workflow",
+  "version": 2,
+  "workflow": {
+    "name": "DeFi Pooled Value Conservation Hunt — Balanced v2.4",
+    "description": "Focused hunt for permissionless pooled-value extraction in evidenced custody contracts, with invariant fan-out, hostile arithmetic verification, fork proof, program gate, and relative ranking. Import-valid v2.4: globally unique stage keys, a single dedup consume-all boundary, explicit proxy/storage/initialization coverage, and per-operation cross-contract neighborhoods for composition analysis. Balanced v2.4 restores one pre-verification coverage and root-cause consolidation barrier: every hypothesis branch completes before expensive verification, canonical candidates then fan out independently to final emission, and OpenKritt post-processing performs final finding deduplication and ranking.",
+    "levels": [
+      {
+        "depth": 0,
+        "multiOutput": false,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "scope_scope_contract_id": "string",
+          "scope_in_scope_assets": "array",
+          "scope_accepted_impacts": "array",
+          "scope_excluded_issues": "array",
+          "scope_known_issues": "array",
+          "scope_program_rules": "array",
+          "scope_payout_priorities": "array",
+          "scope_deployment_facts": "array",
+          "scope_authorized_test_constraints": "array",
+          "scope_scope_gaps": "array",
+          "scope_scope_evidence": "array",
+          "scope_in_scope_contract_addresses": "array",
+          "scope_in_scope_chains": "array",
+          "scope_impact_threshold_rules": "array",
+          "scope_trusted_dependency_rules": "array",
+          "scope_fork_block_or_deployment_snapshot": "string"
+        },
+        "steps": [
+          {
+            "name": "Freeze pooled-value program scope",
+            "content": "Repository: {{repo_full}} at commit {{commit_sha}}.\nProgram URL: {{extra.bug_bounty_url}}\nRules checked at: {{extra.program_rules_checked_at}}\nProgram snapshot: {{extra.program_rules_snapshot}}\nDeployment evidence: {{extra.deployment_evidence}}\nKnown-issues snapshot: {{extra.known_issues_snapshot}}\nAuthorized testing constraints: {{extra.authorized_test_constraints}}\n\nBuild the immutable scope contract for this run before analyzing code. Extract exact in-scope assets/components, accepted impacts, exclusions, known issues, testing restrictions, payout priorities, and supplied deployment facts. Separate supplied evidence from missing facts. Never infer current program rules, live deployments, TVL, traffic, configuration, or severity from memory. A silent snapshot creates a scope gap.\n\nReturn exactly one record. Preserve the wording or a close identifier for each controlling rule so later agents can map a technical effect to a named accepted impact. Do not analyze vulnerabilities.\n\nExtract exact in-scope contracts/addresses/chains, accepted theft/insolvency/freeze impacts, impact thresholds, trusted dependency rules, and supplied custody/TVL snapshot. Treat earlier census or audit conclusions as evidence only when supplied and still tied to this commit/deployment."
+          }
+        ],
+        "isLastStep": false
+      },
+      {
+        "depth": 1,
+        "multiOutput": true,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "surface_operation_id": "string",
+          "surface_operation_label": "string",
+          "surface_entrypoint": "string",
+          "surface_file_path": "string",
+          "surface_line": "number",
+          "surface_actor": "string",
+          "surface_production_address_evidence": "array",
+          "surface_custody_model": "string",
+          "surface_fund_provenance": "array",
+          "surface_victims_and_approvals": "array",
+          "surface_assets_and_accounting": "array",
+          "surface_controlled_inputs": "array",
+          "surface_protected_invariants": "array",
+          "surface_math_and_rounding_trace": "array",
+          "surface_oracle_and_external_calls": "array",
+          "surface_state_update_order": "array",
+          "surface_terminal_value_effect": "string",
+          "surface_candidate_allowed_impacts": "array",
+          "surface_evidence_gaps": "array",
+          "surface_custodied_value_evidence": "array",
+          "surface_value_math_locations": "array",
+          "surface_round_trip_conservation_notes": "array",
+          "surface_proxy_and_initialization_trace": "array",
+          "surface_storage_layout_risks": "array",
+          "surface_cross_contract_edges": "array",
+          "surface_related_operations": "array",
+          "surface_shared_state_dependencies": "array"
+        },
+        "steps": [
+          {
+            "name": "Map evidenced pooled-value custody surfaces",
+            "content": "Map only in-scope deployed contracts that custody or account for pooled user/protocol value between transactions, plus permissionless operations that change that value. Derive the contract set from current code and supplied deployment evidence; do not hard-code Pendle directories or assume prior router/custody conclusions remain true. Trace deposited assets, shares/tokens, reserves, internal totals, conversions, indexes, rounding, fees, oracle inputs, callbacks, and terminal transfers. Provide custody/TVL evidence and exact conservation/pricing invariants. Exclude atomic pass-through operations only when proven for this commit and deployment.\n\nUse deterministic enumeration before reasoning: ripgrep plus language-aware AST/compiler tooling when available. Perform {{extra.repeat_runs}} independent enumeration passes when supplied (default: 2), compare their coverage, and record any coverage gap.\n\nWeb3 architecture expansion: identify whether the operation is reached through a transparent proxy, UUPS proxy, beacon, diamond/facet, minimal clone, metamorphic deployment, delegatecall-based module, or direct implementation. Trace proxy -> implementation/facet resolution, initializer state, upgrade authorization, storage slots/layout across relevant versions, selector routing, and every attacker-influenceable delegatecall target. Check deployed bytecode/configuration evidence rather than assuming source deployment.\n\nFor each operation, include its local cross-contract neighborhood: direct callers and callees, callbacks/hooks, shared storage/accounting dependencies, tokens/oracles/bridges it trusts, and related public operations that can prepare or consume its state. Follow at least two contract hops where source and deployment evidence permit. Populate the proxy/storage and cross-contract output fields even when the conclusion is \"direct deployment / no relevant edge\", with evidence.\n"
+          }
+        ],
+        "isLastStep": false
+      },
+      {
+        "depth": 2,
+        "multiOutput": true,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "hyp_hypothesis_id": "string",
+          "hyp_hypothesis_class": "string",
+          "hyp_hypothesis_summary": "string",
+          "hyp_root_cause": "string",
+          "hyp_root_cause_location": "string",
+          "hyp_broken_invariant": "string",
+          "hyp_attacker_sequence": "array",
+          "hyp_required_preconditions": "array",
+          "hyp_expected_technical_impact": "string",
+          "hyp_matched_allowed_impact_candidate": "string",
+          "hyp_candidate_guards": "array",
+          "hyp_verification_locations": "array",
+          "hyp_falsification_target": "string",
+          "hyp_evidence_gaps": "array",
+          "hyp_fund_source": "string",
+          "hyp_victim": "string",
+          "hyp_exact_math_or_state_drift": "string",
+          "hyp_profit_mechanism": "string",
+          "hyp_flash_or_composition_requirements": "array"
+        },
+        "steps": [
+          {
+            "name": "Pooled-value hypotheses A: round-trip conservation",
+            "content": "Fresh-context analysis of {{surface_operation_label}}. Hunt exact round-trip or conservation breaks that let an unprivileged actor receive more pooled value than supplied: mint/burn asymmetry, share inflation, first-depositor/donation, rounding accumulation, fee/index double count, reserve/internal-balance desync, or repeated boundary cycles. Require exact math and rounding direction, fund source, victim, sequence, realistic magnitude, locations, guards, and falsification target."
+          },
+          {
+            "name": "Pooled-value hypotheses B: pricing and composition",
+            "content": "Independently analyze {{surface_operation_label}}. Hunt exact oracle/rate/decimal manipulation, callback/reentrancy, flash composition, expiry/checkpoint ordering, or cross-operation state mismatch that breaks an in-scope pool invariant. Require a concrete profit loop, named victim, deployed feasibility, exact source locations and arithmetic, and accepted-impact candidate. Exclude off-chain preview-only discrepancies and pure market risk.\n\nUse the mapped neighborhood, not only the focal operation:\n- proxy/initialization: {{surface_proxy_and_initialization_trace}}\n- storage risks: {{surface_storage_layout_risks}}\n- call edges: {{surface_cross_contract_edges}}\n- related public operations: {{surface_related_operations}}\n- shared state: {{surface_shared_state_dependencies}}\n\nExplicitly test cross-contract sequences of two or more public operations when they share accounting, authorization, oracle, callback, approval, epoch, or settlement state. Include sequences where one operation creates a state that another consumes in the same transaction, later transaction, callback, or flash-loan bundle.\n\nExplicit proxy/storage classes: uninitialized proxy or implementation; initializer/reinitializer replay; implementation takeover with a concrete effect on the proxy or assets; UUPS/transparent/beacon/diamond upgrade authorization bypass; storage-layout collision across evidenced versions; facet/selector clashing; delegatecall to an attacker-controlled or incorrectly validated target; proxy/implementation authorization disagreement; immutable/domain-separator/address-context mistakes under delegatecall; and upgrade paths that brick, seize, mint, withdraw, or permanently freeze in-scope value. Emit a hypothesis only with an evidenced deployed path, attacker-controlled primitive, exact faulty slot/selector/initializer/authorization operation, and accepted-impact candidate.\n"
+          }
+        ],
+        "isLastStep": false
+      },
+      {
+        "depth": 3,
+        "multiOutput": true,
+        "consumesAll": true,
+        "bindPrevious": false,
+        "outputFormat": {
+          "dedup_canonical_hypothesis_id": "string",
+          "dedup_root_bug_fingerprint": "string",
+          "dedup_canonical_summary": "string",
+          "dedup_canonical_root_cause": "string",
+          "dedup_canonical_location": "string",
+          "dedup_broken_invariant": "string",
+          "dedup_canonical_entrypoints": "array",
+          "dedup_canonical_flows": "array",
+          "dedup_canonical_attacker_sequence": "array",
+          "dedup_canonical_preconditions": "array",
+          "dedup_canonical_expected_impact": "string",
+          "dedup_candidate_allowed_impact": "string",
+          "dedup_canonical_candidate_guards": "array",
+          "dedup_canonical_verification_locations": "array",
+          "dedup_canonical_falsification_target": "string",
+          "dedup_canonical_evidence_gaps": "array",
+          "dedup_merged_hypothesis_ids": "array",
+          "dedup_triage_priority": "string"
+        },
+        "steps": [
+          {
+            "name": "Deduplicate pooled-value root causes",
+            "content": "Cluster {{multi_output_depth_2}} by faulty value math/state operation, attacker primitive, victim/fund source, invariant, and fix. Preserve alternate profitable cycles and evidence conflicts. Create fingerprints; remove duplicates, unexplained balances, out-of-scope dependency assumptions, unproven deployment paths, and known accepted behavior.\n\nCoverage rule: consolidate only after every hypothesis branch has completed. Emit every distinct code-grounded root cause that still warrants hostile verification. Triage priority is advisory metadata only; never discard a candidate solely because it is not labeled high priority."
+          }
+        ],
+        "isLastStep": false
+      },
+      {
+        "depth": 4,
+        "multiOutput": false,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "verify_technical_verdict": "string",
+          "verify_production_reachability": "string",
+          "verify_verified_trace": "array",
+          "verify_attacker_control_evidence": "array",
+          "verify_guard_analysis": "array",
+          "verify_falsification_attempts": "array",
+          "verify_runtime_evidence": "array",
+          "verify_unresolved_assumptions": "array",
+          "verify_observed_effect": "string",
+          "verify_verified_file_path": "string",
+          "verify_verified_line": "number",
+          "verify_poc_plan": "array",
+          "verify_fund_provenance_proof": "array",
+          "verify_victim_proof": "array",
+          "verify_conservation_or_profit_arithmetic": "string",
+          "verify_realistic_profit_estimate": "string",
+          "verify_impact_magnitude_evidence": "array",
+          "verify_dedup_against_audits_and_known_issues": "array",
+          "poc_poc_verdict": "string",
+          "poc_poc_method": "string",
+          "poc_commands_or_test_cases": "array",
+          "poc_poc_evidence": "array",
+          "poc_observed_effect": "string",
+          "poc_expected_vs_observed": "string",
+          "poc_repeatability": "string",
+          "poc_artifact_paths": "array",
+          "poc_minimal_reproduction": "array",
+          "poc_remaining_assumptions": "array",
+          "poc_fork_chain_and_block": "string",
+          "poc_attacker_balance_delta": "string",
+          "poc_protocol_or_victim_delta": "string",
+          "poc_invariant_before_after": "array",
+          "poc_gas_slippage_fees": "string"
+        },
+        "steps": [
+          {
+            "name": "Independently verify and reproduce candidate",
+            "content": "Independently verify one code-grounded hypothesis without trusting the upstream conclusion.\n\nCandidate id: {{dedup_canonical_hypothesis_id}}\nSummary: {{dedup_canonical_summary}}\nRoot cause: {{dedup_canonical_root_cause}} at {{dedup_canonical_location}}\nAttacker sequence: {{dedup_canonical_attacker_sequence}}\nBroken invariant: {{dedup_broken_invariant}}\nCandidate guards: {{dedup_canonical_candidate_guards}}\nExpected impact: {{dedup_canonical_expected_impact}}\nRequired preconditions: {{dedup_canonical_preconditions}}\nEvidence gaps: {{dedup_canonical_evidence_gaps}}\nStrongest falsification target: {{dedup_canonical_falsification_target}}\n\nFirst perform hostile technical verification. Trace the actual production code and try to disprove attacker control, reachability, the missing guard, and the claimed terminal effect. Do not carry a candidate forward merely because it is plausible.\n\nTry to falsify {{dedup_canonical_hypothesis_id}} using these required gates: deployed in-scope custody; attacker-controlled state; named pooled-value victim; exact rounding direction at every boundary; round-trip conservation; oracle/flash feasibility; state/callback order; audit/known-issue dedup; realistic net gain and impact under supplied thresholds. Record pass/fail/blocked/not-applicable per gate with calculations. supported requires a complete permissionless loss path. Produce a pinned fork plan.\n\nIf and only if the technical verdict remains supported, immediately attempt the smallest safe deterministic reproduction in this same job. A failed or blocked reproduction must be recorded honestly; it must not erase a technically supported candidate that still needs manual validation.\n\nImplement/run the smallest pinned fork/local test for supported candidates. Measure attacker and pool/victim balances, total supply/reserves/indexes, conservation invariant before/after, repayments/fees/gas/slippage, and repeatability. Use only authorized local fork calls. Set PoC verdict and retain trace/artifacts/minimal reproduction.\n\nFor smart-contract candidates, use {{extra.fork_rpc_url}} and {{extra.fork_block}} when supplied. Never send transactions to a public network.\n\nDo not apply the bounty-program eligibility decision and do not write the final finding in this step. Populate every verify_* and poc_* field. Use technical_verdict=falsified when the code contradicts the hypothesis, blocked only for a specific missing fact or unavailable environment, and supported only for a complete code-grounded path."
+          }
+        ],
+        "isLastStep": false
+      },
+      {
+        "depth": 5,
+        "multiOutput": true,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "explanation": "string",
+          "file_path": "string",
+          "line": "number",
+          "malicious_input_example": "string",
+          "summary": "string",
+          "trigger_flow": "array",
+          "vulnerability_type": "string",
+          "malicious_actor": "string",
+          "exploitable": "boolean",
+          "root_bug_fingerprint": "string",
+          "technical_verdict": "string",
+          "poc_verdict": "string",
+          "eligibility_verdict": "string",
+          "program_asset": "string",
+          "program_impact": "string",
+          "severity_candidate": "string",
+          "report_confidence": "string",
+          "remaining_assumptions": "array",
+          "evidence_artifacts": "array"
+        },
+        "steps": [
+          {
+            "name": "Apply program gate and emit progressive finding",
+            "content": "Apply the immutable bounty-program evidence to one independently checked candidate, then emit its progressive finding record.\n\nProgram URL: {{extra.bug_bounty_url}}\nRules checked at: {{extra.program_rules_checked_at}}\nProgram snapshot: {{extra.program_rules_snapshot}}\nDeployment evidence: {{extra.deployment_evidence}}\nKnown issues: {{extra.known_issues_snapshot}}\nAuthorized testing constraints: {{extra.authorized_test_constraints}}\n\nCandidate id: {{dedup_canonical_hypothesis_id}}\nSummary: {{dedup_canonical_summary}}\nRoot cause: {{dedup_canonical_root_cause}} at {{dedup_canonical_location}}\nAttacker sequence: {{dedup_canonical_attacker_sequence}}\nExpected impact: {{dedup_canonical_expected_impact}}\nCandidate accepted impact: {{dedup_candidate_allowed_impact}}\n\nTechnical verdict: {{verify_technical_verdict}}\nProduction reachability: {{verify_production_reachability}}\nObserved technical effect: {{verify_observed_effect}}\nVerified trace: {{verify_verified_trace}}\nGuard analysis: {{verify_guard_analysis}}\nTechnical assumptions: {{verify_unresolved_assumptions}}\n\nPoC verdict: {{poc_poc_verdict}}\nPoC evidence: {{poc_poc_evidence}}\nPoC observed effect: {{poc_observed_effect}}\nPoC artifacts: {{poc_artifact_paths}}\nPoC assumptions: {{poc_remaining_assumptions}}\n\nReturn no records when the hypothesis was falsified, is a known duplicate, requires a privileged or prohibited actor, affects an out-of-scope asset, matches no accepted impact, or remains speculative without a concrete faulty operation and attacker-to-impact trace.\n\nReturn one record when either:\n1. the candidate is technically supported, eligible, and reproduced or deterministically proven; set exploitable=true and report_confidence=verified; or\n2. the candidate is technically supported with strong code evidence but the safe local reproduction or one deployment/program fact is specifically blocked; set exploitable=false, eligibility_verdict=blocked when applicable, and report_confidence=needs_manual_validation.\n\nThe second case is a visible research candidate, not a bounty-ready claim. State the exact blocker in remaining_assumptions. Never upgrade blocked evidence to a verified finding.\n\nCreate a stable root_bug_fingerprint from the faulty operation, attacker primitive, broken invariant, and terminal effect so the engine's built-in post-processing can deduplicate and rank findings globally. Point file_path and line to the actual faulty operation or missing protection. Keep trigger_flow ordered from attacker input to impact. Use the smallest safe malicious_input_example suitable for an authorized local environment."
+          }
+        ],
+        "isLastStep": true
+      }
+    ]
+  }
+}

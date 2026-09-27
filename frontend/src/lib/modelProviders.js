@@ -1,4 +1,4 @@
-export const MODEL_PROVIDER_IDS = ['codex', 'claude', 'openrouter', 'xai', 'deepseek'];
+export const MODEL_PROVIDER_IDS = ['codex', 'claude', 'openrouter', 'omniroute', 'xai', 'deepseek', 'ollama'];
 export const MODEL_CATALOG_STATUSES = ['ready', 'loading', 'unavailable'];
 const SAFE_MODEL_NOTE_URLS = new Set(['https://chatgpt.com/cyber']);
 
@@ -8,30 +8,37 @@ const PROVIDER_HARNESSES = {
   // Claude Code has first-class OpenRouter support. Codex remains available
   // for advanced installations with a matching Codex provider configuration.
   openrouter: ['claude-code', 'codex'],
+  omniroute: ['claude-code', 'codex'],
   xai: ['grok-build'],
   deepseek: ['codex'],
+  ollama: ['ollama'],
 };
 
 const PROVIDER_DEFAULT_MODELS = {
   codex: 'gpt-5-codex',
   claude: 'claude-sonnet-5',
   openrouter: 'z-ai/glm-5.2',
+  omniroute: 'auto',
   xai: 'grok-4.6',
   deepseek: 'deepseek-flash',
+  ollama: 'qwen2.5-coder:7b-instruct',
 };
 
 const PROVIDER_THINKING_EFFORTS = {
   codex: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
   claude: ['low', 'medium', 'high', 'xhigh', 'max'],
   openrouter: ['default', 'low', 'medium', 'high', 'xhigh', 'max'],
+  omniroute: ['default', 'low', 'medium', 'high', 'xhigh', 'max'],
   xai: ['low', 'medium', 'high', 'xhigh'],
   deepseek: ['low', 'high', 'max'],
+  ollama: ['default'],
 };
 
 const HARNESS_THINKING_EFFORTS = {
   codex: ['default', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
   'claude-code': ['default', 'low', 'medium', 'high', 'xhigh', 'max'],
   'grok-build': ['low', 'medium', 'high', 'xhigh'],
+  ollama: ['default'],
 };
 
 function normalizedProviderId(provider) {
@@ -65,8 +72,8 @@ function normalizedModel(model) {
   };
 }
 
-// The model catalog contains only configured providers. OpenRouter's catalog is
-// advisory: its text input keeps accepting exact IDs while the cached entries
+// The model catalog contains only configured providers. Gateway catalogs are
+// advisory: their text input keeps accepting exact IDs while cached entries
 // provide searchable suggestions and per-model reasoning metadata.
 export function configuredModelCatalog(payload) {
   const providers = Array.isArray(payload?.providers) ? payload.providers : [];
@@ -118,7 +125,11 @@ export function usesFreeTextModelInput(catalog, provider) {
   const providerCatalog = modelCatalogForProvider(catalog, normalizedProvider);
   return (
     providerCatalog?.input === 'text' ||
-    (!providerCatalog && (normalizedProvider === 'openrouter' || normalizedProvider === 'xai'))
+    (!providerCatalog &&
+      (normalizedProvider === 'openrouter' ||
+        normalizedProvider === 'omniroute' ||
+        normalizedProvider === 'xai' ||
+        normalizedProvider === 'ollama'))
   );
 }
 
@@ -140,12 +151,17 @@ export function isModelSelectionValid(model, catalog, provider) {
   return modelsForModelProvider(catalog, provider).some((candidate) => candidate.id === selectedModel);
 }
 
+// A provider without any catalog entry (for example a gateway whose catalog
+// has not been fetched) falls back to its static default. A catalog that is
+// present but still loading keeps the empty selection.
 function defaultCatalogModel(catalog, provider) {
-  return modelCatalogForProvider(catalog, provider)?.defaultModel || '';
+  const providerCatalog = modelCatalogForProvider(catalog, provider);
+  if (providerCatalog) return providerCatalog.defaultModel || '';
+  return PROVIDER_DEFAULT_MODELS[normalizedProviderId(provider)] || '';
 }
 
-// A provider switch chooses the destination catalog default. OpenRouter keeps
-// an existing exact ID because its dynamically discovered catalog is advisory.
+// A provider switch chooses the destination catalog default. Gateway providers
+// keep an existing exact ID because their dynamically discovered catalog is advisory.
 export function modelForCatalogChange(model, previousProvider, nextProvider, catalog) {
   const previous = normalizedProviderId(previousProvider);
   const next = normalizedProviderId(nextProvider);

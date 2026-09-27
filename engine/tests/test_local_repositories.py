@@ -11,8 +11,10 @@ from open_kritt_engine import repository as repository_module
 from open_kritt_engine import workspace as workspace_module
 from open_kritt_engine.repository import (
     LOCAL_SNAPSHOT_REVISION,
+    LOCAL_SNAPSHOT_REVISION_PREFIX,
     RepoError,
     copy_local_snapshot,
+    local_snapshot_revision,
     snapshot_local_repo,
 )
 from open_kritt_engine.workspace import (
@@ -90,7 +92,7 @@ def test_snapshot_local_repo_supports_non_git_directory_without_git(monkeypatch,
     snapshot_dir, revision = snapshot_local_repo("plain-folder", str(tmp_path / "cache"), str(local_root))
 
     snapshot = Path(snapshot_dir)
-    assert revision == LOCAL_SNAPSHOT_REVISION
+    assert revision.startswith(LOCAL_SNAPSHOT_REVISION_PREFIX)
     assert (snapshot / "app.py").read_text(encoding="utf-8") == "print('local')\n"
     assert not (snapshot / ".git").exists()
 
@@ -109,8 +111,8 @@ def test_snapshot_and_workspace_copy_include_dirty_and_untracked_files_without_g
         assert (copied / "tracked.txt").read_text(encoding="utf-8") == "modified working tree\n"
         assert (copied / "untracked.txt").read_text(encoding="utf-8") == "untracked working tree\n"
         assert not (copied / ".git").exists()
-    assert snapshot_revision == LOCAL_SNAPSHOT_REVISION
-    assert workspace_revision == LOCAL_SNAPSHOT_REVISION
+    assert snapshot_revision == workspace_revision
+    assert snapshot_revision.startswith(LOCAL_SNAPSHOT_REVISION_PREFIX)
 
 
 def test_snapshot_local_repo_rejects_traversal_and_absolute_names(tmp_path):
@@ -199,13 +201,13 @@ def test_prepare_workspace_materializes_local_primary_and_dependency_without_git
     workspace = Path(prepared.repo_dir)
     dependency_entry = prepared.manifest["dependencies"][0]
     dependency_dir = workspace / dependency_entry["alias"]
-    assert prepared.checked_out_commit == LOCAL_SNAPSHOT_REVISION
+    assert prepared.checked_out_commit.startswith(LOCAL_SNAPSHOT_REVISION_PREFIX)
     assert prepared.manifest["primary"]["kind"] == "local"
     assert prepared.manifest["primary"]["requested_commit"] == LOCAL_SNAPSHOT_REVISION
-    assert prepared.manifest["primary"]["commit"] == LOCAL_SNAPSHOT_REVISION
+    assert prepared.manifest["primary"]["commit"] == prepared.checked_out_commit
     assert dependency_entry["kind"] == "local"
     assert dependency_entry["requested_commit"] == LOCAL_SNAPSHOT_REVISION
-    assert dependency_entry["commit"] == LOCAL_SNAPSHOT_REVISION
+    assert dependency_entry["commit"].startswith(LOCAL_SNAPSHOT_REVISION_PREFIX)
     assert (workspace / "primary.py").read_text(encoding="utf-8") == "PRIMARY = True\n"
     assert (workspace / "untracked.py").read_text(encoding="utf-8") == "UNTRACKED = True\n"
     assert (dependency_dir / "dependency.py").read_text(encoding="utf-8") == "DEPENDENCY = True\n"
@@ -321,7 +323,7 @@ def test_pinned_local_root_never_copies_outbound_symlink_swap(monkeypatch, tmp_p
         snapshot_dir = None
     else:
         snapshot = Path(snapshot_dir)
-        assert revision == LOCAL_SNAPSHOT_REVISION
+        assert revision.startswith(LOCAL_SNAPSHOT_REVISION_PREFIX)
         assert (snapshot / "selected-only.txt").read_text(encoding="utf-8") == "pinned repository\n"
         assert not (snapshot / "outside-only.txt").exists()
 
@@ -418,7 +420,7 @@ def test_copy_cache_tree_publishes_only_after_staging_is_complete(monkeypatch, t
     assert (target / "primary" / "value.txt").read_text(encoding="utf-8") == "complete snapshot\n"
     assert workspace_module._read_ready_cache_checkout(target) == (
         str(target / "primary"),
-        LOCAL_SNAPSHOT_REVISION,
+        local_snapshot_revision(target / "primary"),
     )
 
 

@@ -1,0 +1,209 @@
+{
+  "kind": "open-kritt-workflow",
+  "version": 2,
+  "workflow": {
+    "name": "Cronos Fork-Differential Fund-Loss Hunt — Focused v2.5",
+    "description": "Program-aligned differential review of Cronos, Ethermint, and Chain-main production value paths. It prioritizes fork-local changes, cross-repository composition, EVM-Cosmos-IBC accounting, token mapping, wrapper and authorization semantics, and permissionless user-fund loss. It excludes upstream-only issues, DoS-only effects, governance-only actions, self-harm, and generic hardening before expensive verification. Every hypothesis branch completes before one consume-all dedup boundary; canonical candidates then fan out independently to hostile verification and program gating.",
+    "levels": [
+      {
+        "depth": 0,
+        "multiOutput": false,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "scope_scope_contract_id": "string",
+          "scope_in_scope_repositories": "array",
+          "scope_in_scope_assets": "array",
+          "scope_accepted_impacts": "array",
+          "scope_excluded_impacts": "array",
+          "scope_known_issue_classes": "array",
+          "scope_deployment_facts": "array",
+          "scope_authorized_test_constraints": "array",
+          "scope_required_evidence": "array",
+          "scope_scope_gaps": "array"
+        },
+        "steps": [
+          {
+            "name": "Freeze fund-loss scope and repository boundary",
+            "content": "Primary repository: {{repo_full}} at {{commit_sha}}. Related pinned repositories: {{dependencies}}. Program URL: {{extra.bug_bounty_url}}. Rules checked at: {{extra.program_rules_checked_at}}. Program snapshot: {{extra.program_rules_snapshot}}. Deployment evidence: {{extra.deployment_evidence}}. Known issues: {{extra.known_issues_snapshot}}. Authorized testing: {{extra.authorized_test_constraints}}.\n\nReturn exactly one immutable scope record. Preserve the exact accepted impacts and exclusions. For this workflow, a candidate must end in permissionless user-fund loss, protocol insolvency with a concrete attacker capture path, or a cryptographic flaw. Explicitly exclude DoS-only, gas-only, governance-only, privileged-only, self-loss, upstream-only, test-only, and previously known classes. Treat missing deployment or program evidence as a named gap, never as proof of safety. Do not analyze vulnerabilities yet."
+          }
+        ],
+        "isLastStep": false
+      },
+      {
+        "depth": 1,
+        "multiOutput": true,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "surface_surface_id": "string",
+          "surface_operation": "string",
+          "surface_primary_file_path": "string",
+          "surface_primary_line": "number",
+          "surface_production_reachability": "array",
+          "surface_least_privileged_actor": "string",
+          "surface_attacker_controlled_inputs": "array",
+          "surface_value_source_and_victim": "array",
+          "surface_value_transition_trace": "array",
+          "surface_authorization_trace": "array",
+          "surface_atomicity_and_rollback_trace": "array",
+          "surface_cross_repo_edges": "array",
+          "surface_fork_delta_evidence": "array",
+          "surface_upstream_or_known_issue_overlap": "array",
+          "surface_protected_invariants": "array",
+          "surface_candidate_allowed_impacts": "array",
+          "surface_evidence_gaps": "array"
+        },
+        "steps": [
+          {
+            "name": "Map fork-local production value boundaries",
+            "content": "Map every production-reachable operation in {{repo_full}} and the supplied pinned dependencies that can create, destroy, escrow, release, transfer, convert, bridge, refund, authorize, or account for user-controlled value. Focus on Cronos-local code and composition: EVM state versus Cosmos bank state, CRC20/native/voucher mappings, event handlers, IBC acknowledgement and timeout, bridge fees, MsgEthereumTx, MsgExec/Authz, precompiles, hooks, module accounts, decimal conversion, rollback, and cross-module callbacks.\n\nFor each operation, prove the least-privileged caller, exact attacker-controlled fields, value source, victim, state transition, rollback boundary, and terminal transfer. Trace at least two repository/module hops when evidence permits. Use git history, replace directives, custom packages, wrappers, and overridden handlers to identify fork-local deltas; explicitly label upstream-only or known-issue overlap. Do not emit a surface whose only effect is DoS, gas consumption, governance action, operator misconfiguration, or the caller losing its own funds. Use deterministic enumeration and {{extra.repeat_runs}} independent passes when supplied. Return one record per distinct value boundary; do not report vulnerabilities."
+          }
+        ],
+        "isLastStep": false
+      },
+      {
+        "depth": 2,
+        "multiOutput": true,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "hyp_hypothesis_id": "string",
+          "hyp_hypothesis_class": "string",
+          "hyp_hypothesis_summary": "string",
+          "hyp_root_cause": "string",
+          "hyp_root_cause_location": "string",
+          "hyp_fork_specific_evidence": "array",
+          "hyp_broken_invariant": "string",
+          "hyp_attacker_sequence": "array",
+          "hyp_required_preconditions": "array",
+          "hyp_victim_and_value_source": "string",
+          "hyp_attacker_capture_mechanism": "string",
+          "hyp_expected_technical_impact": "string",
+          "hyp_matched_allowed_impact_candidate": "string",
+          "hyp_candidate_guards": "array",
+          "hyp_verification_locations": "array",
+          "hyp_falsification_target": "string",
+          "hyp_evidence_gaps": "array"
+        },
+        "steps": [
+          {
+            "name": "Hypotheses A: backing, conservation, decimal and rollback",
+            "content": "Fresh-context analysis of exactly one mapped operation: {{surface_operation}} at {{surface_primary_file_path}}:{{surface_primary_line}}. Value trace={{surface_value_transition_trace}}; atomicity={{surface_atomicity_and_rollback_trace}}; fork delta={{surface_fork_delta_evidence}}; invariants={{surface_protected_invariants}}. Hunt only permissionless fund-loss paths caused by mismatched mint/burn/escrow/release, decimals or rounding accumulation, replay/refund double-credit, partial rollback, bank-versus-EVM divergence, stale mapping, fee/accounting asymmetry, or cross-repository state disagreement. Require a concrete victim/value source and an attacker capture mechanism; surplus, griefing, or self-loss without capture is not a candidate. Emit no generic checklist."
+          },
+          {
+            "name": "Hypotheses B: provenance, wrappers, authorization and composition",
+            "content": "Independently analyze exactly one mapped operation: {{surface_operation}}. Actor={{surface_least_privileged_actor}}; controlled inputs={{surface_attacker_controlled_inputs}}; authorization={{surface_authorization_trace}}; cross-repo edges={{surface_cross_repo_edges}}; fork delta={{surface_fork_delta_evidence}}. Hunt event-provenance confusion, token-mapping subject/object mismatch, MsgExec/Authz signer or fee-payer mismatch, wrapper validation asymmetry, alternate entrypoints, callback/reentrancy, precompile/module-account identity confusion, IBC domain/replay mistakes, and multi-operation sequences that let an unprivileged actor capture another user's or protocol-backed value. Reject hypotheses that require governance, an authorized mapping operator, malicious genesis, upstream-only behavior, or unsupported deployment assumptions. Require exact faulty code, sequence, guard to falsify, victim, and capture path."
+          }
+        ],
+        "isLastStep": false
+      },
+      {
+        "depth": 3,
+        "multiOutput": true,
+        "consumesAll": true,
+        "bindPrevious": false,
+        "outputFormat": {
+          "dedup_canonical_hypothesis_id": "string",
+          "dedup_root_bug_fingerprint": "string",
+          "dedup_canonical_summary": "string",
+          "dedup_canonical_root_cause": "string",
+          "dedup_canonical_location": "string",
+          "dedup_fork_specific_evidence": "array",
+          "dedup_broken_invariant": "string",
+          "dedup_canonical_entrypoints": "array",
+          "dedup_canonical_attacker_sequence": "array",
+          "dedup_canonical_preconditions": "array",
+          "dedup_victim_and_value_source": "string",
+          "dedup_attacker_capture_mechanism": "string",
+          "dedup_canonical_expected_impact": "string",
+          "dedup_candidate_allowed_impact": "string",
+          "dedup_canonical_candidate_guards": "array",
+          "dedup_canonical_verification_locations": "array",
+          "dedup_canonical_falsification_target": "string",
+          "dedup_canonical_evidence_gaps": "array",
+          "dedup_merged_hypothesis_ids": "array",
+          "dedup_triage_priority": "string"
+        },
+        "steps": [
+          {
+            "name": "Deduplicate fork-local fund-loss root causes",
+            "content": "Review {{multi_output_depth_2}} only after every hypothesis branch has completed. Cluster by faulty operation and fix, attacker primitive, broken invariant, victim/value source, and capture mechanism. Keep distinct bugs separate when their fixes differ. Discard DoS-only, gas-only, governance-only, privileged-only, self-loss, upstream-only, previously known, and unsupported deployment claims. Do not discard a technically concrete fork-local candidate merely because reproduction or one deployment fact is missing; preserve it with the exact evidence gap for hostile verification. Emit every distinct code-grounded root cause that warrants verification. Triage priority is advisory only."
+          }
+        ],
+        "isLastStep": false
+      },
+      {
+        "depth": 4,
+        "multiOutput": false,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "verify_technical_verdict": "string",
+          "verify_production_reachability": "string",
+          "verify_fork_locality_verdict": "string",
+          "verify_verified_trace": "array",
+          "verify_attacker_control_evidence": "array",
+          "verify_guard_analysis": "array",
+          "verify_falsification_attempts": "array",
+          "verify_victim_and_value_proof": "array",
+          "verify_capture_and_profit_arithmetic": "string",
+          "verify_runtime_evidence": "array",
+          "verify_unresolved_assumptions": "array",
+          "verify_observed_effect": "string",
+          "verify_verified_file_path": "string",
+          "verify_verified_line": "number",
+          "poc_poc_verdict": "string",
+          "poc_poc_method": "string",
+          "poc_commands_or_test_cases": "array",
+          "poc_poc_evidence": "array",
+          "poc_observed_effect": "string",
+          "poc_repeatability": "string",
+          "poc_artifact_paths": "array",
+          "poc_remaining_assumptions": "array"
+        },
+        "steps": [
+          {
+            "name": "Hostile verification and safe reproduction",
+            "content": "Independently try to kill candidate {{dedup_canonical_hypothesis_id}}. Summary={{dedup_canonical_summary}}. Root cause={{dedup_canonical_root_cause}} at {{dedup_canonical_location}}. Fork evidence={{dedup_fork_specific_evidence}}. Sequence={{dedup_canonical_attacker_sequence}}. Preconditions={{dedup_canonical_preconditions}}. Victim/value={{dedup_victim_and_value_source}}. Capture={{dedup_attacker_capture_mechanism}}. Guards={{dedup_canonical_candidate_guards}}. Locations={{dedup_canonical_verification_locations}}. Falsification target={{dedup_canonical_falsification_target}}. Gaps={{dedup_canonical_evidence_gaps}}.\n\nRe-read primary and dependency code. Prove production registration, least-privileged attacker control, fork-locality rather than upstream-only behavior, every guard, transaction rollback, exact victim debit, exact attacker credit/capture, and realistic profit after fees. Falsify privileged, governance, self-loss, surplus-without-capture, malicious-genesis, DoS-only, and known/upstream-only cases. Set supported only for a complete code-grounded path; falsified when a mandatory fact fails; blocked only for a specific missing runtime or deployment fact.\n\nIf supported, build and run the smallest authorized local regression, devnet, simulator, or pinned fork PoC. Use {{extra.fork_rpc_url}} and {{extra.fork_block}} only to create a local fork; never submit public-chain transactions. Run twice when practical and record commands, before/after balances and supply/backing invariants, victim loss, attacker delta, trace, and artifacts. A blocked reproduction does not erase technically supported evidence."
+          }
+        ],
+        "isLastStep": false
+      },
+      {
+        "depth": 5,
+        "multiOutput": true,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "explanation": "string",
+          "file_path": "string",
+          "line": "number",
+          "malicious_input_example": "string",
+          "summary": "string",
+          "trigger_flow": "array",
+          "vulnerability_type": "string",
+          "malicious_actor": "string",
+          "exploitable": "boolean",
+          "root_bug_fingerprint": "string",
+          "technical_verdict": "string",
+          "poc_verdict": "string",
+          "eligibility_verdict": "string",
+          "program_asset": "string",
+          "program_impact": "string",
+          "severity_candidate": "string",
+          "report_confidence": "string",
+          "remaining_assumptions": "array",
+          "evidence_artifacts": "array"
+        },
+        "steps": [
+          {
+            "name": "Apply fund-loss program gate and emit finding",
+            "content": "Apply the frozen program evidence to one independently verified candidate. Program={{extra.program_rules_snapshot}}. Deployment={{extra.deployment_evidence}}. Known issues={{extra.known_issues_snapshot}}. Constraints={{extra.authorized_test_constraints}}. Candidate={{dedup_canonical_summary}}. Technical verdict={{verify_technical_verdict}}. Fork locality={{verify_fork_locality_verdict}}. Reachability={{verify_production_reachability}}. Trace={{verify_verified_trace}}. Attacker control={{verify_attacker_control_evidence}}. Victim/value proof={{verify_victim_and_value_proof}}. Profit arithmetic={{verify_capture_and_profit_arithmetic}}. Observed effect={{verify_observed_effect}}. PoC verdict={{poc_poc_verdict}}. PoC evidence={{poc_poc_evidence}}. Assumptions={{verify_unresolved_assumptions}} and {{poc_remaining_assumptions}}.\n\nReturn no record when falsified, upstream-only, known, privileged/governance-only, self-loss, DoS/gas-only, out of scope, or lacking a concrete victim-to-attacker value path. Return one verified finding when technically supported, eligible, and reproduced or deterministically proven. Also return one visible non-bounty-ready research candidate when technical evidence is supported but a named safe reproduction or deployment fact is blocked; set exploitable=false and report_confidence=needs_manual_validation. Never upgrade uncertainty. Point to the faulty operation and provide an ordered attacker-to-impact flow and stable root fingerprint."
+          }
+        ],
+        "isLastStep": true
+      }
+    ]
+  }
+}

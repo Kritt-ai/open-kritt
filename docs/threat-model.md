@@ -99,7 +99,12 @@ A compromised/injected agent could try to read credentials or send data out.
 Scanning sends code to an external endpoint by default.
 
 - Know **where your data goes** before scanning sensitive code. The supported setup paths
-  use Codex/OpenAI, Anthropic, OpenRouter, or xAI (Grok Build) credentials.
+  use Codex/OpenAI, Anthropic, OpenRouter, OmniRoute, or xAI (Grok Build) credentials.
+  OmniRoute is a local gateway whose own connected providers remain an egress boundary.
+- The Ollama harness can keep prompt and repository processing local when its configured
+  endpoint is local. It exposes bounded read-only repository tools and rejects resolved
+  paths outside the prepared workspace. A remote `OLLAMA_BASE_URL` is still a data-egress
+  boundary and must be treated like any other model provider.
 - Review provider data-retention terms for the endpoints you use.
 
 ### 4. Unauthenticated API exposure

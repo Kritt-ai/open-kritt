@@ -153,12 +153,17 @@ test('finding export creates safe, complete report and PoC packages', () => {
   assert.equal(Object.hasOwn(manifest.scan, 'extra'), false);
   assert.equal(Object.hasOwn(manifest.scan, 'severityRanker'), false);
   assert.equal(Object.hasOwn(manifest.scan.repository, 'full'), false);
-  assert.deepEqual(Object.keys(manifest.findings[0]), ['id', 'rank', 'severity', 'files']);
+  assert.deepEqual(Object.keys(manifest.findings[0]), ['id', 'rank', 'severity', 'readiness', 'files']);
+  assert.equal(manifest.findings[0].readiness, null);
   assert.equal(manifest.findings[0].files.report, `${directory}/report.txt`);
   assert.equal(manifest.findings[0].files.poc, `${directory}/poc.txt`);
   assert.match(files.get('README.md'), /derived from untrusted repository and model output/);
   assert.match(files.get('README.md'), new RegExp(`${directory}/report\\.txt`));
-  assert.match(files.get('README.md'), new RegExp(`${directory}/poc\\.txt`));
+  assert.doesNotMatch(files.get('README.md'), /poc\.txt/);
+  assert.match(files.get('README.md'), /\| Rank \| Severity \| Finding \| Report \| Lifecycle \|/);
+  assert.match(files.get('README.md'), /Findings per lifecycle status: not gated 1\./);
+  assert.doesNotMatch(files.get(`${directory}/finding.md`), /## Readiness/);
+  assert.doesNotMatch(files.get(`${directory}/report.txt`), /READY/);
   assert.equal(
     bundle.uncompressedBytes,
     [...files.values()].reduce((sum, content) => sum + Buffer.byteLength(content), 0)
@@ -286,4 +291,294 @@ test('finding export is available for terminal scans with findings', () => {
 test('export slugs cannot introduce archive paths', () => {
   assert.equal(exportSlug('../../A protocol\\finding'), 'a-protocol-finding');
   assert.equal(exportSlug('***', 'fallback'), 'fallback');
+});
+
+const gatedFinding = {
+  ...finding,
+  id: '90',
+  rank: 2,
+  summary: 'Unauthorized withdrawal',
+  postScriptAnswer: null,
+  severity: 'High',
+  readiness: {
+    stage: 'd5',
+    ready: false,
+    label: 'submission_ready',
+    lifecycleStatus: 'impact_partial',
+    policyVersion: 'v2.7-impact-gate-1',
+    legacy: false,
+    blockingReasons: ['chain_complete: hop h2 is partial.', 'd5_match: impact_match_status is partial.'],
+    evidence: null,
+    lifecycle: null,
+    readiness: null,
+  },
+  enrichments: [
+    {
+      id: '6',
+      postScriptId: '3',
+      postScriptName: 'v2.7 D3',
+      stage: 'd3',
+      result: {
+        verdict: 'confirmed',
+        impact_objective: {
+          claim: 'Attacker drains the vault',
+          terminal_outcome: 'Vault balance decreases without authorization',
+          required_evidence: ['balance_before', 'balance_after'],
+          source_type: 'bounty_rule',
+        },
+        evidence_dimensions: [
+          { tag: 'balance_before', status: 'required' },
+          { tag: 'recipient_control', status: 'not_applicable', rationale: 'Attacker EOA receives funds.' },
+        ],
+        impact_chain_plan: [{ id: 'h1', claim: 'Bypass check', status: 'unverified', evidence_paths: [], covers: [] }],
+        unverified_assumptions: [
+          {
+            id: 'a1',
+            assumption: 'Vault is unpaused in production',
+            kind: 'deployment',
+            material: true,
+            status: 'open',
+          },
+        ],
+        _engine_lifecycle: { lifecycle_status: 'code_confirmed', policy_version: 'v2.7-impact-gate-1', legacy: false },
+      },
+      stub: false,
+      stubExplanation: null,
+    },
+    {
+      id: '7',
+      postScriptId: '4',
+      postScriptName: 'v2.7 D4',
+      stage: 'd4',
+      result: {
+        poc_status: 'reproduced',
+        poc_artifact_dir: '/artifacts/90',
+        _reserved_poc: '# PoC\n\nforge test',
+        bug_status: 'reproduced',
+        impact_status: 'partial',
+        observed_terminal_outcome: 'Balance decreased by 1 wei',
+        negative_control_status: 'passed',
+        repeatability_status: 'deterministic',
+        impact_chain: [
+          {
+            id: 'h1',
+            claim: 'Bypass check',
+            status: 'proven',
+            evidence_paths: ['logs/h1.txt'],
+            covers: ['balance_before'],
+            assessment: '',
+          },
+          {
+            id: 'h2',
+            claim: 'Drain <all> | funds',
+            status: 'partial',
+            evidence_paths: ['logs/h2.txt'],
+            covers: [],
+            assessment: 'Only dust moved.',
+          },
+        ],
+        missing_impact_links: ['h2'],
+        unverified_assumptions: [
+          {
+            id: 'a1',
+            assumption: 'Vault is unpaused in production',
+            kind: 'deployment',
+            material: true,
+            status: 'open',
+          },
+        ],
+        remaining_limits: 'Mainnet fork only.',
+        _engine_evidence: {
+          bug_status: 'reproduced',
+          impact_status: 'partial',
+          capture_complete: true,
+          artifact_dir: '/artifacts/90',
+          captured_paths: ['logs/h1.txt'],
+          unresolved_paths: ['logs/h2.txt'],
+          lifecycle_status: 'impact_partial',
+          policy_version: 'v2.7-impact-gate-1',
+          legacy: false,
+        },
+      },
+      stub: false,
+      stubExplanation: null,
+    },
+    {
+      id: '8',
+      postScriptId: '5',
+      postScriptName: 'v2.7 D5',
+      stage: 'd5',
+      result: {
+        submission_ready: true,
+        scope_status: 'in_scope_verified',
+        novelty_status: 'novelty_unverified',
+        missing_requirements: ['Full drain evidence'],
+        impact_match_status: 'partial',
+        impact_evidence_status: 'insufficient',
+        impact_mapping: [
+          { required_outcome: 'Vault drained', observed_outcome: 'Dust moved', status: 'missing', evidence_paths: [] },
+        ],
+        _reserved_report: '# Report\n\nBody.',
+        model_readiness_claim: true,
+        _engine_readiness: {
+          ready: false,
+          label: 'submission_ready',
+          lifecycle_status: 'impact_partial',
+          blocking_reasons: ['chain_complete: hop h2 is partial.', 'd5_match: impact_match_status is partial.'],
+          checks: { chain_complete: 'fail', d5_match: 'fail', provenance: 'pass' },
+          policy: 'public_bounty',
+          policy_version: 'v2.7-impact-gate-1',
+          evaluated_at: '2026-09-24T00:00:00.000Z',
+          legacy: false,
+        },
+      },
+      stub: false,
+      stubExplanation: null,
+    },
+  ],
+};
+
+test('finding export renders the readiness chapter, report header, manifest and lifecycle column', () => {
+  const bundle = createFindingExport(scan, [finding, gatedFinding]);
+  const files = new Map(bundle.files.map((file) => [file.path, file.content()]));
+  const directory = [...files.keys()].find((path) => path.includes('unauthorized-withdrawal')).split('/')[0];
+  const markdown = files.get(`${directory}/finding.md`);
+
+  assert.match(markdown, /## Readiness/);
+  assert.match(markdown, /\| Bug \| reproduced \|/);
+  assert.match(markdown, /\| Impact \| partial \|/);
+  assert.match(markdown, /\| Terminal outcome \| Balance decreased by 1 wei \|/);
+  assert.match(markdown, /\| Deployment \| 1 open material assumption/);
+  assert.match(markdown, /\| Scope \| in\\_scope\\_verified \|/);
+  assert.match(markdown, /\| Novelty \| novelty\\_unverified \|/);
+  assert.match(
+    markdown,
+    /\| Readiness \| submission\\_ready — not ready — chain\\_complete\\: hop h2 is partial\\. \|/
+  );
+  assert.match(markdown, /### Required versus observed outcome/);
+  assert.match(markdown, /Vault balance decreases without authorization/);
+  assert.match(markdown, /### Evidence chain/);
+  assert.match(
+    markdown,
+    /\| h1 \| Bypass check \| proven \| balance\\_before \| — \| logs\\\/h1\\.txt \(captured\) \|/
+  );
+  assert.match(
+    markdown,
+    /\| h2 \| Drain &lt;all&gt; \\\| funds \| partial \| — \| Only dust moved\\. \| logs\\\/h2\\.txt \(unresolved\) \|/
+  );
+  assert.match(markdown, /Negative control: passed/);
+  assert.match(markdown, /Repeatability: deterministic/);
+  assert.match(markdown, /### Assumptions/);
+  assert.match(markdown, /\| a1 \| Vault is unpaused in production \| deployment \| yes \| open \|/);
+  assert.match(markdown, /### Missing links[\s\S]*- h2/);
+  assert.match(markdown, /### Limitations[\s\S]*Mainnet fork only\\./);
+  assert.match(markdown, /### Readiness decision[\s\S]*\*\*NOT READY\*\* \(submission\\_ready\)/);
+  assert.match(markdown, /Policy version: v2\\.7\\-impact\\-gate\\-1/);
+  assert.match(markdown, /- chain\\_complete\\: hop h2 is partial\\./);
+  assert.match(markdown, /- d5\\_match\\: impact\\_match\\_status is partial\\./);
+  assert.match(markdown, /Model claimed readiness: yes/);
+  assert.match(markdown, /### Impact mapping[\s\S]*\| Vault drained \| Dust moved \| missing \| — \|/);
+  assert.match(markdown, /Missing requirements[\s\S]*- Full drain evidence/);
+  assert.match(markdown, /Checks: chain\\_complete fail, d5\\_match fail, provenance pass/);
+
+  const report = files.get(`${directory}/report.txt`);
+  assert.equal(
+    report,
+    '```\nNOT READY — submission_ready — impact_partial — reasons: chain_complete: hop h2 is partial.; d5_match: impact_match_status is partial.\n```\n\n# Report\n\nBody.\n'
+  );
+
+  const manifest = JSON.parse(files.get('manifest.json'));
+  assert.deepEqual(manifest.findings[1].readiness, {
+    ready: false,
+    label: 'submission_ready',
+    lifecycleStatus: 'impact_partial',
+    policyVersion: 'v2.7-impact-gate-1',
+    legacy: false,
+  });
+  assert.equal(manifest.findings[0].readiness, null);
+
+  const readme = files.get('README.md');
+  assert.match(readme, /\| Rank \| Severity \| Finding \| Report \| Lifecycle \|/);
+  assert.match(readme, /\| 1 \| Critical \| \[[^\]]+\]\([^)]+\) \| \[yes\]\([^)]+\) \| — \|/);
+  assert.match(readme, /\| 2 \| High \| \[[^\]]+\]\([^)]+\) \| \[yes\]\([^)]+\) \| impact\\_partial \(not ready\) \|/);
+  assert.match(readme, /Findings per lifecycle status: impact\\_partial 1, not gated 1\./);
+  assert.doesNotMatch(readme, /\| PoC \|/);
+});
+
+test('ready findings export a READY header and legacy decisions are labelled', () => {
+  const ready = {
+    ...gatedFinding,
+    readiness: { ...gatedFinding.readiness, ready: true, lifecycleStatus: 'report_ready', blockingReasons: [] },
+  };
+  const legacy = {
+    ...gatedFinding,
+    id: '91',
+    rank: 3,
+    summary: 'Legacy finding',
+    readiness: {
+      stage: 'd4',
+      ready: false,
+      label: 'report_ready',
+      lifecycleStatus: 'legacy_bug_reproduced_impact_unverified',
+      policyVersion: 'legacy-unverified',
+      legacy: true,
+      blockingReasons: [
+        'Readiness was not evaluated: the pipeline ended at D4 with lifecycle "legacy_bug_reproduced_impact_unverified".',
+      ],
+      evidence: null,
+      lifecycle: null,
+      readiness: null,
+    },
+    enrichments: [
+      {
+        id: '9',
+        postScriptId: '4',
+        postScriptName: 'v2.7 D4',
+        stage: 'd4',
+        result: {
+          poc_status: 'reproduced',
+          _reserved_report: 'Legacy report',
+          _engine_evidence: {
+            bug_status: 'reproduced',
+            impact_status: 'unverified',
+            capture_complete: false,
+            artifact_dir: '',
+            captured_paths: [],
+            unresolved_paths: [],
+            lifecycle_status: 'legacy_bug_reproduced_impact_unverified',
+            policy_version: 'legacy-unverified',
+            legacy: true,
+          },
+        },
+        stub: false,
+        stubExplanation: null,
+      },
+    ],
+  };
+  const bundle = createFindingExport(scan, [ready, legacy]);
+  const files = new Map(bundle.files.map((file) => [file.path, file.content()]));
+  const readyDirectory = [...files.keys()].find((path) => path.includes('unauthorized-withdrawal')).split('/')[0];
+  const legacyDirectory = [...files.keys()].find((path) => path.includes('legacy-finding')).split('/')[0];
+
+  assert.equal(
+    files.get(`${readyDirectory}/report.txt`),
+    '```\nREADY under v2.7-impact-gate-1\n```\n\n# Report\n\nBody.\n'
+  );
+  assert.match(files.get(`${readyDirectory}/finding.md`), /\*\*READY\*\* \(submission\\_ready\)/);
+  assert.match(
+    files.get(`${legacyDirectory}/report.txt`),
+    /^```\nNOT READY — report_ready — legacy_bug_reproduced_impact_unverified — reasons: Readiness was not evaluated/
+  );
+  const legacyMarkdown = files.get(`${legacyDirectory}/finding.md`);
+  assert.match(legacyMarkdown, /## Readiness/);
+  assert.match(legacyMarkdown, /\| Impact \| unverified \|/);
+  assert.match(legacyMarkdown, /Legacy decision: yes/);
+  assert.match(legacyMarkdown, /Policy version: legacy\\-unverified/);
+  assert.match(
+    files.get('README.md'),
+    /Findings per lifecycle status: report\\_ready 1, legacy\\_bug\\_reproduced\\_impact\\_unverified 1\./
+  );
+  const manifest = JSON.parse(files.get('manifest.json'));
+  assert.equal(manifest.findings[0].readiness.ready, true);
+  assert.equal(manifest.findings[1].readiness.legacy, true);
 });

@@ -1,0 +1,183 @@
+{
+  "name": "observed_outcome_weaker_than_bounty_impact",
+  "scan": {
+    "id": 1,
+    "configuration": {
+      "investigation_kind": "public_bounty",
+      "investigation_kind_source": "user",
+      "readiness_policy_version": "v2.7-impact-gate-1"
+    }
+  },
+  "d3": {
+    "verdict": "confirmed",
+    "reason": "anyone can set the withdrawal pause flag",
+    "reachability_evidence": "entry point reachable by an unprivileged caller",
+    "guard_analysis": "no guard prevents the path",
+    "impact_evidence": "anyone can set the withdrawal pause flag",
+    "negative_control_plan": "run the same path with the guard satisfied and expect a revert",
+    "missing_evidence": "",
+    "novelty_status": "novel_verified",
+    "scope_status": "in_scope_verified",
+    "bug_claim": "anyone can set the withdrawal pause flag",
+    "impact_claim": "user funds are permanently frozen",
+    "impact_family": "permanent_freezing",
+    "impact_objective": {
+      "claim": "user funds are permanently frozen",
+      "source_type": "bounty_rule",
+      "source_reference": "bounty_rule reference for permanent_freezing",
+      "affected_subject": "target component",
+      "terminal_outcome": "user funds are permanently frozen",
+      "required_evidence": [
+        "captured before/after state",
+        "negative control",
+        "repeat run"
+      ]
+    },
+    "evidence_dimensions": [
+      {
+        "tag": "affected_value",
+        "status": "required",
+        "rationale": ""
+      },
+      {
+        "tag": "irrecoverability_under_recovery_model",
+        "status": "required",
+        "rationale": ""
+      },
+      {
+        "tag": "terminal_outcome",
+        "status": "required",
+        "rationale": ""
+      }
+    ],
+    "impact_chain_plan": [
+      {
+        "id": "hop-1",
+        "claim": "withdrawals revert while the flag is set",
+        "status": "unverified",
+        "evidence_paths": [],
+        "covers": [
+          "affected_value"
+        ],
+        "assessment": ""
+      },
+      {
+        "id": "hop-2",
+        "claim": "funds cannot be recovered under any recovery path",
+        "status": "unverified",
+        "evidence_paths": [],
+        "covers": [
+          "irrecoverability_under_recovery_model",
+          "terminal_outcome"
+        ],
+        "assessment": ""
+      }
+    ],
+    "unverified_assumptions": [],
+    "falsification_plan": "show the guard blocks the path or the terminal state does not change",
+    "first_unsupported_hop": "hop-1",
+    "impact_definition_status": "defined"
+  },
+  "d4": {
+    "poc_status": "reproduced",
+    "poc_command": "python3 poc.py",
+    "poc_expected": "terminal state changes",
+    "poc_observed": "withdrawals reverted until the owner cleared the flag in the next block",
+    "poc_stdout": "",
+    "poc_stderr": "",
+    "poc_exit_code": 0,
+    "negative_control_command": "python3 poc.py --control",
+    "negative_control_observed": "rejected",
+    "negative_control_exit_code": 1,
+    "repeat_count": 3,
+    "poc_artifact_paths": [
+      "poc.py",
+      "attack.log",
+      "control.log",
+      "repeat.log"
+    ],
+    "poc_artifact_dir": "",
+    "remaining_limits": "",
+    "_reserved_poc": "model narrative of the run",
+    "bug_status": "reproduced",
+    "impact_status": "proven",
+    "blocker_kind": "none",
+    "observed_behavior": "the defective path executed",
+    "claimed_impact": "withdrawals reverted until the owner cleared the flag in the next block",
+    "observed_terminal_outcome": "withdrawals reverted until the owner cleared the flag in the next block",
+    "impact_chain": [
+      {
+        "id": "hop-1",
+        "claim": "withdrawals revert while the flag is set",
+        "status": "proven",
+        "evidence_paths": [
+          "attack.log"
+        ],
+        "covers": [
+          "affected_value"
+        ],
+        "assessment": ""
+      },
+      {
+        "id": "hop-2",
+        "claim": "funds cannot be recovered under any recovery path",
+        "status": "proven",
+        "evidence_paths": [
+          "pause-state.json"
+        ],
+        "covers": [
+          "irrecoverability_under_recovery_model",
+          "terminal_outcome"
+        ],
+        "assessment": ""
+      }
+    ],
+    "impact_artifact_paths": [
+      "pause-state.json"
+    ],
+    "missing_impact_links": [],
+    "unverified_assumptions": [],
+    "negative_control_status": "passed",
+    "repeatability_status": "deterministic"
+  },
+  "manifest": {
+    "artifact_dir": "poc-artifacts/scan-1/finding-2/metadata-3",
+    "files": [
+      "poc.py",
+      "attack.log",
+      "control.log",
+      "repeat.log",
+      "pause-state.json"
+    ],
+    "capture_complete": true
+  },
+  "d5": {
+    "submission_ready": true,
+    "scope_status": "in_scope_verified",
+    "severity": "high",
+    "novelty_status": "novel_verified",
+    "impact_evidence": "withdrawals paused for one block; owner can clear the flag",
+    "missing_requirements": [],
+    "artifact_reference": "poc-artifacts/scan-1/finding-2/metadata-3",
+    "_reserved_report": "report body",
+    "scope_evidence": "asset listed in the engagement",
+    "novelty_evidence": "no prior report found",
+    "impact_match_status": "partial",
+    "impact_evidence_status": "contradictory",
+    "impact_mapping": [
+      {
+        "required_outcome": "user funds are permanently frozen",
+        "observed_outcome": "withdrawals paused for one block; owner can clear the flag",
+        "status": "contradicted",
+        "evidence_paths": [
+          "pause-state.json"
+        ]
+      }
+    ],
+    "report_readiness_reason": "required and observed outcomes compared"
+  },
+  "expected": {
+    "lifecycle_status": "impact_proven",
+    "ready": false
+  }
+}

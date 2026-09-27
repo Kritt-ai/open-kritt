@@ -1,0 +1,27 @@
+{
+  "benchmark_id": "somnia-2025-openkritt-recall",
+  "target_repository": "https://github.com/hackenproof-public/somnia",
+  "historical_source_repository": "https://github.com/metaversal-foundation/somnia-audit-repo",
+  "contest_window": { "starts": "2025-08-06", "ends": "2025-09-20" },
+  "candidate_commits": [
+    {
+      "sha": "ea5c191a893153fe020aac35532bbcaca0f8c5d1",
+      "basis": "Referenced by separate contest reports created on 2025-08-27 and 2025-09-12; not proven for all three benchmark reports."
+    },
+    {
+      "sha": "5931d305dd6fb02b637efd2fca13e77731d05804",
+      "basis": "Referenced by separate contest reports created on 2025-08-24 and 2025-08-25; likely older than the benchmark reports."
+    }
+  ],
+  "precontest_audit_commit": "0af8c04569b626dd5c0cace903998b9ec06ab5a6",
+  "resolved_commit": null,
+  "tree_sha256": null,
+  "source_provenance": null,
+  "verification_status": "blocked_source_unavailable",
+  "contains_expected_vulnerable_code": null,
+  "retrieval_attempts": [
+    "Original and historical GitHub repositories return 404.",
+    "No matching Git object was found through GitHub search, GitHub Archive events, Common Crawl, or Software Heritage.",
+    "No local Somnia checkout or archive was found under the user's home directory or /Volumes/T9."
+  ]
+}

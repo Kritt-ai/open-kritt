@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from . import known_issues as known_issues_module
 from .account_activity import (
     API_ACCOUNT_KEYS,
     AccountInactiveError,
@@ -28,12 +29,16 @@ from .account_activity import (
     read_account_activity,
 )
 from .claude_auth import CLAUDE_OAUTH_EXPIRY_ENV, prepare_claude_job_credentials
+from .known_issues import CORPUS_DIR as KNOWN_ISSUES_CORPUS_DIR
+from .known_issues import ENGINE_WORKSPACE_DIR
 from .provider_credentials import job_environment, provider_environment
 from .repository import (
     LOCAL_SNAPSHOT_REVISION,
     checkout_repo,
     copy_checkout,
     copy_local_snapshot,
+    is_local_snapshot_revision,
+    local_snapshot_revision,
     normalize_repo_full,
     resolve_remote_head,
     snapshot_local_repo,
@@ -55,7 +60,7 @@ _PROVIDER_ACCOUNT_GATES: dict[tuple[str, str], "_ProviderAccountGate"] = {}
 _PROVIDER_ACCOUNT_GATES_LOCK = threading.Lock()
 CACHE_READY_FILENAME = ".open-kritt-ready.json"
 CACHE_MARKER_VERSION = 3
-RESERVED_WORKSPACE_ENTRIES = {"WORKSPACE.json", "WORKSPACE.md"}
+RESERVED_WORKSPACE_ENTRIES = {"WORKSPACE.json", "WORKSPACE.md", ENGINE_WORKSPACE_DIR}
 LOGGER = logging.getLogger("open_kritt_engine.workspace")
 SCAN_RUNNER_WORKDIR = "/workspace"
 SELECTED_AGENT_SKILLS_SLUG = "open-kritt-selected-skills"
@@ -517,10 +522,11 @@ def _prepare_dependency_snapshot_workspace(
         },
         "dependencies": dependencies,
     }
-    manifest_json = json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True)
-    layout = workspace_layout(SCAN_RUNNER_WORKDIR, manifest)
     repo_dir = Path(workspace.root_dir) / "workspace"
     repo_dir.mkdir(parents=True, exist_ok=True)
+    _attach_known_issues(manifest, primary_cache_checkout, repo_dir, cache_dir)
+    manifest_json = json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True)
+    layout = workspace_layout(SCAN_RUNNER_WORKDIR, manifest)
     _write_workspace_files(str(repo_dir), manifest, layout, manifest_json)
 
     image_started = time.perf_counter()
@@ -637,6 +643,7 @@ def _prepare_dependency_workspace_tree(
         "dependencies": dependency_entries,
     }
     manifest_started = time.perf_counter()
+    _attach_known_issues(manifest, repo_dir, repo_dir, cache_dir)
     manifest_json = json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True)
     layout = workspace_layout(repo_dir, manifest)
     _write_workspace_files(repo_dir, manifest, layout, manifest_json)
@@ -1063,6 +1070,15 @@ def workspace_layout(repo_dir: str, manifest: dict[str, Any]) -> str:
             )
     else:
         lines.append("No dependency checkouts are listed in WORKSPACE.json.")
+    known_issues = manifest.get("known_issues") if isinstance(manifest, dict) else None
+    if known_issues:
+        converted = sum(1 for entry in known_issues if entry.get("status") == "converted")
+        unreadable = len(known_issues) - converted
+        lines.append(
+            f"Known-issue corpus: {KNOWN_ISSUES_CORPUS_DIR}/INDEX.md lists text extracted from {converted} of the "
+            f"target's audit PDFs ({unreadable} unreadable). Search it for the root cause, function, and invariant "
+            "before claiming novelty; treat unreadable sources as unverified."
+        )
     return "\n".join(lines)
 
 
@@ -1259,8 +1275,8 @@ def _read_ready_cache_checkout(cache_base: Path) -> tuple[str, str] | None:
             repo_path = Path(repo_dir) if isinstance(repo_dir, str) else None
         if repo_path is not None and isinstance(commit, str) and commit and _path_is_inside(repo_path, cache_base):
             if kind == "local":
-                if commit == LOCAL_SNAPSHOT_REVISION and repo_path.is_dir() and not repo_path.is_symlink():
-                    return str(repo_path), commit
+                if is_local_snapshot_revision(commit) and repo_path.is_dir() and not repo_path.is_symlink():
+                    return str(repo_path), local_snapshot_revision(repo_path)
             elif _git_head_commit(repo_path) == commit:
                 return str(repo_path), commit
         return None
@@ -1400,6 +1416,21 @@ def _alias_available(repo_dir: str, alias: str, used_aliases: set[str]) -> bool:
 def _safe_alias(value: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "")).strip("._-")
     return safe or "dependency"
+
+
+def _attach_known_issues(manifest: dict[str, Any], source_root: Any, target_root: Any, cache_dir: Any) -> None:
+    try:
+        entries = known_issues_module.build_known_issues_corpus(
+            Path(source_root),
+            Path(target_root),
+            cache_dir=Path(cache_dir) / "known-issues",
+            converter=known_issues_module.pdftotext_converter,
+        )
+    except Exception:
+        LOGGER.warning("could not build the known-issues corpus for %s", source_root, exc_info=True)
+        return
+    if entries:
+        manifest["known_issues"] = entries
 
 
 def _write_workspace_files(repo_dir: str, manifest: dict[str, Any], layout: str, manifest_json: str):

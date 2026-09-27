@@ -1,0 +1,196 @@
+{
+  "name": "state_corruption_without_downstream_consequence",
+  "scan": {
+    "id": 1,
+    "configuration": {
+      "investigation_kind": "audit_competition",
+      "investigation_kind_source": "user",
+      "readiness_policy_version": "v2.7-impact-gate-1"
+    }
+  },
+  "d3": {
+    "verdict": "confirmed",
+    "reason": "setPrice() lacks an access check",
+    "reachability_evidence": "entry point reachable by an unprivileged caller",
+    "guard_analysis": "no guard prevents the path",
+    "impact_evidence": "setPrice() lacks an access check",
+    "negative_control_plan": "run the same path with the guard satisfied and expect a revert",
+    "missing_evidence": "",
+    "novelty_status": "novel_verified",
+    "scope_status": "in_scope_verified",
+    "bug_claim": "setPrice() lacks an access check",
+    "impact_claim": "the lending module acts on an attacker-controlled price",
+    "impact_family": "integrity_violation",
+    "impact_objective": {
+      "claim": "the lending module acts on an attacker-controlled price",
+      "source_type": "engagement_scope",
+      "source_reference": "engagement_scope reference for integrity_violation",
+      "affected_subject": "target component",
+      "terminal_outcome": "the lending module acts on an attacker-controlled price",
+      "required_evidence": [
+        "captured before/after state",
+        "negative control",
+        "repeat run"
+      ]
+    },
+    "evidence_dimensions": [
+      {
+        "tag": "trusted_value_before",
+        "status": "required",
+        "rationale": ""
+      },
+      {
+        "tag": "trusted_value_after",
+        "status": "required",
+        "rationale": ""
+      },
+      {
+        "tag": "unauthorized_mutation",
+        "status": "required",
+        "rationale": ""
+      },
+      {
+        "tag": "downstream_consumer",
+        "status": "required",
+        "rationale": ""
+      },
+      {
+        "tag": "terminal_outcome",
+        "status": "required",
+        "rationale": ""
+      }
+    ],
+    "impact_chain_plan": [
+      {
+        "id": "hop-1",
+        "claim": "the price cache can be overwritten by any caller",
+        "status": "unverified",
+        "evidence_paths": [],
+        "covers": [
+          "trusted_value_before",
+          "unauthorized_mutation",
+          "trusted_value_after"
+        ],
+        "assessment": ""
+      },
+      {
+        "id": "hop-2",
+        "claim": "the lending module consumes the corrupted price",
+        "status": "unverified",
+        "evidence_paths": [],
+        "covers": [
+          "downstream_consumer",
+          "terminal_outcome"
+        ],
+        "assessment": ""
+      }
+    ],
+    "unverified_assumptions": [],
+    "falsification_plan": "show the guard blocks the path or the terminal state does not change",
+    "first_unsupported_hop": "hop-1",
+    "impact_definition_status": "defined"
+  },
+  "d4": {
+    "poc_status": "reproduced",
+    "poc_command": "python3 poc.py",
+    "poc_expected": "terminal state changes",
+    "poc_observed": "cache value changed; no downstream read observed",
+    "poc_stdout": "",
+    "poc_stderr": "",
+    "poc_exit_code": 0,
+    "negative_control_command": "python3 poc.py --control",
+    "negative_control_observed": "rejected",
+    "negative_control_exit_code": 1,
+    "repeat_count": 3,
+    "poc_artifact_paths": [
+      "poc.py",
+      "attack.log",
+      "control.log",
+      "repeat.log"
+    ],
+    "poc_artifact_dir": "",
+    "remaining_limits": "",
+    "_reserved_poc": "model narrative of the run",
+    "bug_status": "reproduced",
+    "impact_status": "partial",
+    "blocker_kind": "none",
+    "observed_behavior": "the defective path executed",
+    "claimed_impact": "cache value changed; no downstream read observed",
+    "observed_terminal_outcome": "cache value changed; no downstream read observed",
+    "impact_chain": [
+      {
+        "id": "hop-1",
+        "claim": "the price cache can be overwritten by any caller",
+        "status": "proven",
+        "evidence_paths": [
+          "cache-before-after.json"
+        ],
+        "covers": [
+          "trusted_value_before",
+          "unauthorized_mutation",
+          "trusted_value_after"
+        ],
+        "assessment": ""
+      },
+      {
+        "id": "hop-2",
+        "claim": "the lending module consumes the corrupted price",
+        "status": "partial",
+        "evidence_paths": [
+          "attack.log"
+        ],
+        "covers": [],
+        "assessment": "the lending module re-reads the oracle and ignores the cache in this build"
+      }
+    ],
+    "impact_artifact_paths": [
+      "cache-before-after.json"
+    ],
+    "missing_impact_links": [
+      "hop-2"
+    ],
+    "unverified_assumptions": [],
+    "negative_control_status": "passed",
+    "repeatability_status": "deterministic"
+  },
+  "manifest": {
+    "artifact_dir": "poc-artifacts/scan-1/finding-2/metadata-3",
+    "files": [
+      "poc.py",
+      "attack.log",
+      "control.log",
+      "repeat.log",
+      "cache-before-after.json"
+    ],
+    "capture_complete": true
+  },
+  "d5": {
+    "submission_ready": false,
+    "scope_status": "in_scope_verified",
+    "severity": "high",
+    "novelty_status": "novel_verified",
+    "impact_evidence": "cache overwritten only",
+    "missing_requirements": [],
+    "artifact_reference": "poc-artifacts/scan-1/finding-2/metadata-3",
+    "_reserved_report": "report body",
+    "scope_evidence": "asset listed in the engagement",
+    "novelty_evidence": "no prior report found",
+    "impact_match_status": "partial",
+    "impact_evidence_status": "insufficient",
+    "impact_mapping": [
+      {
+        "required_outcome": "lending module acts on corrupted price",
+        "observed_outcome": "cache overwritten only",
+        "status": "missing",
+        "evidence_paths": [
+          "cache-before-after.json"
+        ]
+      }
+    ],
+    "report_readiness_reason": "required and observed outcomes compared"
+  },
+  "expected": {
+    "lifecycle_status": "impact_partial",
+    "ready": false
+  }
+}

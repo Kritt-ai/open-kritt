@@ -1,6 +1,10 @@
 // Key/type constants and helpers — mirror the backend rules so the UI can
 // validate live before submitting.
 
+import { FIELD_TYPES, displayType, isStructuredDefinition, normalizeFieldDefinition } from './fieldDefinitions.js';
+
+export { FIELD_TYPES };
+
 export const BUILTIN_KEYS = [
   'repo_full',
   'commit_sha',
@@ -32,8 +36,6 @@ export const RESERVED_POST_SCRIPT_KEYS = [...BUILTIN_KEYS, EXTRA_KEY, ...REQUIRE
 
 export const POST_SCRIPT_MARKDOWN_OUTPUT_KEYS = ['_reserved_report', '_reserved_poc'];
 export const POST_SCRIPT_CHIP_PREFIX = '_chip_';
-
-export const FIELD_TYPES = ['string', 'number', 'boolean', 'array'];
 
 // The collapsed array key a step gets when it batch-consumes a whole previous depth.
 export const multiOutputDepthKey = (depth) => `multi_output_depth_${depth}`;
@@ -164,16 +166,23 @@ const UNSAFE_OBJECT_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 export const isValidKey = (k) =>
   typeof k === 'string' && /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(k) && !UNSAFE_OBJECT_KEYS.has(k);
 
-// schema rows ([{key,type}]) -> { key: type } object
+// schema rows ([{ key, type, definition, structured }]) -> { key: definition } object.
+// Structured rows write their nested descriptor back; plain rows write the type name.
 export function rowsToObject(rows) {
   const o = {};
   rows.forEach((r) => {
-    if (r.key) o[r.key] = r.type;
+    if (!r.key) return;
+    o[r.key] = r.structured && r.definition !== undefined && r.definition !== null ? r.definition : r.type;
   });
   return o;
 }
 
-// { key: type } object -> schema rows
+// { key: definition } object -> schema rows. A nested descriptor becomes a
+// `structured` row whose `type` is its display label (e.g. `array<object>`).
 export function objectToRows(obj) {
-  return Object.entries(obj || {}).map(([key, type]) => ({ key, type: typeof type === 'string' ? type : 'string' }));
+  return Object.entries(obj || {}).map(([key, value]) => {
+    const definition = normalizeFieldDefinition(value);
+    const structured = isStructuredDefinition(definition);
+    return { key, type: structured ? displayType(definition) : definition, definition, structured };
+  });
 }

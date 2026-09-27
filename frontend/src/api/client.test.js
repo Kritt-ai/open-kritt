@@ -217,6 +217,20 @@ describe('scan lifecycle API', () => {
     expect(request.options.method).toBe('DELETE');
   });
 
+  it('treats an already deleted scan as a successful idempotent delete', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({
+      ok: false,
+      status: 404,
+      json: async () => ({ error: 'Scan not found.' }),
+    });
+    try {
+      await expect(api.deleteScan('58')).resolves.toBeNull();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('downloads a completed scan finding archive with the server filename', async () => {
     const originalFetch = globalThis.fetch;
     let request;

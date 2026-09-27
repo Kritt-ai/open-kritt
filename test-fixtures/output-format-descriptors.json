@@ -1,0 +1,584 @@
+{
+  "description": "Shared cases for output-format field definitions. Consumed by backend (node:test), frontend (vitest), and engine (pytest) validators so the three implementations agree. `errorPath` is the descriptor path the FIRST reported error must carry.",
+  "cases": [
+    {
+      "name": "legacy type names validate unchanged",
+      "outputFormat": {
+        "summary": "string",
+        "line": "number",
+        "exploitable": "boolean",
+        "trigger_flow": "array",
+        "meta": "object"
+      },
+      "valid": true
+    },
+    {
+      "name": "legacy type-only descriptors keep array-of-strings and free-object meaning",
+      "outputFormat": {
+        "paths": {
+          "type": "array"
+        },
+        "meta": {
+          "type": "object"
+        }
+      },
+      "valid": true,
+      "normalizedEquals": {
+        "paths": "array",
+        "meta": "object"
+      }
+    },
+    {
+      "name": "nested impact chain descriptor",
+      "outputFormat": {
+        "impact_chain": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "fields": {
+              "id": "string",
+              "claim": "string",
+              "status": {
+                "type": "string",
+                "enum": [
+                  "proven",
+                  "falsified",
+                  "partial",
+                  "unverified",
+                  "blocked",
+                  "not_applicable"
+                ]
+              },
+              "evidence_paths": {
+                "type": "array",
+                "items": "string"
+              },
+              "covers": {
+                "type": "array",
+                "items": "string"
+              },
+              "assessment": "string"
+            },
+            "required": [
+              "id",
+              "claim",
+              "status",
+              "evidence_paths",
+              "covers",
+              "assessment"
+            ]
+          }
+        }
+      },
+      "valid": true
+    },
+    {
+      "name": "object descriptor nested inside object",
+      "outputFormat": {
+        "impact_objective": {
+          "type": "object",
+          "fields": {
+            "claim": "string",
+            "source": {
+              "type": "object",
+              "fields": {
+                "kind": "string",
+                "reference": "string"
+              }
+            },
+            "required_evidence": {
+              "type": "array",
+              "items": "string"
+            }
+          }
+        }
+      },
+      "valid": true
+    },
+    {
+      "name": "required defaults to every declared field and may be a subset",
+      "outputFormat": {
+        "x": {
+          "type": "object",
+          "fields": {
+            "a": "string",
+            "b": "number"
+          },
+          "required": [
+            "a"
+          ]
+        }
+      },
+      "valid": true
+    },
+    {
+      "name": "array descriptor with fields is rejected",
+      "outputFormat": {
+        "x": {
+          "type": "array",
+          "items": "string",
+          "fields": {
+            "a": "string"
+          }
+        }
+      },
+      "valid": false,
+      "errorPath": "outputFormat.x.fields"
+    },
+    {
+      "name": "new array descriptor without items is rejected",
+      "outputFormat": {
+        "x": {
+          "type": "array",
+          "required": []
+        }
+      },
+      "valid": false,
+      "errorPath": "outputFormat.x.items"
+    },
+    {
+      "name": "object descriptor with empty fields is rejected",
+      "outputFormat": {
+        "x": {
+          "type": "object",
+          "fields": {}
+        }
+      },
+      "valid": false,
+      "errorPath": "outputFormat.x.fields"
+    },
+    {
+      "name": "empty enum is rejected",
+      "outputFormat": {
+        "x": {
+          "type": "string",
+          "enum": []
+        }
+      },
+      "valid": false,
+      "errorPath": "outputFormat.x.enum"
+    },
+    {
+      "name": "duplicate enum values are rejected",
+      "outputFormat": {
+        "x": {
+          "type": "string",
+          "enum": [
+            "a",
+            "a"
+          ]
+        }
+      },
+      "valid": false,
+      "errorPath": "outputFormat.x.enum"
+    },
+    {
+      "name": "enum on a non-string is rejected",
+      "outputFormat": {
+        "x": {
+          "type": "number",
+          "enum": [
+            "1"
+          ]
+        }
+      },
+      "valid": false,
+      "errorPath": "outputFormat.x.enum"
+    },
+    {
+      "name": "required entry that is not a declared field is rejected",
+      "outputFormat": {
+        "x": {
+          "type": "object",
+          "fields": {
+            "a": "string"
+          },
+          "required": [
+            "b"
+          ]
+        }
+      },
+      "valid": false,
+      "errorPath": "outputFormat.x.required"
+    },
+    {
+      "name": "unknown descriptor key is rejected",
+      "outputFormat": {
+        "x": {
+          "type": "string",
+          "pattern": "^a"
+        }
+      },
+      "valid": false,
+      "errorPath": "outputFormat.x.pattern"
+    },
+    {
+      "name": "unknown type is rejected",
+      "outputFormat": {
+        "x": {
+          "type": "integer"
+        }
+      },
+      "valid": false,
+      "errorPath": "outputFormat.x.type"
+    },
+    {
+      "name": "nested error carries the full path",
+      "outputFormat": {
+        "impact_chain": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "fields": {
+              "status": {
+                "type": "string",
+                "enum": []
+              }
+            }
+          }
+        }
+      },
+      "valid": false,
+      "errorPath": "outputFormat.impact_chain.items.fields.status.enum"
+    },
+    {
+      "name": "depth beyond four is rejected",
+      "outputFormat": {
+        "deep": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "items": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "valid": false,
+      "errorPath": "outputFormat.deep.items.items.items.items"
+    },
+    {
+      "name": "engine-owned prefix is reserved",
+      "outputFormat": {
+        "_engine_readiness": "string"
+      },
+      "valid": false,
+      "errorPath": "outputFormat._engine_readiness"
+    },
+    {
+      "name": "engine-owned lifecycle chip is reserved",
+      "outputFormat": {
+        "_chip_lifecycle": "string"
+      },
+      "valid": false,
+      "errorPath": "outputFormat._chip_lifecycle"
+    },
+    {
+      "name": "other chips stay user-declarable",
+      "outputFormat": {
+        "_chip_ease_of_exploitability": "number"
+      },
+      "valid": true
+    },
+    {
+      "name": "depth of exactly four descriptors is allowed",
+      "outputFormat": {
+        "d": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "items": "string"
+              }
+            }
+          }
+        }
+      },
+      "valid": true
+    },
+    {
+      "name": "exactly 64 fields in total is allowed",
+      "outputFormat": {
+        "d": {
+          "type": "object",
+          "fields": {
+            "k0": "string",
+            "k1": "string",
+            "k2": "string",
+            "k3": "string",
+            "k4": "string",
+            "k5": "string",
+            "k6": "string",
+            "k7": "string",
+            "k8": "string",
+            "k9": "string",
+            "k10": "string",
+            "k11": "string",
+            "k12": "string",
+            "k13": "string",
+            "k14": "string",
+            "k15": "string",
+            "k16": "string",
+            "k17": "string",
+            "k18": "string",
+            "k19": "string",
+            "k20": "string",
+            "k21": "string",
+            "k22": "string",
+            "k23": "string",
+            "k24": "string",
+            "k25": "string",
+            "k26": "string",
+            "k27": "string",
+            "k28": "string",
+            "k29": "string",
+            "k30": "string",
+            "k31": "string",
+            "k32": "string",
+            "k33": "string",
+            "k34": "string",
+            "k35": "string",
+            "k36": "string",
+            "k37": "string",
+            "k38": "string",
+            "k39": "string",
+            "k40": "string",
+            "k41": "string",
+            "k42": "string",
+            "k43": "string",
+            "k44": "string",
+            "k45": "string",
+            "k46": "string",
+            "k47": "string",
+            "k48": "string",
+            "k49": "string",
+            "k50": "string",
+            "k51": "string",
+            "k52": "string",
+            "k53": "string",
+            "k54": "string",
+            "k55": "string",
+            "k56": "string",
+            "k57": "string",
+            "k58": "string",
+            "k59": "string",
+            "k60": "string",
+            "k61": "string",
+            "k62": "string",
+            "k63": "string"
+          }
+        }
+      },
+      "valid": true
+    },
+    {
+      "name": "65 fields in total is rejected",
+      "outputFormat": {
+        "d": {
+          "type": "object",
+          "fields": {
+            "k0": "string",
+            "k1": "string",
+            "k2": "string",
+            "k3": "string",
+            "k4": "string",
+            "k5": "string",
+            "k6": "string",
+            "k7": "string",
+            "k8": "string",
+            "k9": "string",
+            "k10": "string",
+            "k11": "string",
+            "k12": "string",
+            "k13": "string",
+            "k14": "string",
+            "k15": "string",
+            "k16": "string",
+            "k17": "string",
+            "k18": "string",
+            "k19": "string",
+            "k20": "string",
+            "k21": "string",
+            "k22": "string",
+            "k23": "string",
+            "k24": "string",
+            "k25": "string",
+            "k26": "string",
+            "k27": "string",
+            "k28": "string",
+            "k29": "string",
+            "k30": "string",
+            "k31": "string",
+            "k32": "string",
+            "k33": "string",
+            "k34": "string",
+            "k35": "string",
+            "k36": "string",
+            "k37": "string",
+            "k38": "string",
+            "k39": "string",
+            "k40": "string",
+            "k41": "string",
+            "k42": "string",
+            "k43": "string",
+            "k44": "string",
+            "k45": "string",
+            "k46": "string",
+            "k47": "string",
+            "k48": "string",
+            "k49": "string",
+            "k50": "string",
+            "k51": "string",
+            "k52": "string",
+            "k53": "string",
+            "k54": "string",
+            "k55": "string",
+            "k56": "string",
+            "k57": "string",
+            "k58": "string",
+            "k59": "string",
+            "k60": "string",
+            "k61": "string",
+            "k62": "string",
+            "k63": "string",
+            "k64": "string"
+          }
+        }
+      },
+      "valid": false,
+      "errorPath": "outputFormat.d"
+    },
+    {
+      "name": "duplicate required entries are rejected",
+      "outputFormat": {
+        "x": {
+          "type": "object",
+          "fields": {
+            "a": "string"
+          },
+          "required": [
+            "a",
+            "a"
+          ]
+        }
+      },
+      "valid": false,
+      "errorPath": "outputFormat.x.required"
+    }
+  ],
+  "payloadCases": [
+    {
+      "name": "valid chain payload passes",
+      "outputFormat": {
+        "impact_chain": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "fields": {
+              "id": "string",
+              "status": {
+                "type": "string",
+                "enum": [
+                  "proven",
+                  "unverified"
+                ]
+              },
+              "evidence_paths": {
+                "type": "array",
+                "items": "string"
+              }
+            }
+          }
+        }
+      },
+      "result": {
+        "impact_chain": [
+          {
+            "id": "hop-1",
+            "status": "proven",
+            "evidence_paths": [
+              "attack.log"
+            ]
+          }
+        ]
+      },
+      "valid": true
+    },
+    {
+      "name": "enum violation fails",
+      "outputFormat": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "a",
+            "b"
+          ]
+        }
+      },
+      "result": {
+        "status": "c"
+      },
+      "valid": false
+    },
+    {
+      "name": "extra property inside declared object fails",
+      "outputFormat": {
+        "x": {
+          "type": "object",
+          "fields": {
+            "a": "string"
+          }
+        }
+      },
+      "result": {
+        "x": {
+          "a": "1",
+          "b": "2"
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "missing required nested field fails",
+      "outputFormat": {
+        "x": {
+          "type": "object",
+          "fields": {
+            "a": "string",
+            "b": "string"
+          }
+        }
+      },
+      "result": {
+        "x": {
+          "a": "1"
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "legacy array still accepts strings only",
+      "outputFormat": {
+        "paths": "array"
+      },
+      "result": {
+        "paths": [
+          {
+            "not": "a string"
+          }
+        ]
+      },
+      "valid": false
+    }
+  ]
+}

@@ -24,7 +24,19 @@ Open any scan to see:
   rate-limited scans show when their automatic retry is due.
 - **Findings** - the list of vulnerabilities, ordered by your ranker and annotated with
   [chips](/post-scripts/chips) from post-scripts. Findings with post-processing added after
-  the scan show a `+post ×N` indicator that remains cumulative across multiple runs.
+  the scan show a `+post ×N` indicator that remains cumulative across multiple runs. On a
+  gated workflow every finding also shows a `lifecycle` chip
+  ([investigation kind and readiness](/scans/investigation-kind-and-readiness)).
+- **Scan graph** - the workflow drawn as one box per step, in columns by depth. Each box
+  shows completed over expected lineages, a bar of completed, running, failed, and
+  interrupted attempts, and how many records (or findings, for the last depth) the step
+  emitted. Edges are labelled with the lineages that flowed between two steps; a dashed
+  edge means some expected lineages have not been attempted yet. Below the steps, the
+  post-processing funnel shows raw, canonical, and duplicate findings, then each
+  post-script with its attempt counts and a breakdown of result values such as
+  `poc_status` or `verdict`; the gated D3, D4, and D5 stages break down by
+  `_engine_lifecycle.lifecycle_status` instead. The panel refreshes every two seconds
+  while the scan is active and can be collapsed.
 
 ## The findings list
 
@@ -32,6 +44,50 @@ Each row summarizes a finding - its title, location, and a few chips. Findings a
 the ranking rules you set on the scan, so the highest-priority results sit at the top.
 
 Click any finding to open the [vulnerability view](/scan-results/vulnerability-view).
+
+## The Evidence card
+
+On a workflow with a readiness gate, the finding page shows an **Evidence** card above the
+post-script cards whenever an engine block (`_engine_lifecycle`, `_engine_evidence`, or
+`_engine_readiness`) exists for the finding:
+
+- **Dimensions table** - Bug, Impact, Terminal outcome, Deployment (open material
+  assumptions), Scope, Novelty, and Readiness (label, ready, first blocking reason), each
+  as its own state. A reproduced bug with an unproven impact shows exactly that.
+- **Required versus observed** - the D3 `terminal_outcome` beside the D4
+  `observed_terminal_outcome`.
+- **Impact chain** - one row per hop: id, claim, status, covered evidence dimensions,
+  assessment, and each evidence path marked **captured** or **unresolved** against the
+  artifact manifest.
+- **Missing links, assumptions, and mapping** - the D4 `missing_impact_links`, the
+  structured assumptions with their `material` and `status` flags, and the D5
+  required-versus-observed `impact_mapping`.
+- **Blocking reasons** - the full list from the engine decision, each with the check name
+  that failed.
+
+A **legacy** badge marks a finding whose blocks were synthesized at read time because the
+scan predates the gate; such findings are always impact-unverified and never ready. The
+generic post-script card hides `_engine_*` keys, `model_readiness_claim`, and
+`_chip_lifecycle`; the Evidence card is where they are shown. See
+[investigation kind and readiness](/scans/investigation-kind-and-readiness) for the
+lifecycle statuses and the numbered readiness rules.
+
+## Exports
+
+The result ZIP reflects the engine decision for gated scans:
+
+- `finding.md` gains a **Readiness** chapter: the dimensions table, required and observed
+  outcome, the evidence chain with captured status, negative control, repeatability,
+  assumptions, missing links, limitations (`remaining_limits`), and the readiness
+  decision with its blocking reasons and policy version.
+- `report.txt` keeps the model's prose unchanged but starts with a fenced header:
+  `NOT READY — <label> — <lifecycle> — reasons: …` when the engine decision is not ready,
+  or `READY under <policy_version>` when it is.
+- `manifest.json` records `readiness: { ready, label, lifecycleStatus, policyVersion,
+  legacy }` per finding, and the README table replaces the PoC yes/no column with a
+  lifecycle column plus a count of findings per lifecycle status.
+- `post-processing.json` is unchanged; it already carries the raw results including the
+  engine blocks.
 
 On a terminal-only host, `./kritt-headless scan show <id>` displays scan state, progress,
 active execution stages, and recent failure reasons without printing finding contents.

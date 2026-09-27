@@ -10,16 +10,20 @@ router.get('/:id', async (req, res, next) => {
     const id = BigInt(req.params.id);
     const v = await prisma.vulnerability.findUnique({ where: { id } });
     if (!v) return res.status(404).json({ error: 'Vulnerability not found.' });
-    const [enrichments, duplicates] = await Promise.all([
+    const [enrichments, duplicates, scan] = await Promise.all([
       prisma.vulnerabilityEnrichment.findMany({ where: { vulnerabilityId: id }, orderBy: [{ id: 'asc' }] }),
       prisma.vulnerability.findMany({
         where: { scanId: v.scanId, dedupeCanonicalId: id, dedupeIsCanonical: false },
         select: { id: true },
         orderBy: [{ id: 'asc' }],
       }),
+      // The scan configuration carries the v2.7 pipeline ids and investigation
+      // settings that decide which enrichments are readiness stages.
+      prisma.scan.findUnique({ where: { id: v.scanId }, select: { id: true, configuration: true } }),
     ]);
     res.json(
       serializeVulnerability(v, {
+        scan,
         enrichments,
         duplicateIds: duplicates.map((d) => d.id),
       })

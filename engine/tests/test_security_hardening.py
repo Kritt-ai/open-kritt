@@ -290,8 +290,8 @@ def test_agent_cli_builds_use_exact_package_versions():
 
     assert "npm@12.0.1" in dockerfiles["engine"]
     for name in ("engine", "backend"):
-        assert "@openai/codex@0.145.0" in dockerfiles[name]
-        assert "@openai/codex@0.145.0 \\\n    && codex --version" in dockerfiles[name]
+        assert "@openai/codex@0.157.1" in dockerfiles[name]
+        assert "@openai/codex@0.157.1 \\\n    && codex --version" in dockerfiles[name]
         assert "@anthropic-ai/claude-code@2.1.215" in dockerfiles[name]
     assert "@anthropic-ai/claude-code@2.1.215" in dockerfiles["claude-runner"]
     for name in ("engine", "backend"):

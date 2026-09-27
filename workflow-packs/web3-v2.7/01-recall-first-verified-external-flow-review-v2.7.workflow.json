@@ -1,0 +1,112 @@
+{
+  "kind": "open-kritt-workflow",
+  "version": 2,
+  "workflow": {
+    "name": "Recall-First External Flow Review v2.7",
+    "description": "D0 maps production entrypoints. Three focused D1 lanes each emit at most one record per entrypoint; three bound D2 investigators persist concrete root-cause candidates. Built-in semantic deduplication precedes conditional D3 hostile verification, D4 local PoC, and D5 report readiness post-processing.",
+    "levels": [
+      {
+        "depth": 0,
+        "multiOutput": true,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "entrypoint_kind": "string",
+          "entrypoint_label": "string",
+          "entrypoint_handler": "string",
+          "entrypoint_file_path": "string",
+          "entrypoint_line": "number",
+          "entrypoint_actor": "string",
+          "entrypoint_input": "string",
+          "entrypoint_reachability": "string"
+        },
+        "steps": [
+          {
+            "name": "Map external entrypoints precisely",
+            "content": "You are mapping the complete externally reachable attack surface of {{repo_full}} at commit {{commit_sha}}.\n\nRepository scope: {{repo_scope}}\nDependencies: {{dependencies}}\nRuntime configuration: {{configuration}}\n\nFind each distinct production entrypoint through which an actor outside the deployed process or a less-trusted subsystem can directly or indirectly cause the application to receive, persist, or later process attacker-influenced input. Systematically inspect startup and registration code, interfaces and generated adapters, dispatch tables, public HTTP/GraphQL/gRPC/RPC/WebSocket/webhook routes, peer and validator protocols, transactions and message handlers, block/consensus callbacks, queues and events, parsers and decoders, snapshot/import paths, public contract functions, callbacks, upgrade/governance handlers, and public package or CLI boundaries used in production. Include input written by one operation and consumed later by another component.\n\nFor every entrypoint:\n- Identify the concrete ingress, registration path, and first application handler.\n- State the least-privileged realistic external actor and the exact fields, bytes, messages, ordering, or state they control.\n- Give the exact source path and line for the handler or registration.\n- Prove external reachability with ordered path:line:symbol evidence under the supplied configuration or runtime defaults.\n- Follow workspace dependencies and cross-component wiring; if referenced source is absent, say so in entrypoint_reachability while preserving the proven caller-side entrypoint.\n\nPerform a deliberate second enumeration pass by searching both protocol-facing names and indirect registration patterns. Do not merge distinct handlers, protocol phases, callbacks, or routes merely because they share a dispatcher. Exclude tests, examples, benchmarks, dead code, and interfaces proven limited to the same trusted process. Do not hunt vulnerabilities yet. Return a stub only after both enumeration passes find no production entrypoint.\n\nFan-out limit: emit exactly one record per distinct production handler or registration, not a separate record for each payload, branch, protocol variant, sink, or attack scenario. Keep variants inside entrypoint_input/reachability for the D1 lanes. Missing dependency source is a coverage gap, never evidence that the endpoint is safe."
+          }
+        ],
+        "isLastStep": false
+      },
+      {
+        "depth": 1,
+        "multiOutput": false,
+        "consumesAll": false,
+        "bindPrevious": false,
+        "outputFormat": {
+          "lane_focus": "string",
+          "lane_summary": "string",
+          "lane_paths": "array",
+          "lane_sinks": "array",
+          "lane_invariants": "array",
+          "lane_variants": "array",
+          "lane_reachability": "string",
+          "lane_file_path": "string",
+          "lane_line": "number"
+        },
+        "steps": [
+          {
+            "clientId": "d1-authority",
+            "name": "Map identity and authority lane",
+            "content": "Repository {{repo_full}} at {{commit_sha}}; scope {{repo_scope}}; dependencies {{dependencies}}; configuration {{configuration}}.\nProduction entrypoint {{entrypoint_label}} ({{entrypoint_kind}}), handler {{entrypoint_handler}} at {{entrypoint_file_path}}:{{entrypoint_line}}. Least-privileged actor {{entrypoint_actor}}; input {{entrypoint_input}}; reachability {{entrypoint_reachability}}.\n\nTrace authentication, authorization, certificate/role binding, signer/subject/owner/resource binding, confused deputies, cross-role calls, signature/domain/session binding, and alternative entrypoints with weaker guards. Keep only paths relevant to this lane.\nRe-read registration, guards, callers and relevant callees. Emit AT MOST ONE output record for this entrypoint and your lane. Put all distinct reachable paths, sinks, invariants and adversarial variants into the arrays of that record; never split a payload, branch, variant or sink into another record. Use path:line:symbol evidence and real configuration. If no security-relevant path exists for your lane, return a stub with zero results. If dependency source is missing, mark it as a coverage gap in lane_reachability instead of claiming safety. Do not claim a vulnerability at D1.\n"
+          },
+          {
+            "clientId": "d1-state",
+            "name": "Map protocol and state lane",
+            "content": "Repository {{repo_full}} at {{commit_sha}}; scope {{repo_scope}}; dependencies {{dependencies}}; configuration {{configuration}}.\nProduction entrypoint {{entrypoint_label}} ({{entrypoint_kind}}), handler {{entrypoint_handler}} at {{entrypoint_file_path}}:{{entrypoint_line}}. Least-privileged actor {{entrypoint_actor}}; input {{entrypoint_input}}; reachability {{entrypoint_reachability}}.\n\nTrace protocol phases, persistence, retries and idempotency, skip/reorder/replay, races and TOCTOU, rollback and recovery, stale state, DB atomicity, cross-component consistency, conservation, uniqueness, and finality. Keep only paths relevant to this lane.\nRe-read registration, guards, callers and relevant callees. Emit AT MOST ONE output record for this entrypoint and your lane. Put all distinct reachable paths, sinks, invariants and adversarial variants into the arrays of that record; never split a payload, branch, variant or sink into another record. Use path:line:symbol evidence and real configuration. Return a stub ONLY when this entrypoint has no state-changing, value-moving, persisted-input, or later-consumed path relevant to your lane (for example a pure view getter). Do NOT stub because guards look sufficient, because impact looks low, self-scoped, or recoverable, or because of bounty scope or eligibility: D1 maps, it does not judge safety. When guards look sound, still emit the record and state what each guard actually proves in lane_invariants so D2 can independently try to break it. The configuration's eligible_impacts, out_of_scope, and known-issue sources are context for later stages only; never drop a path because of them, and note any suspected scope concern in lane_reachability. If dependency source is missing, mark it as a coverage gap in lane_reachability instead of claiming safety. Do not claim a vulnerability at D1.\n"
+          },
+          {
+            "clientId": "d1-input",
+            "name": "Map input and availability lane",
+            "content": "Repository {{repo_full}} at {{commit_sha}}; scope {{repo_scope}}; dependencies {{dependencies}}; configuration {{configuration}}.\nProduction entrypoint {{entrypoint_label}} ({{entrypoint_kind}}), handler {{entrypoint_handler}} at {{entrypoint_file_path}}:{{entrypoint_line}}. Least-privileged actor {{entrypoint_actor}}; input {{entrypoint_input}}; reachability {{entrypoint_reachability}}.\n\nTrace parsing, alternate encodings, empty/truncated/boundary input, lengths and offsets, integer conversion, unchecked lookup/panic/assertion, attacker-amplified allocation or work, and attacker data persisted before privileged consumption. Keep only paths relevant to this lane.\nRe-read registration, guards, callers and relevant callees. Emit AT MOST ONE output record for this entrypoint and your lane. Put all distinct reachable paths, sinks, invariants and adversarial variants into the arrays of that record; never split a payload, branch, variant or sink into another record. Use path:line:symbol evidence and real configuration. Return a stub ONLY when this entrypoint has no state-changing, value-moving, persisted-input, or later-consumed path relevant to your lane (for example a pure view getter). Do NOT stub because guards look sufficient, because impact looks low, self-scoped, or recoverable, or because of bounty scope or eligibility: D1 maps, it does not judge safety. When guards look sound, still emit the record and state what each guard actually proves in lane_invariants so D2 can independently try to break it. The configuration's eligible_impacts, out_of_scope, and known-issue sources are context for later stages only; never drop a path because of them, and note any suspected scope concern in lane_reachability. If dependency source is missing, mark it as a coverage gap in lane_reachability instead of claiming safety. Do not claim a vulnerability at D1.\n"
+          }
+        ],
+        "isLastStep": false
+      },
+      {
+        "depth": 2,
+        "multiOutput": true,
+        "consumesAll": false,
+        "bindPrevious": true,
+        "outputFormat": {
+          "explanation": "string",
+          "file_path": "string",
+          "line": "number",
+          "malicious_input_example": "string",
+          "summary": "string",
+          "trigger_flow": "array",
+          "vulnerability_type": "string",
+          "malicious_actor": "string",
+          "exploitable": "boolean",
+          "root_cause_fingerprint": "string",
+          "fix_locus": "string",
+          "broken_invariant": "string",
+          "guard_analysis": "string",
+          "refutation_attempt": "string",
+          "coverage_gap": "string"
+        },
+        "steps": [
+          {
+            "clientId": "d2-authority",
+            "boundSourceStepId": "d1-authority",
+            "name": "Investigate authority and value boundaries",
+            "content": "Repository {{repo_full}} at {{commit_sha}}; scope {{repo_scope}}; dependencies {{dependencies}}; configuration {{configuration}}.\nEntrypoint {{entrypoint_label}} ({{entrypoint_kind}}), handler {{entrypoint_handler}} at {{entrypoint_file_path}}:{{entrypoint_line}}; actor {{entrypoint_actor}}, controlled input {{entrypoint_input}}, reachability {{entrypoint_reachability}}.\nYour focused D1 map: {{lane_focus}}; summary {{lane_summary}}; paths {{lane_paths}}; sinks {{lane_sinks}}; invariants {{lane_invariants}}; variants {{lane_variants}}; reachability {{lane_reachability}}; focal location {{lane_file_path}}:{{lane_line}}.\n\nHunt only identity and authority failures, confused deputies, trust boundary bypasses, signer/subject mismatch, unauthorized custody and value movement, and value conservation tied to authority. Check startup configuration and role wiring before asserting anonymous reachability.\nIndependently re-read production code and check the full attacker-to-impact sequence. For each distinct root cause, identify the exact faulty operation and path:line, attacker primitive, least-privileged actor, what the existing guard proves, what stronger property the operation needs, broken invariant, shortest trigger, ordered ingress-to-impact trace, potential dominating validation/recovery, missing deployment/dependency facts, and the preliminary root-cause fingerprint. State the fingerprint and fix locus in explanation as well as their fields so semantic deduplication can see them.\n\nEmit ONE record per root cause, not per endpoint, payload, CWE, symptom, or victim. Same fix locus plus same broken invariant is one root cause. Preserve concrete source-grounded candidates with an explicit coverage gap even if exploitable=false; do not invent missing source or deployed configuration. Set exploitable=true only for an established actor-controlled end-to-end trigger. Do not fabricate a finding merely to fill the lane. A faulty operation whose demonstrated effect is only griefing, a recoverable race or front-running, stale or poisoned state, gas waste, or harm that depends on an absent off-chain consumer or unverified deployed state IS a concrete candidate: emit it with exploitable=false and put the impact hypothesis and the missing facts in coverage_gap. The configuration's eligible_impacts, out_of_scope, and known-issue sources are for the post-processing stages only; never drop a candidate because it looks out of scope, already known, or below an eligible impact class — record that suspicion in coverage_gap instead. Return a stub with zero results only when you cannot name a concrete faulty operation at path:line. This is discovery, not PoC or bounty eligibility; the post-processing stages verify canonical root causes later.\n"
+          },
+          {
+            "clientId": "d2-state",
+            "boundSourceStepId": "d1-state",
+            "name": "Investigate protocol and state transitions",
+            "content": "Repository {{repo_full}} at {{commit_sha}}; scope {{repo_scope}}; dependencies {{dependencies}}; configuration {{configuration}}.\nEntrypoint {{entrypoint_label}} ({{entrypoint_kind}}), handler {{entrypoint_handler}} at {{entrypoint_file_path}}:{{entrypoint_line}}; actor {{entrypoint_actor}}, controlled input {{entrypoint_input}}, reachability {{entrypoint_reachability}}.\nYour focused D1 map: {{lane_focus}}; summary {{lane_summary}}; paths {{lane_paths}}; sinks {{lane_sinks}}; invariants {{lane_invariants}}; variants {{lane_variants}}; reachability {{lane_reachability}}; focal location {{lane_file_path}}:{{lane_line}}.\n\nHunt only skip/repeat/reorder/replay, races, stale state, first-writer poisoning, retries, partial completion, rollback gaps, multi-component state divergence, and broken conservation/uniqueness/finality. Prove the actual interleaving and transaction/lock behavior.\nIndependently re-read production code and check the full attacker-to-impact sequence. For each distinct root cause, identify the exact faulty operation and path:line, attacker primitive, least-privileged actor, what the existing guard proves, what stronger property the operation needs, broken invariant, shortest trigger, ordered ingress-to-impact trace, potential dominating validation/recovery, missing deployment/dependency facts, and the preliminary root-cause fingerprint. State the fingerprint and fix locus in explanation as well as their fields so semantic deduplication can see them.\n\nEmit ONE record per root cause, not per endpoint, payload, CWE, symptom, or victim. Same fix locus plus same broken invariant is one root cause. Preserve concrete source-grounded candidates with an explicit coverage gap even if exploitable=false; do not invent missing source or deployed configuration. Set exploitable=true only for an established actor-controlled end-to-end trigger. Do not fabricate a finding merely to fill the lane. A faulty operation whose demonstrated effect is only griefing, a recoverable race or front-running, stale or poisoned state, gas waste, or harm that depends on an absent off-chain consumer or unverified deployed state IS a concrete candidate: emit it with exploitable=false and put the impact hypothesis and the missing facts in coverage_gap. The configuration's eligible_impacts, out_of_scope, and known-issue sources are for the post-processing stages only; never drop a candidate because it looks out of scope, already known, or below an eligible impact class — record that suspicion in coverage_gap instead. Return a stub with zero results only when you cannot name a concrete faulty operation at path:line. This is discovery, not PoC or bounty eligibility; the post-processing stages verify canonical root causes later.\n"
+          },
+          {
+            "clientId": "d2-input",
+            "boundSourceStepId": "d1-input",
+            "name": "Investigate parsing and resource boundaries",
+            "content": "Repository {{repo_full}} at {{commit_sha}}; scope {{repo_scope}}; dependencies {{dependencies}}; configuration {{configuration}}.\nEntrypoint {{entrypoint_label}} ({{entrypoint_kind}}), handler {{entrypoint_handler}} at {{entrypoint_file_path}}:{{entrypoint_line}}; actor {{entrypoint_actor}}, controlled input {{entrypoint_input}}, reachability {{entrypoint_reachability}}.\nYour focused D1 map: {{lane_focus}}; summary {{lane_summary}}; paths {{lane_paths}}; sinks {{lane_sinks}}; invariants {{lane_invariants}}; variants {{lane_variants}}; reachability {{lane_reachability}}; focal location {{lane_file_path}}:{{lane_line}}.\n\nHunt only parsing/representation differentials, malformed or boundary input, offsets and conversions, nil/unchecked lookup/panic paths, resource amplification, and delayed consumption of malformed persisted values. Prove that guards and recovery do not block impact.\nIndependently re-read production code and check the full attacker-to-impact sequence. For each distinct root cause, identify the exact faulty operation and path:line, attacker primitive, least-privileged actor, what the existing guard proves, what stronger property the operation needs, broken invariant, shortest trigger, ordered ingress-to-impact trace, potential dominating validation/recovery, missing deployment/dependency facts, and the preliminary root-cause fingerprint. State the fingerprint and fix locus in explanation as well as their fields so semantic deduplication can see them.\n\nEmit ONE record per root cause, not per endpoint, payload, CWE, symptom, or victim. Same fix locus plus same broken invariant is one root cause. Preserve concrete source-grounded candidates with an explicit coverage gap even if exploitable=false; do not invent missing source or deployed configuration. Set exploitable=true only for an established actor-controlled end-to-end trigger. Do not fabricate a finding merely to fill the lane. A faulty operation whose demonstrated effect is only griefing, a recoverable race or front-running, stale or poisoned state, gas waste, or harm that depends on an absent off-chain consumer or unverified deployed state IS a concrete candidate: emit it with exploitable=false and put the impact hypothesis and the missing facts in coverage_gap. The configuration's eligible_impacts, out_of_scope, and known-issue sources are for the post-processing stages only; never drop a candidate because it looks out of scope, already known, or below an eligible impact class — record that suspicion in coverage_gap instead. Return a stub with zero results only when you cannot name a concrete faulty operation at path:line. This is discovery, not PoC or bounty eligibility; the post-processing stages verify canonical root causes later.\n"
+          }
+        ],
+        "isLastStep": true
+      }
+    ]
+  }
+}

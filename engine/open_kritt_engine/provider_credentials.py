@@ -10,6 +10,7 @@ from .account_activity import filter_account_environment, read_account_activity
 DEFAULT_PROVIDER_CREDENTIALS_PATH = "/credentials/providers.json"
 PROVIDER_ENV_KEYS = {
     "openrouter": "OPENROUTER_API_KEY",
+    "omniroute": "OMNIROUTE_API_KEY",
     "xai": "XAI_API_KEY",
     "deepseek": "DEEPSEEK_API_KEY",
 }
@@ -41,12 +42,15 @@ JOB_PROVIDER_ENV_KEYS = {
     "codex": frozenset({"CODEX_API_KEY", "OPENAI_API_KEY"}),
     "claude": frozenset({"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"}),
     "openrouter": frozenset({"OPENROUTER_API_KEY"}),
+    "omniroute": frozenset({"OMNIROUTE_API_KEY", "OMNIROUTE_BASE_URL"}),
     "xai": frozenset({"XAI_API_KEY"}),
     "deepseek": frozenset({"DEEPSEEK_API_KEY"}),
+    "ollama": frozenset({"OLLAMA_BASE_URL"}),
 }
 JOB_HARNESS_ENV_KEYS = {
     "cursor": frozenset({"CURSOR_API_KEY", "CURSOR_AUTH_TOKEN", "CURSOR_AGENT_BIN"}),
     "grok-build": frozenset({"GROK_BIN", "GROK_HOME"}),
+    "ollama": frozenset({"OLLAMA_BASE_URL"}),
 }
 
 

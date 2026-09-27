@@ -79,8 +79,7 @@ describe('workflowDeleteState', () => {
 
 describe('output key validation', () => {
   it('offers only supported workflow and post-script output field types', () => {
-    expect(FIELD_TYPES).toEqual(['string', 'number', 'boolean', 'array']);
-    expect(FIELD_TYPES).not.toContain('object');
+    expect(FIELD_TYPES).toEqual(['string', 'number', 'boolean', 'array', 'object']);
   });
 
   it('rejects JavaScript object meta-properties that cannot round-trip safely', () => {

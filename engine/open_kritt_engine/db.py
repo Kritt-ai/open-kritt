@@ -79,7 +79,7 @@ def _completed_scan_reasoning_sql() -> str:
     return """CASE
         WHEN reasoning->>'code' = 'rate_limited'
         THEN NULLIF(
-            reasoning - 'code' - 'limit_kind' - 'error' - 'retry_after' - 'retry_count',
+            reasoning - 'code' - 'limit_kind' - 'error' - 'retry_after' - 'retry_count' - 'resume_status',
             '{}'::jsonb
         )
         ELSE reasoning
@@ -139,10 +139,15 @@ class Database:
                 LIMIT 1
             )
             UPDATE public.scans s
-            SET status = 'running',
+            SET status = CASE
+                    WHEN s.status = 'rate_limited'
+                         AND reasoning->>'resume_status' = 'post_processing'
+                    THEN 'post_processing'
+                    ELSE 'running'
+                END,
                 reasoning = CASE
                     WHEN s.status = 'rate_limited'
-                    THEN reasoning - 'error' - 'retry_after'
+                    THEN reasoning - 'error' - 'retry_after' - 'resume_status'
                     ELSE reasoning
                 END,
                 last_resumed_at = CASE
@@ -365,6 +370,40 @@ class Database:
     def load_scan(self, conn, scan_id: int) -> dict[str, Any] | None:
         return conn.execute("SELECT * FROM public.scans WHERE id = %s", (scan_id,)).fetchone()
 
+    def record_scan_checkout_revisions(
+        self,
+        conn,
+        scan_id: int,
+        *,
+        primary_commit: str,
+        dependencies: list[dict[str, Any]],
+    ) -> None:
+        """Persist the immutable revisions actually materialized for a scan."""
+
+        dependency_detail = [
+            {
+                "kind": dependency.get("kind") or "remote",
+                "repo_full": dependency.get("repo") or "",
+                "commit_sha": dependency.get("commit"),
+            }
+            for dependency in dependencies
+            if dependency.get("repo")
+        ]
+        conn.execute(
+            """
+            UPDATE public.scans
+            SET commit_sha = %(primary_commit)s,
+                dependencies_detail = %(dependencies)s,
+                updated_at = now()
+            WHERE id = %(scan_id)s
+            """,
+            {
+                "scan_id": scan_id,
+                "primary_commit": primary_commit,
+                "dependencies": Jsonb(dependency_detail),
+            },
+        )
+
     def claim_logical_job_slot(
         self,
         conn,
@@ -563,7 +602,7 @@ class Database:
     ) -> bool:
         current = conn.execute(
             """
-            SELECT reasoning
+            SELECT status, reasoning
             FROM public.scans
             WHERE id = %s
               AND status IN ('running', 'prewarming_cache', 'post_processing', 'failed')
@@ -596,6 +635,9 @@ class Database:
                 "limit_kind": limit_kind,
                 "error": error,
                 "retry_count": retry_count,
+                "resume_status": (
+                    "post_processing" if current.get("status") == "post_processing" else "running"
+                ),
             }
         )
         if autoscale_workers and limit_kind in {"provider_throttled", "subagent_limited"}:

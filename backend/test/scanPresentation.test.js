@@ -20,8 +20,10 @@ import {
   serializeStep,
   serializeSupplementalPostScriptRun,
   serializeVulnerability,
+  serializeWorkflow,
 } from '../src/lib/serialize.js';
 import { SCAN_STATUSES } from '../src/lib/constants.js';
+import { READINESS_POLICY_VERSION, V27_WORKFLOW_NAME } from '../src/lib/v27Pipeline.js';
 
 test('active workers expose workflow depth only for workflow steps', () => {
   assert.equal(activeJobWorkflowDepth({ kind: 'step' }, { depth: 2 }), 2);
@@ -570,4 +572,86 @@ test('terminal scan cause outranks later cleanup interruptions', () => {
 
   assert.equal(isDerivativeScanStatusError(cleanup.message), true);
   assert.equal(orderScanErrorsForDisplay([cleanup, terminal])[0], terminal);
+});
+
+test('workflow serialization exposes the readiness gate only for the v2.7 workflow', () => {
+  const base = { id: 7n, description: '', extra: [], stepIds: [], insertedAt: null, updatedAt: null };
+  const step = {
+    id: 1n,
+    name: 'Investigate',
+    depth: 0,
+    multiOutput: true,
+    isLastStep: true,
+    content: 'x',
+    outputFormat: JSON.stringify({ impact_chain: { type: 'array', items: 'string' }, paths: { type: 'array' } }),
+    outputTable: 'workflows.vulnerabilities',
+  };
+  const gated = serializeWorkflow({ ...base, name: V27_WORKFLOW_NAME }, [step]);
+  assert.equal(gated.readinessGate, READINESS_POLICY_VERSION);
+  assert.equal(serializeWorkflow({ ...base, name: 'Other flow' }, [step]).readinessGate, null);
+  // Serialized output formats keep nested descriptors and legacy type-only meaning.
+  assert.deepEqual(gated.steps[0].outputFormat, { impact_chain: { type: 'array', items: 'string' }, paths: 'array' });
+});
+
+test('finding serialization synthesizes legacy engine blocks and readiness from the scan pipeline', () => {
+  const scan = {
+    configuration: {
+      v27_pipeline: { d3: '3', d4: '4', d5: '5' },
+      investigation_kind: 'private_audit',
+      investigation_kind_source: 'user',
+      readiness_policy_version: READINESS_POLICY_VERSION,
+    },
+  };
+  const d4Result = { poc_status: 'reproduced', poc_artifact_dir: '/artifacts/31' };
+  const enrichments = [
+    {
+      id: 71n,
+      scanId: 9n,
+      vulnerabilityId: 31n,
+      postScriptId: 3n,
+      postScriptName: 'D3',
+      result: { verdict: 'confirmed' },
+    },
+    { id: 72n, scanId: 9n, vulnerabilityId: 31n, postScriptId: 4n, postScriptName: 'D4', result: d4Result },
+    {
+      id: 73n,
+      scanId: 9n,
+      vulnerabilityId: 31n,
+      postScriptId: 5n,
+      postScriptName: 'D5',
+      result: { submission_ready: true },
+    },
+    { id: 74n, scanId: 9n, vulnerabilityId: 31n, postScriptId: 8n, postScriptName: 'Other', result: { note: 'x' } },
+  ];
+  const base = { id: 31n, scanId: 9n, jsonAnswer: {}, postScriptAnswer: null, insertedAt: null };
+
+  const gated = serializeVulnerability(base, { enrichments, scan });
+  assert.deepEqual(
+    gated.enrichments.map((enrichment) => enrichment.stage),
+    ['d3', 'd4', 'd5', null]
+  );
+  assert.equal(gated.enrichments[0].result._engine_lifecycle.lifecycle_status, 'code_confirmed');
+  assert.equal(gated.enrichments[1].result._engine_evidence.legacy, true);
+  assert.equal(
+    gated.enrichments[2].result._engine_readiness.lifecycle_status,
+    'legacy_bug_reproduced_impact_unverified'
+  );
+  assert.equal(gated.enrichments[2].result.model_readiness_claim, true);
+  assert.deepEqual(gated.enrichments[2].result.missing_requirements, []);
+  assert.deepEqual(gated.enrichments[3].result, { note: 'x' });
+  assert.equal(gated.readiness.stage, 'd5');
+  assert.equal(gated.readiness.ready, false);
+  assert.equal(gated.readiness.label, 'report_ready');
+  assert.equal(gated.readiness.legacy, true);
+  assert.deepEqual(gated.readiness.blockingReasons, ['Legacy result without structured impact evidence.']);
+  // Stored rows are never rewritten.
+  assert.equal(Object.hasOwn(d4Result, '_engine_evidence'), false);
+
+  const ungated = serializeVulnerability(base, { enrichments });
+  assert.equal(ungated.readiness, null);
+  assert.deepEqual(
+    ungated.enrichments.map((enrichment) => enrichment.stage),
+    [null, null, null, null]
+  );
+  assert.equal(ungated.enrichments[1].result, d4Result);
 });

@@ -1,0 +1,25 @@
+{
+  "run_id": null,
+  "started_at": null,
+  "engine_commit": null,
+  "snapshot_commit": null,
+  "snapshot_tree_sha256": null,
+  "workflow_name": null,
+  "workflow_export_sha256": null,
+  "post_script_name": null,
+  "post_script_export_sha256": null,
+  "model_provider": null,
+  "model": null,
+  "harness": null,
+  "thinking_effort": null,
+  "configuration": { "max_files": 4000, "include_tests": true, "repeat_runs": 2 },
+  "job_limit": null,
+  "terminal_status": null,
+  "infrastructure_failures": [],
+  "score": {
+    "discovery_recall": null,
+    "final_recall": null,
+    "false_positive_root_causes": null,
+    "per_finding": []
+  }
+}

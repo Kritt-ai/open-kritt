@@ -31,6 +31,7 @@ const SCANS_PAGE_SIZE = 6;
 export default function Scans() {
   const [params, setParams] = useSearchParams();
   const newDialogParam = params.get('new');
+  const researchScanId = params.get('researchScan') || '';
   const [dialogOpen, setDialogOpen] = useState(newDialogParam === '1');
   const [filter, setFilter] = useState('all');
   const [page, setPage] = useState(1);
@@ -45,9 +46,32 @@ export default function Scans() {
     setDialogOpen(newDialogParam === '1');
   }, [newDialogParam]);
   usePageChrome([{ label: 'Scans', active: true }], { label: '+ New scan', to: '/scans?new=1' }, []);
-  const requestKey = `${filter}:${page}`;
+  const requestKey = `${researchScanId}:${filter}:${page}`;
   const { data, loading, error, reload } = useFetch(
-    async () => ({ ...(await api.scanPage({ status: filter, page, pageSize: SCANS_PAGE_SIZE })), requestKey }),
+    async () => {
+      if (!researchScanId) {
+        return { ...(await api.scanPage({ status: filter, page, pageSize: SCANS_PAGE_SIZE })), requestKey };
+      }
+      const overview = await api.overview(researchScanId);
+      const activeStatuses = new Set(['prewarming_cache', 'running', 'post_processing']);
+      const researchScans = overview.recentScans || [];
+      const items = researchScans.filter((scan) => {
+        if (filter === 'all') return true;
+        if (filter === 'running') return activeStatuses.has(scan.status);
+        return scan.status === filter;
+      });
+      return {
+        requestKey,
+        items,
+        page: 1,
+        pageSize: Math.max(1, items.length),
+        totalItems: items.length,
+        totalPages: 1,
+        startIndex: items.length ? 1 : 0,
+        endIndex: items.length,
+        runningCount: researchScans.filter((scan) => activeStatuses.has(scan.status)).length,
+      };
+    },
     [requestKey],
     { pollMs: 1000 }
   );
@@ -101,6 +125,11 @@ export default function Scans() {
     setActionError(null);
     try {
       await api.deleteScan(scan.id);
+      if (`${scan.id}` === researchScanId) {
+        const nextParams = new URLSearchParams(params);
+        nextParams.delete('researchScan');
+        setParams(nextParams, { replace: true });
+      }
       reload();
     } catch (deleteError) {
       setActionError(deleteError);
@@ -116,7 +145,7 @@ export default function Scans() {
           <div style={{ fontSize: 27, fontWeight: 600, letterSpacing: '-0.02em' }}>Scans</div>
           <div style={{ fontSize: 14, color: 'var(--text-2)', marginTop: 3 }}>
             {pageData
-              ? `${pageData.totalItems} scan${pageData.totalItems === 1 ? '' : 's'} · ${pageData.runningCount} running now`
+              ? `${pageData.totalItems} scan${pageData.totalItems === 1 ? '' : 's'} · ${pageData.runningCount} running now${researchScanId ? ' · selected research only' : ''}`
               : ' '}
           </div>
         </div>
@@ -302,7 +331,7 @@ function NewScanDialog({ onClose }) {
                         modelOverrideCount
                           ? `${modelOverrideCount} depth override${modelOverrideCount === 1 ? '' : 's'}`
                           : null,
-                        scan.repoKind === 'local' ? 'local snapshot' : null,
+                        scan.repoKind === 'local' ? scan.revisionShort || 'local snapshot' : null,
                         scan.age ? `${scan.age} ago` : null,
                       ]
                         .filter(Boolean)
@@ -488,7 +517,7 @@ export function ScanCard({ scan, to, onResume, onToggleError, onDelete, busy, er
         {scan.workflowName} · {scan.model}
         {modelOverrideCount
           ? ` · ${modelOverrideCount} depth override${modelOverrideCount === 1 ? '' : 's'}`
-          : ''} · {scan.repoKind === 'local' ? 'local snapshot' : scan.commitShort}
+          : ''} · {scan.repoKind === 'local' ? scan.revisionShort || 'local snapshot' : scan.commitShort}
       </div>
 
       {providerAutoscale && (

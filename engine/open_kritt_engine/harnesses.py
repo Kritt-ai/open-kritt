@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from jsonschema import Draft202012Validator
 
@@ -185,6 +187,7 @@ OPENROUTER_CURSOR_BASE_URL = "https://openrouter.ai/api/v1/cursor"
 OPENROUTER_CODEX_BASE_URL = "https://openrouter.ai/api/v1"
 DEEPSEEK_CODEX_BASE_URL = "https://api.deepseek.com"
 DEEPSEEK_CODEX_MODEL_CATALOG = "/app/open_kritt_engine/deepseek_models.json"
+OMNIROUTE_DEFAULT_BASE_URL = "http://omniroute:20128/v1"
 OPENROUTER_MODEL_ALIASES = {
     "glm-5.2": "z-ai/glm-5.2",
     "grok-4.5": "x-ai/grok-4.5",
@@ -203,7 +206,7 @@ CLAUDE_MODEL_ALIASES = {
     "opus-4.8": "claude-opus-4-8",
 }
 DEFAULT_MODEL_PROVIDER = "openrouter"
-MODEL_PROVIDERS = {"codex", "claude", "openrouter", "xai", "deepseek"}
+MODEL_PROVIDERS = {"codex", "claude", "openrouter", "omniroute", "xai", "deepseek", "ollama"}
 GROK_BUILD_THINKING_EFFORTS = frozenset({"low", "medium", "high", "xhigh"})
 DEFAULT_GROK_BUILD_MODEL = "grok-4.6"
 GROK_BUILD_RUNTIME_ENV = {
@@ -378,6 +381,7 @@ def _prepare_docker_sandbox(cmd: list[str]):
         [cmd[0], "network", "create", "--label", "open-kritt.scan-sandbox=1", network],
     )
     if create.returncode == 0:
+        _connect_omniroute_network(cmd[0], network)
         return
 
     create_error = f"{create.stdout}\n{create.stderr}".lower()
@@ -400,9 +404,20 @@ def _prepare_docker_sandbox(cmd: list[str]):
                 ],
             )
             if fallback.returncode == 0:
+                _connect_omniroute_network(cmd[0], network)
                 return
 
     raise HarnessError("Could not create the scan network.", code="start_failed")
+
+
+def _connect_omniroute_network(docker: str, network: str) -> None:
+    """Make the optional Compose gateway reachable from an isolated runner."""
+    # Only an explicitly configured Compose gateway is attached; scans that never
+    # opted into OmniRoute keep the plain isolated network.
+    base_url = os.getenv("OMNIROUTE_BASE_URL") or ""
+    if "omniroute" not in base_url.lower():
+        return
+    _docker_control_run([docker, "network", "connect", network, "open-kritt-omniroute"])
 
 
 def _cleanup_docker_run_container(cmd: list[str], env: dict[str, str] | None = None):
@@ -981,6 +996,8 @@ def _scan_docker_command(
         "CODEX_API_KEY",
         "OPENAI_API_KEY",
         "OPENROUTER_API_KEY",
+        "OMNIROUTE_API_KEY",
+        "OMNIROUTE_BASE_URL",
         "XAI_API_KEY",
         "ANTHROPIC_BASE_URL",
         "ANTHROPIC_AUTH_TOKEN",
@@ -1094,6 +1111,8 @@ def codex_cli_model_provider(
         return None
     if selected == "openrouter":
         return (configured or "openrouter") if allow_tools else "openrouter"
+    if selected == "omniroute":
+        return "omniroute"
     return selected or configured
 
 
@@ -1121,8 +1140,8 @@ def claude_model_provider(
     model: str, env: dict[str, str] | None = None, model_provider: str | None = None
 ) -> str | None:
     requested_provider = normalize_model_provider(model_provider)
-    if requested_provider == "openrouter":
-        return "openrouter"
+    if requested_provider in {"openrouter", "omniroute"}:
+        return requested_provider
     if requested_provider:
         return None
     actual_env = env or os.environ
@@ -1144,7 +1163,7 @@ def _claude_model_name(model: str, env: dict[str, str], model_provider: str | No
 
 def _apply_claude_host_auth_home(env: dict[str, str], provider: str | None) -> dict[str, str]:
     auth_home = env.get("ENGINE_CLAUDE_AUTH_HOME") or os.getenv("ENGINE_CLAUDE_AUTH_HOME")
-    if provider == "openrouter" or not auth_home or _env_enabled("ENGINE_CLAUDE_DOCKER_RUNNER"):
+    if provider in {"openrouter", "omniroute"} or not auth_home or _env_enabled("ENGINE_CLAUDE_DOCKER_RUNNER"):
         return env
     actual_env = dict(env)
     auth_home = str(Path(auth_home).expanduser())
@@ -1163,7 +1182,15 @@ def _apply_claude_host_auth_home(env: dict[str, str], provider: str | None) -> d
 
 def _claude_env(env: dict[str, str], model: str, model_provider: str | None = None) -> dict[str, str]:
     actual_env = dict(env)
-    if claude_model_provider(model, actual_env, model_provider) == "openrouter":
+    provider = claude_model_provider(model, actual_env, model_provider)
+    if provider == "omniroute":
+        actual_env["ANTHROPIC_BASE_URL"] = (
+            actual_env.get("OMNIROUTE_BASE_URL") or OMNIROUTE_DEFAULT_BASE_URL
+        ).removesuffix("/v1")
+        actual_env["ANTHROPIC_AUTH_TOKEN"] = actual_env.get("OMNIROUTE_API_KEY") or "omniroute"
+        actual_env["ANTHROPIC_API_KEY"] = ""
+        return actual_env
+    if provider == "openrouter":
         if not actual_env.get("OPENROUTER_API_KEY"):
             raise HarnessError("OPENROUTER_API_KEY is required when model provider is openrouter")
         routed_model = OPENROUTER_MODEL_ALIASES.get(model, model)
@@ -1564,6 +1591,24 @@ def _extract_json_from_codex_jsonl(
     return None
 
 
+def _codex_jsonl_finished_successfully(stdout: str) -> bool:
+    """Return true only when the final Codex turn terminal event completed."""
+
+    terminal_event = None
+    for line in stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        for candidate in (event.get("type"), payload.get("type")):
+            if candidate in {"turn.completed", "turn.failed"}:
+                terminal_event = candidate
+    return terminal_event == "turn.completed"
+
+
 def _codex_error_diagnostic_text(stdout: str, stderr: str) -> str:
     """Exclude repository command output from provider-error classification."""
 
@@ -1698,14 +1743,22 @@ def codex_exec_command(
         for feature in TOOL_FREE_CODEX_DISABLED_FEATURES:
             command.extend(["--disable", feature])
     command.extend(["--output-schema", schema_path, "-o", output_path])
-    if not allow_tools and cli_model_provider == "openrouter":
+    if cli_model_provider == "omniroute" or (not allow_tools and cli_model_provider == "openrouter"):
         # `--ignore-user-config` removes custom providers along with user
-        # settings. Recreate only OpenRouter's non-secret definition; Codex
+        # settings. Recreate the gateway's non-secret definition; Codex
         # reads the actual credential from the named environment variable.
-        command.extend(["-c", 'model_providers.openrouter.name="OpenRouter"'])
-        command.extend(["-c", f'model_providers.openrouter.base_url="{OPENROUTER_CODEX_BASE_URL}"'])
-        command.extend(["-c", 'model_providers.openrouter.env_key="OPENROUTER_API_KEY"'])
-        command.extend(["-c", 'model_providers.openrouter.wire_api="responses"'])
+        provider_id = cli_model_provider
+        base_url = (
+            OPENROUTER_CODEX_BASE_URL
+            if provider_id == "openrouter"
+            else os.getenv("OMNIROUTE_BASE_URL", OMNIROUTE_DEFAULT_BASE_URL)
+        )
+        env_key = "OPENROUTER_API_KEY" if provider_id == "openrouter" else "OMNIROUTE_API_KEY"
+        provider_name = "OpenRouter" if provider_id == "openrouter" else "OmniRoute"
+        command.extend(["-c", f'model_providers.{provider_id}.name="{provider_name}"'])
+        command.extend(["-c", f'model_providers.{provider_id}.base_url="{base_url}"'])
+        command.extend(["-c", f'model_providers.{provider_id}.env_key="{env_key}"'])
+        command.extend(["-c", f'model_providers.{provider_id}.wire_api="responses"'])
     if cli_model_provider == "deepseek":
         _append_deepseek_codex_config(command)
     if cli_model_provider:
@@ -1798,7 +1851,29 @@ class CodexHarness:
                     memory_reservation_mb=self.runner_memory_reservation_mb,
                 )
             started_at = time.time()
-            proc = _run_process(cmd, prompt, repo_dir, self.timeout_seconds, env=actual_env)
+            try:
+                proc = _run_process(cmd, prompt, repo_dir, self.timeout_seconds, env=actual_env)
+            except HarnessError as exc:
+                failed_output = exc.output
+                salvageable_payload = (
+                    _extract_json_from_codex_jsonl(failed_output.stdout, schema)
+                    if exc.code in {"harness_failed", "model_process_error"}
+                    and failed_output is not None
+                    and _codex_jsonl_finished_successfully(failed_output.stdout)
+                    else None
+                )
+                if salvageable_payload is None or failed_output is None:
+                    raise
+                # Docker can lose its attach stream while the runner is closing
+                # and return 125/EOF after Codex has already emitted a complete,
+                # schema-valid answer. Preserve that answer and let the normal
+                # output parsing below consume it instead of charging for a retry.
+                proc = subprocess.CompletedProcess(
+                    cmd,
+                    failed_output.returncode if failed_output.returncode is not None else exc.exit_code or 1,
+                    failed_output.stdout,
+                    failed_output.stderr,
+                )
             output_files = {}
             raw_output_file = _read_output_file(output_path)
             if raw_output_file is not None:
@@ -2129,6 +2204,507 @@ def _cursor_model_name(model: str, model_provider: str | None = None, thinking_e
     return model
 
 
+class OllamaHarness:
+    """Small, bounded repository agent for local Ollama models.
+
+    Some local Qwen templates emit tool calls as text instead of native API
+    tool_calls.  This harness deliberately accepts that representation, but
+    only exposes read-only repository operations.  It never executes model-
+    supplied shell commands or permits paths outside the prepared workspace.
+    """
+
+    name = "ollama"
+    max_turns = 48
+    turns_left_warning = 3
+    # Small local models often return an empty stub on the first turn without
+    # reading anything. A "nothing found" answer only counts after this many
+    # repository actions.
+    min_actions_before_stub = 2
+    max_tool_output = 20_000
+    max_file_bytes = 2 * 1024 * 1024
+    # About 3 characters per token keeps the conversation inside num_ctx=32768.
+    context_char_budget = 90_000
+    max_inventory_files = 300
+    empty_results_before_nudge = 3
+    # Retries of the same prompt get a higher temperature; at temperature 0 a
+    # failed attempt is otherwise replayed byte for byte.
+    _prompt_attempts: dict[str, int] = {}
+    _max_tracked_prompts = 512
+    _inventory_skip_dirs = frozenset(
+        {".git", "lib", "node_modules", "vendor", "out", "cache", "build", "dist", "target", "artifacts"}
+        | {"test", "tests", "mocks", "mock", "typechain-types"}
+    )
+    _language_hints = {
+        ".sol": (
+            "Solidity",
+            "visibility follows the parameter list, so search entrypoints with the regex "
+            r"`function\s+\w+\s*\([^)]*\)[^{;]*\b(external|public)\b`; also check `receive`, `fallback` and modifiers.",
+        ),
+        ".go": ("Go", r"exported handlers match `^func (\(\w+ \*?\w+\) )?[A-Z]\w*\(`."),
+        ".rs": ("Rust", r"public entrypoints match `pub (async )?fn \w+`."),
+        ".move": ("Move", r"entrypoints match `public( entry)? fun \w+`."),
+        ".cairo": ("Cairo", r"entrypoints sit under `#\[abi\(embed_v0\)\]` or `#\[external` and match `fn \w+`."),
+        ".py": ("Python", r"handlers match `^\s*(async )?def \w+` and route decorators such as `@\w+\.(get|post|route)`."),
+        ".ts": ("TypeScript", r"handlers match `export (async )?function \w+` and `\.(get|post|put|delete)\(`."),
+        ".js": ("JavaScript", r"handlers match `export (async )?function \w+` and `\.(get|post|put|delete)\(`."),
+    }
+
+    def __init__(self, timeout_seconds: int, model_provider: str | None = None, **_kwargs):
+        self.timeout_seconds = timeout_seconds
+        self.model_provider = model_provider
+
+    @staticmethod
+    def _safe_path(repo_dir: str, value: Any) -> Path:
+        root = Path(repo_dir).resolve()
+        raw = str(value or "").strip()
+        if not raw or "\x00" in raw:
+            raise HarnessError("Ollama requested an invalid repository path.", code="invalid_request", harness="ollama")
+        candidate = (root / raw).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError as exc:
+            raise HarnessError("Ollama requested a path outside the repository.", code="invalid_request", harness="ollama") from exc
+        return candidate
+
+    @staticmethod
+    def _repair_truncated_json(text: str) -> str | None:
+        """Close only unmatched JSON containers at end-of-output.
+
+        Local models occasionally emit a complete object but omit one or more
+        final ``}``/``]`` characters.  Repair that narrow case without trying
+        to reinterpret malformed content or invent schema fields.
+        """
+
+        stack: list[str] = []
+        in_string = False
+        escaped = False
+        pairs = {"}": "{", "]": "["}
+        closers = {"{": "}", "[": "]"}
+        repaired: list[str] = []
+        for index, character in enumerate(text):
+            repaired.append(character)
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif character == "\\":
+                    escaped = True
+                elif character == '"':
+                    in_string = False
+                continue
+            if character == '"':
+                in_string = True
+            elif character in closers:
+                stack.append(character)
+            elif character in pairs:
+                if not stack:
+                    return None
+                if stack[-1] != pairs[character]:
+                    trailing = text[index:]
+                    if any(item not in "}] \t\r\n" for item in trailing):
+                        return None
+                    inserted: list[str] = []
+                    while stack and stack[-1] != pairs[character]:
+                        inserted.append(closers[stack.pop()])
+                    if not stack:
+                        return None
+                    repaired[-1:-1] = inserted
+                stack.pop()
+        if in_string or not stack:
+            return "".join(repaired) if not in_string and repaired != list(text) else None
+        repaired.extend(closers[character] for character in reversed(stack))
+        return "".join(repaired)
+
+    @staticmethod
+    def _json_candidate(text: str) -> dict[str, Any]:
+        cleaned = text.strip()
+        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", cleaned, flags=re.IGNORECASE)
+        tag = re.search(r"<(tool_call|xml)>\s*(\{.*?\})\s*</\1>", cleaned, re.DOTALL)
+        if tag:
+            cleaned = tag.group(2)
+        try:
+            value = json.loads(cleaned)
+        except json.JSONDecodeError as initial_error:
+            match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+            if match:
+                try:
+                    value = json.loads(match.group(0))
+                except json.JSONDecodeError:
+                    match = None
+            if not match:
+                repaired = OllamaHarness._repair_truncated_json(cleaned)
+                if repaired is None:
+                    raise initial_error
+                value = json.loads(repaired)
+        if not isinstance(value, dict):
+            raise json.JSONDecodeError("expected object", cleaned, 0)
+        return value
+
+    @classmethod
+    def _source_inventory(cls, repo_dir: str) -> list[str]:
+        root = Path(repo_dir).resolve()
+        files: list[str] = []
+        for directory, subdirs, names in os.walk(root):
+            subdirs[:] = sorted(item for item in subdirs if item not in cls._inventory_skip_dirs)
+            for name in sorted(names):
+                if Path(name).suffix in cls._language_hints:
+                    files.append(str((Path(directory) / name).relative_to(root)))
+                    if len(files) >= cls.max_inventory_files:
+                        return files
+        return files
+
+    @classmethod
+    def _repository_guide(cls, inventory: list[str]) -> str:
+        if not inventory:
+            return ""
+        suffixes = {Path(path).suffix for path in inventory}
+        hints = [f"- {language}: {hint}" for suffix, (language, hint) in cls._language_hints.items() if suffix in suffixes]
+        return (
+            "\nRepository source files (vendored, build and test directories omitted):\n"
+            + "\n".join(inventory)
+            + "\nSearch hints by language:\n"
+            + "\n".join(hints)
+            + "\nRead the relevant files with read_file; do not conclude from searches alone."
+        )
+
+    @classmethod
+    def _next_temperature(cls, model: str, prompt: str) -> float:
+        key = hashlib.sha256(f"{model}\0{prompt}".encode()).hexdigest()
+        attempt = cls._prompt_attempts.get(key, 0)
+        if key not in cls._prompt_attempts and len(cls._prompt_attempts) >= cls._max_tracked_prompts:
+            cls._prompt_attempts.pop(next(iter(cls._prompt_attempts)))
+        cls._prompt_attempts[key] = attempt + 1
+        return min(0.7, 0.3 * attempt)
+
+    @staticmethod
+    def _result_item_schema(schema: dict[str, Any]) -> dict[str, Any] | None:
+        results = (schema.get("properties") or {}).get("results")
+        if isinstance(results, dict) and results.get("type") == "array" and isinstance(results.get("items"), dict):
+            return results["items"]
+        return None
+
+    @staticmethod
+    def _merge_rows(recorded: list[Any], payload: dict[str, Any]) -> dict[str, Any]:
+        if not recorded:
+            return payload
+        rows = list(recorded)
+        seen = {json.dumps(row, sort_keys=True) for row in rows}
+        for row in payload.get("results") or []:
+            key = json.dumps(row, sort_keys=True)
+            if key not in seen:
+                seen.add(key)
+                rows.append(row)
+        return {**payload, "stub": False, "stub_explanation": "", "results": rows}
+
+    @staticmethod
+    def _recorded_payload(schema: dict[str, Any], recorded: list[Any]) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        if EXTRACTOR_HELPER_FIELD in (schema.get("properties") or {}):
+            payload[EXTRACTOR_HELPER_FIELD] = True
+        payload.update({"stub": False, "stub_explanation": "", "results": list(recorded)})
+        return payload
+
+    def _fit_context(self, messages: list[dict[str, str]], tool_result_indexes: set[int]) -> None:
+        total = sum(len(message["content"]) for message in messages)
+        last = len(messages) - 1
+        for index in sorted(tool_result_indexes):
+            if total <= self.context_char_budget:
+                return
+            if index == last:
+                continue
+            content = messages[index]["content"]
+            first_line = content.splitlines()[0] if content else ""
+            replacement = f"[{first_line} earlier output elided to fit the context window]"
+            total -= len(content) - len(replacement)
+            messages[index]["content"] = replacement
+            tool_result_indexes.discard(index)
+
+    def _tool(self, repo_dir: str, name: str, arguments: dict[str, Any]) -> str:
+        if name == "read_file":
+            path = self._safe_path(repo_dir, arguments.get("path"))
+            if not path.is_file():
+                return f"error: file not found: {arguments.get('path')}"
+            if path.stat().st_size > self.max_file_bytes:
+                return f"error: file is larger than {self.max_file_bytes} bytes"
+            start = max(1, int(arguments.get("start_line") or 1))
+            count = min(500, max(1, int(arguments.get("line_count") or 200)))
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            return "\n".join(f"{index}: {line}" for index, line in enumerate(lines[start - 1 : start - 1 + count], start))[
+                : self.max_tool_output
+            ]
+        if name == "list_files":
+            relative = str(arguments.get("path") or ".")
+            directory = self._safe_path(repo_dir, relative)
+            if not directory.is_dir():
+                return f"error: directory not found: {relative}"
+            files = []
+            for path in directory.rglob("*"):
+                if path.is_file() and ".git" not in path.parts:
+                    files.append(str(path.relative_to(Path(repo_dir).resolve())))
+                if len(files) >= 1000:
+                    break
+            return "\n".join(files)[: self.max_tool_output]
+        if name == "search_text":
+            pattern = str(arguments.get("pattern") or "")
+            relative = str(arguments.get("path") or ".")
+            if not pattern or len(pattern) > 500:
+                return "error: pattern is empty or too long"
+            target = self._safe_path(repo_dir, relative)
+            if shutil.which("rg") is None:
+                try:
+                    matcher = re.compile(pattern)
+                except re.error as exc:
+                    return f"error: invalid search pattern: {exc}"
+                candidates = [target] if target.is_file() else target.rglob("*")
+                root = Path(repo_dir).resolve()
+                matches = []
+                inspected = 0
+                for path in candidates:
+                    if not path.is_file() or ".git" in path.parts:
+                        continue
+                    inspected += 1
+                    if inspected > 1000:
+                        break
+                    try:
+                        if path.stat().st_size > self.max_file_bytes:
+                            continue
+                        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+                    except OSError:
+                        continue
+                    for line_number, line in enumerate(lines, 1):
+                        if matcher.search(line):
+                            matches.append(f"{path.relative_to(root)}:{line_number}:{line}")
+                            if sum(len(item) + 1 for item in matches) >= self.max_tool_output:
+                                return "\n".join(matches)[: self.max_tool_output]
+                return "\n".join(matches)[: self.max_tool_output] or "no matches"
+            proc = subprocess.run(
+                ["rg", "-n", "--no-heading", "--color", "never", "--", pattern, str(target)],
+                cwd=repo_dir,
+                text=True,
+                capture_output=True,
+                timeout=min(30, self.timeout_seconds),
+                check=False,
+            )
+            return (proc.stdout or proc.stderr or "no matches")[: self.max_tool_output]
+        return f"error: unsupported tool {name!r}; use read_file, list_files, or search_text"
+
+    def _chat(self, base_url: str, payload: dict[str, Any], timeout_seconds: float | None = None) -> dict[str, Any]:
+        request = Request(
+            f"{base_url.rstrip('/')}/api/chat",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=timeout_seconds or self.timeout_seconds) as response:
+                body = response.read(5 * 1024 * 1024)
+        except HTTPError as exc:
+            raise HarnessError(f"Ollama rejected the request with HTTP {exc.code}.", code="provider_rejected", harness="ollama") from exc
+        except (URLError, TimeoutError, OSError) as exc:
+            raise HarnessError("The engine could not reach Ollama.", code="network_error", harness="ollama") from exc
+        try:
+            result = json.loads(body)
+        except json.JSONDecodeError as exc:
+            raise HarnessError("Ollama returned invalid JSON.", code="invalid_output", harness="ollama") from exc
+        if not isinstance(result, dict):
+            raise HarnessError("Ollama returned an invalid response.", code="invalid_output", harness="ollama")
+        return result
+
+    def run(
+        self,
+        *,
+        prompt: str,
+        schema: dict[str, Any],
+        repo_dir: str,
+        model: str,
+        thinking_effort: str | None = None,
+        env: dict[str, str] | None = None,
+        allow_tools: bool = True,
+        runner_image: str | None = None,
+    ) -> HarnessResult:
+        del thinking_effort, runner_image
+        actual_env = env if env is not None else os.environ
+        base_url = actual_env.get("OLLAMA_BASE_URL") or "http://host.docker.internal:11435"
+        item_schema = self._result_item_schema(schema) if allow_tools else None
+        tools = (
+            "Use one action at a time as JSON: "
+            '{"name":"read_file","arguments":{"path":"relative/file","start_line":1,"line_count":200}}, '
+            '{"name":"list_files","arguments":{"path":"relative/dir"}}, or '
+            '{"name":"search_text","arguments":{"pattern":"literal or regex","path":"relative/dir"}}. '
+            "Never emit shell commands. When finished, return the requested result object directly, with no markdown."
+            + (
+                ' Save result records as soon as you establish them with {"name":"record_results","arguments":'
+                '{"results":[...]}}; each record must match the results item schema. Recorded rows are kept even if '
+                "earlier tool output is elided and are merged into your final object."
+                if item_schema is not None
+                else ""
+            )
+            if allow_tools
+            else "Return the requested result object directly, with no markdown."
+        )
+        inventory = self._source_inventory(repo_dir) if allow_tools else []
+        system = (
+            "You are a repository security investigator. Work only inside the supplied repository. "
+            f"{tools}{self._repository_guide(inventory)}\n"
+            f"The final JSON must satisfy this schema:\n{json.dumps(schema, separators=(',', ':'))}"
+        )
+        messages: list[dict[str, str]] = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
+        temperature = self._next_temperature(model, prompt)
+        totals = {"prompt_eval_count": 0, "eval_count": 0}
+        transcript: list[str] = []
+        tool_actions = 0
+        empty_results = 0
+        seen_actions: set[str] = set()
+        tool_result_indexes: set[int] = set()
+        recorded: list[Any] = []
+        recorded_keys: set[str] = set()
+        deadline = time.monotonic() + self.timeout_seconds
+        for turn in range(self.max_turns):
+            turns_left = self.max_turns - turn
+            if allow_tools and turn and turns_left <= self.turns_left_warning:
+                messages[-1]["content"] += (
+                    f"\n{turns_left} turns left: record any remaining results and return the final object now."
+                )
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise HarnessError(
+                    "Ollama exhausted the generation timeout.",
+                    code="timeout",
+                    harness="ollama",
+                    output=HarnessOutput(stdout="\n".join(transcript)),
+                )
+            self._fit_context(messages, tool_result_indexes)
+            result = self._chat(
+                base_url,
+                {
+                    "model": model,
+                    "stream": False,
+                    "messages": messages,
+                    "options": {"temperature": temperature, "num_ctx": 32768},
+                },
+                remaining,
+            )
+            for key in totals:
+                totals[key] += int(result.get(key) or 0)
+            message = result.get("message") if isinstance(result.get("message"), dict) else {}
+            content = str(message.get("content") or "").strip()
+            transcript.append(content)
+            try:
+                candidate = self._json_candidate(content)
+            except json.JSONDecodeError:
+                messages.append({"role": "assistant", "content": content})
+                messages.append({"role": "user", "content": "Invalid response. Return exactly one JSON tool action or the final schema object."})
+                continue
+            tool_name = candidate.get("name")
+            arguments = candidate.get("arguments")
+            if allow_tools and isinstance(tool_name, str) and isinstance(arguments, dict):
+                messages.append({"role": "assistant", "content": content})
+                action_key = json.dumps([tool_name, arguments], sort_keys=True, default=str)
+                if action_key in seen_actions:
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                f"You already ran this exact {tool_name} action earlier in this conversation. "
+                                "Choose a different action, such as read_file on a source file you have not read, "
+                                "or return the final object."
+                            ),
+                        }
+                    )
+                    continue
+                seen_actions.add(action_key)
+                if tool_name == "record_results" and item_schema is not None:
+                    tool_actions += 1
+                    rows = arguments.get("results")
+                    rows = rows if isinstance(rows, list) else [rows]
+                    accepted, rejected = 0, []
+                    for row in rows:
+                        errors = [error.message for error in Draft202012Validator(item_schema).iter_errors(row)]
+                        if errors:
+                            rejected.append("; ".join(errors[:3]))
+                            continue
+                        key = json.dumps(row, sort_keys=True)
+                        if key not in recorded_keys:
+                            recorded_keys.add(key)
+                            recorded.append(row)
+                        accepted += 1
+                    note = f"Recorded {accepted} row(s); {len(recorded)} recorded in total."
+                    if rejected:
+                        note += " These rows were rejected, fix and record them again: " + " | ".join(rejected[:5])
+                    messages.append({"role": "user", "content": f"{note}\nContinue with one JSON action or the final object."})
+                    continue
+                output = self._tool(repo_dir, tool_name, arguments)
+                tool_actions += 1
+                empty = output.startswith(("no matches", "error:")) or not output.strip()
+                empty_results = empty_results + 1 if empty else 0
+                follow_up = "Continue with one JSON action or the final object."
+                if empty_results >= self.empty_results_before_nudge:
+                    empty_results = 0
+                    suggestions = ", ".join(inventory[:5]) or "the files under the repository root"
+                    follow_up = (
+                        f"Your last {self.empty_results_before_nudge} actions returned no matches. Stop guessing "
+                        "search phrases and read the source directly: use read_file on files such as "
+                        f"{suggestions}. {follow_up}"
+                    )
+                tool_result_indexes.add(len(messages))
+                messages.append({"role": "user", "content": f"Tool result for {tool_name}:\n{output}\n{follow_up}"})
+                continue
+            payload = candidate.get("final") if isinstance(candidate.get("final"), dict) else candidate
+            payload = self._merge_rows(recorded, payload)
+            if allow_tools and payload.get("stub") is True and tool_actions < self.min_actions_before_stub:
+                messages.append({"role": "assistant", "content": content})
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "You returned a no-finding stub without inspecting the repository. Use list_files, "
+                            "search_text, and read_file to examine the relevant source before concluding. "
+                            "Continue with one JSON action."
+                        ),
+                    }
+                )
+                continue
+            validation_errors = sorted(
+                Draft202012Validator(schema).iter_errors(payload),
+                key=lambda error: [str(part) for part in error.absolute_path],
+            )
+            if validation_errors:
+                details = []
+                for error in validation_errors[:8]:
+                    path = ".".join(str(part) for part in error.absolute_path) or "$"
+                    details.append(f"{path}: {error.message}")
+                messages.append({"role": "assistant", "content": content})
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "The proposed final object does not satisfy the required schema. Correct every error and "
+                            "return the complete final JSON object with all required properties. Errors:\n"
+                            + "\n".join(details)
+                        ),
+                    }
+                )
+                continue
+            return HarnessResult(
+                payload=payload,
+                usage={"model_provider": "ollama", "local": True, **totals},
+                output=HarnessOutput(stdout="\n".join(transcript)),
+            )
+        if recorded:
+            payload = self._recorded_payload(schema, recorded)
+            if not any(Draft202012Validator(schema).iter_errors(payload)):
+                return HarnessResult(
+                    payload=payload,
+                    usage={"model_provider": "ollama", "local": True, **totals},
+                    output=HarnessOutput(stdout="\n".join(transcript)),
+                )
+        raise HarnessError(
+            "Ollama exhausted the bounded tool loop without a final structured response.",
+            code="invalid_output",
+            harness="ollama",
+            output=HarnessOutput(stdout="\n".join(transcript)),
+        )
+
+
 class CursorHarness:
     name = "cursor"
 
@@ -2450,4 +3026,6 @@ def harness_for(
             runner_memory_mb=runner_memory_mb,
             runner_memory_reservation_mb=runner_memory_reservation_mb,
         )
+    if normalized == "ollama":
+        return OllamaHarness(timeout_seconds, model_provider=provider)
     raise HarnessError(f"unsupported harness {name!r}")

@@ -219,6 +219,23 @@ test('xAI device login keeps a default Grok model when the API catalog is empty'
   });
 });
 
+test('Ollama keeps a local free-text model default without a remote catalog', () => {
+  assert.deepEqual(buildModelCatalogResponse(['ollama']).providers[0], {
+    provider: 'ollama',
+    input: 'text',
+    models: [
+      {
+        id: 'qwen2.5-coder:7b-instruct',
+        label: 'Qwen 2.5 Coder 7B (local)',
+        thinkingEfforts: ['default'],
+        isDefault: true,
+      },
+    ],
+    defaultModel: 'qwen2.5-coder:7b-instruct',
+    status: 'ready',
+  });
+});
+
 test('DeepSeek requires an exact model from its refreshed catalog', () => {
   const catalog = {
     provider: 'deepseek',

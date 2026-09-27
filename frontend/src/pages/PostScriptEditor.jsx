@@ -7,10 +7,10 @@ import { ErrorState, Spinner } from '../components/ui.jsx';
 import { PromptEditor } from '../components/PromptEditor.jsx';
 import SchemaEditor from '../components/SchemaEditor.jsx';
 import { postScriptDraftFromGeneration, resultFromCompletedGeneration } from '../lib/generationDraft.js';
+import { fieldTypeName, isReservedOutputKey, validateFieldDefinition } from '../lib/fieldDefinitions.js';
 import {
   BUILTIN_KEYS,
   EXTRA_KEY,
-  FIELD_TYPES,
   OPTIONAL_VULN_KEYS,
   POST_SCRIPT_CHIP_PREFIX,
   POST_SCRIPT_MARKDOWN_OUTPUT_KEYS,
@@ -24,6 +24,8 @@ import {
 } from '../lib/keys.js';
 
 const AVAILABLE = new Set(RESERVED_POST_SCRIPT_KEYS);
+// The definition a schema row stands for: nested descriptor for structured rows, type name otherwise.
+const rowDefinition = (row) => (row.structured && row.definition != null ? row.definition : row.type);
 const NEW_POST_SCRIPT_CONTENT = 'Grade the finding "{{summary}}" — a {{vulnerability_type}} at {{file_path}}:{{line}}.';
 
 function newPostScriptState() {
@@ -158,11 +160,12 @@ export default function PostScriptEditor() {
       (r) =>
         r.key &&
         isValidKey(r.key) &&
-        FIELD_TYPES.includes(r.type) &&
+        !isReservedOutputKey(r.key) &&
+        validateFieldDefinition(`outputFormat.${r.key}`, rowDefinition(r)).length === 0 &&
         !RESERVED_POST_SCRIPT_KEYS.includes(r.key) &&
         keyCount[r.key] === 1 &&
         r.key !== POST_SCRIPT_CHIP_PREFIX &&
-        (!POST_SCRIPT_MARKDOWN_OUTPUT_KEYS.includes(r.key) || r.type === 'string')
+        (!POST_SCRIPT_MARKDOWN_OUTPUT_KEYS.includes(r.key) || fieldTypeName(rowDefinition(r)) === 'string')
     );
 
   const errs = [];
@@ -176,6 +179,7 @@ export default function PostScriptEditor() {
   const validateKey = (key) => {
     if (!isValidKey(key)) return 'invalid key name';
     if (RESERVED_POST_SCRIPT_KEYS.includes(key)) return 'reserved key — those are inputs';
+    if (isReservedOutputKey(key)) return 'reserved key — engine-owned';
     if (key === POST_SCRIPT_CHIP_PREFIX) return 'add a label after _chip_';
     return null;
   };

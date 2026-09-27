@@ -11,7 +11,8 @@ export function defaultRankerIds(rankers, currentIds = []) {
 
 const DELETABLE_SCAN_STATUSES = new Set(['paused', 'failed', 'stopped', 'completed']);
 
-export function isScanDeletable(status) {
+export function isScanDeletable(scanOrStatus) {
+  const status = typeof scanOrStatus === 'string' ? scanOrStatus : scanOrStatus?.status;
   return DELETABLE_SCAN_STATUSES.has(status);
 }
 

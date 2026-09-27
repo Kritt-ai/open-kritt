@@ -1,0 +1,70 @@
+{
+  "name": "v2.7 D4 Local PoC and Negative Control",
+  "description": "Run a minimal local PoC, negative control, and repeatability checks for D3 survivors; report bug reproduction and impact proof as separate statuses; preserve files as scan artifacts.",
+  "content": "Repository: {{repo_full}} at commit {{commit_sha}}. Scope: {{repo_scope}}. Dependencies: {{dependencies}}. Configuration: {{configuration}}.\nCanonical candidate: {{summary}}. Claimed type: {{vulnerability_type}}. Fault: {{file_path}}:{{line}}.\nActor: {{malicious_actor}}. Claimed trigger: {{malicious_input_example}}. Trace: {{trigger_flow}}.\nExplanation and root-cause fingerprint: {{explanation}}.\nThis candidate survived D3. The engine supplies the D3 verdict, bug_claim, impact_claim, impact_objective, evidence_dimensions, impact_chain_plan, unverified_assumptions, and falsification_plan above this prompt. Treat all of it as a hypothesis to test, not as a fact. Work only in the isolated pinned checkout; never send attack traffic to public services, use real secrets, or broadcast a live transaction.\nBuild the smallest feasible test: unit test, real component harness, integration with local DB/protocol state, then local multi-actor or fork simulation only when necessary. Run the attack and a negative control using the same relevant path with corrected identity/domain/state. Repeat both at least twice to check determinism. Write the executable test/harness and actual command output to files INSIDE the repository workspace. A proposed test, a mock of the bug, or a successful build is not a PoC.\nAnswer two questions separately, with separate evidence. bug_status answers whether the defective behavior in bug_claim occurred: reproduced, not_reproduced, blocked, or falsified. impact_status answers whether the terminal_outcome in impact_objective occurred: proven, partial, not_proven, blocked, or falsified. Describe what actually happened in observed_behavior, restate the consequence under test in claimed_impact, and record the end state you actually observed in observed_terminal_outcome (leave it empty when the terminal outcome was not observed). A crash, an error message, a bypassed check, one consumed resource unit, or a corrupted value with no downstream consequence is observed_behavior and may justify bug_status=reproduced; it never justifies impact_status=proven. Use impact_status=proven only when observed_terminal_outcome matches the required terminal_outcome and saved artifacts show it. Use partial when some required outcomes were observed but not the terminal one. bug_status=reproduced together with impact_status=not_proven is a valid, expected, and honest result; report it instead of stretching the evidence. Use falsified when the test showed the claim is wrong according to falsification_plan. Use blocked when a precondition outside the workspace prevents the test, and set blocker_kind to missing_dependency, missing_configuration, deployment_fact, unsafe_external, or other; otherwise set blocker_kind=none.\nFill impact_chain from impact_chain_plan. Every D3 hop id must appear in impact_chain with exactly the same id. You may add hops with new unique ids. Never remove, rename, merge, or replace a D3 hop. A D3 hop that turned out to be unnecessary stays in the chain with status=not_applicable and an assessment explaining why. A hop is proven only when at least one evidence_paths entry shows it; falsified, partial, blocked, and not_applicable require a non-empty assessment; unverified is allowed for hops you could not reach. evidence_paths holds workspace-relative file paths only, never prose or command output. covers lists the evidence dimension tags (from D3 evidence_dimensions) that this hop's artifacts satisfy; a required dimension with no covering proven hop leaves the impact unproven.\nList in missing_impact_links the ids of every hop that is not proven or not_applicable. List in impact_artifact_paths the files that show the terminal outcome itself (balance dumps, state snapshots, logs, transcripts). All paths must be relative and inside the workspace; no absolute paths and no parent-directory segments. Carry every D3 assumption forward in unverified_assumptions with its id, updating status to resolved or falsified when the test settled it, and add any new assumption you discovered; an assumption that is material and still open leaves the impact unproven.\nSet negative_control_status to passed when the control run did not exhibit the behavior, failed when the control also exhibited it, or unavailable when no meaningful control could run. Set repeatability_status to deterministic when attack and control results were consistent across every repeat, non_deterministic when they varied, or not_tested when repeats did not run.\nKeep reporting the classic fields. Use exactly one poc_status: reproduced, not_reproduced, blocked_missing_dependency, blocked_missing_configuration, unsafe_external_dependency, non_deterministic, invalidated_by_test. poc_status describes the test run; it is not read for readiness, so keep it honest and consistent with bug_status. Return relative paths for the test, attack output, negative-control output, and repeat output in poc_artifact_paths. Do not claim reproduced unless all files physically exist, attack and negative-control outcomes differ as expected, and repeated runs are consistent. Report exact command, stdout/stderr/exit code, expected/observed results, and blockers. Set poc_artifact_dir to an empty string; the engine fills it only after verifying and copying actual files. _reserved_poc may summarize observed evidence, but cannot substitute for the saved artifacts. State in remaining_limits every limitation of the local reproduction relative to production.\n",
+  "outputFormat": {
+    "poc_status": "string",
+    "poc_command": "string",
+    "poc_expected": "string",
+    "poc_observed": "string",
+    "poc_stdout": "string",
+    "poc_stderr": "string",
+    "poc_exit_code": "number",
+    "negative_control_command": "string",
+    "negative_control_observed": "string",
+    "negative_control_exit_code": "number",
+    "repeat_count": "number",
+    "poc_artifact_paths": "array",
+    "poc_artifact_dir": "string",
+    "remaining_limits": "string",
+    "_reserved_poc": "string",
+    "bug_status": { "type": "string", "enum": ["reproduced", "not_reproduced", "blocked", "falsified"] },
+    "impact_status": { "type": "string", "enum": ["proven", "partial", "not_proven", "blocked", "falsified"] },
+    "blocker_kind": {
+      "type": "string",
+      "enum": ["none", "missing_dependency", "missing_configuration", "deployment_fact", "unsafe_external", "other"]
+    },
+    "observed_behavior": "string",
+    "claimed_impact": "string",
+    "observed_terminal_outcome": "string",
+    "impact_chain": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "fields": {
+          "id": "string",
+          "claim": "string",
+          "status": {
+            "type": "string",
+            "enum": ["proven", "falsified", "partial", "unverified", "blocked", "not_applicable"]
+          },
+          "evidence_paths": { "type": "array", "items": "string" },
+          "covers": { "type": "array", "items": "string" },
+          "assessment": "string"
+        },
+        "required": ["id", "claim", "status", "evidence_paths", "covers", "assessment"]
+      }
+    },
+    "impact_artifact_paths": { "type": "array", "items": "string" },
+    "missing_impact_links": { "type": "array", "items": "string" },
+    "unverified_assumptions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "fields": {
+          "id": "string",
+          "assumption": "string",
+          "kind": {
+            "type": "string",
+            "enum": ["deployment", "configuration", "dependency", "actor", "economic", "other"]
+          },
+          "material": "boolean",
+          "status": { "type": "string", "enum": ["open", "resolved", "falsified"] }
+        },
+        "required": ["id", "assumption", "kind", "material", "status"]
+      }
+    },
+    "negative_control_status": { "type": "string", "enum": ["passed", "failed", "unavailable"] },
+    "repeatability_status": { "type": "string", "enum": ["deterministic", "non_deterministic", "not_tested"] }
+  }
+}

@@ -6,8 +6,10 @@ const PROVIDER_CREDENTIALS = {
   codex: ['CODEX_API_KEY', 'OPENAI_API_KEY'],
   claude: ['ANTHROPIC_API_KEY'],
   openrouter: ['OPENROUTER_API_KEY'],
+  omniroute: ['OMNIROUTE_API_KEY', 'OMNIROUTE_BASE_URL'],
   xai: ['XAI_API_KEY'],
   deepseek: ['DEEPSEEK_API_KEY'],
+  ollama: ['OLLAMA_BASE_URL'],
 };
 
 function hasValue(value) {

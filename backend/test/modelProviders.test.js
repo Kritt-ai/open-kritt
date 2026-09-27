@@ -12,12 +12,14 @@ const PROVIDER_ENV_KEYS = [
   'DEEPSEEK_API_KEY',
   'OPENROUTER_API_KEY',
   'XAI_API_KEY',
+  'OLLAMA_BASE_URL',
   'OPEN_KRITT_CODEX_API_KEY_CONFIGURED',
   'OPEN_KRITT_OPENAI_API_KEY_CONFIGURED',
   'OPEN_KRITT_ANTHROPIC_API_KEY_CONFIGURED',
   'OPEN_KRITT_DEEPSEEK_API_KEY_CONFIGURED',
   'OPEN_KRITT_OPENROUTER_API_KEY_CONFIGURED',
   'OPEN_KRITT_XAI_API_KEY_CONFIGURED',
+  'OPEN_KRITT_OLLAMA_BASE_URL_CONFIGURED',
   'OPEN_KRITT_CODEX_LOGIN_CONFIGURED',
   'CODEX_LOGIN_CONFIGURED',
 ];
@@ -49,10 +51,11 @@ test('configuredModelProviders returns canonical providers configured by presenc
       OPEN_KRITT_ANTHROPIC_API_KEY_CONFIGURED: '1',
       OPEN_KRITT_DEEPSEEK_API_KEY_CONFIGURED: '1',
       OPEN_KRITT_OPENROUTER_API_KEY_CONFIGURED: '1',
+      OPEN_KRITT_OLLAMA_BASE_URL_CONFIGURED: '1',
     },
   });
 
-  assert.deepEqual(providers, ['codex', 'claude', 'openrouter', 'deepseek']);
+  assert.deepEqual(providers, ['codex', 'claude', 'openrouter', 'deepseek', 'ollama']);
 });
 
 test('configuredModelProviders does not mistake a stale Codex login marker for credentials', () => {
@@ -74,6 +77,7 @@ test('configured provider checks accept local raw credentials', () => {
   assert.equal(isModelProviderConfigured('codex', { env }), true);
   assert.equal(isModelProviderConfigured('claude', { env }), false);
   assert.equal(isModelProviderConfigured('deepseek', { env: { DEEPSEEK_API_KEY: 'local-key' } }), true);
+  assert.equal(isModelProviderConfigured('ollama', { env: { OLLAMA_BASE_URL: 'http://localhost:11434' } }), true);
 });
 
 test('model provider API exposes configured IDs and rejects unavailable scan providers', async (t) => {

@@ -65,6 +65,30 @@ export function corsOptions(env = process.env) {
   };
 }
 
+// Central error handler. Validation errors become 422 with a field list.
+// eslint-disable-next-line no-unused-vars
+export function apiErrorHandler(err, req, res, next) {
+  if (err?.type === 'entity.too.large') {
+    return res.status(413).json({ error: 'Request body exceeds the 8 MB limit.' });
+  }
+  if (err instanceof ValidationError) {
+    return res.status(422).json({ error: 'Validation failed.', errors: err.errors });
+  }
+  // Bad BigInt conversion from a malformed :id param.
+  if (err instanceof SyntaxError && /Cannot convert .* to a BigInt/.test(err.message)) {
+    return res.status(400).json({ error: 'Invalid id.' });
+  }
+  const uniqueConflict = prismaUniqueConflict(err);
+  if (uniqueConflict) return res.status(uniqueConflict.status).json(uniqueConflict.body);
+  if (err?.code === 'P2025') return res.status(404).json({ error: 'Not found.' });
+  // Route errors that set a 4xx status carry a message written for the client.
+  if (Number.isInteger(err?.status) && err.status >= 400 && err.status < 500) {
+    return res.status(err.status).json({ error: err.message });
+  }
+  (req.log || logger).error({ err }, 'unhandled error');
+  res.status(500).json({ error: 'Internal server error.' });
+}
+
 export function createApp({ env = process.env } = {}) {
   const app = express();
 
@@ -102,25 +126,7 @@ export function createApp({ env = process.env } = {}) {
   // 404 for unknown API routes.
   app.use('/api', (req, res) => res.status(404).json({ error: 'Not found.' }));
 
-  // Central error handler. Validation errors become 422 with a field list.
-  // eslint-disable-next-line no-unused-vars
-  app.use((err, req, res, next) => {
-    if (err?.type === 'entity.too.large') {
-      return res.status(413).json({ error: 'Request body exceeds the 8 MB limit.' });
-    }
-    if (err instanceof ValidationError) {
-      return res.status(422).json({ error: 'Validation failed.', errors: err.errors });
-    }
-    // Bad BigInt conversion from a malformed :id param.
-    if (err instanceof SyntaxError && /Cannot convert .* to a BigInt/.test(err.message)) {
-      return res.status(400).json({ error: 'Invalid id.' });
-    }
-    const uniqueConflict = prismaUniqueConflict(err);
-    if (uniqueConflict) return res.status(uniqueConflict.status).json(uniqueConflict.body);
-    if (err?.code === 'P2025') return res.status(404).json({ error: 'Not found.' });
-    (req.log || logger).error({ err }, 'unhandled error');
-    res.status(500).json({ error: 'Internal server error.' });
-  });
+  app.use(apiErrorHandler);
 
   return app;
 }

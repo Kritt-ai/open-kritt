@@ -204,6 +204,222 @@ function shareSafeRepositoryDisplay(scan) {
   return /^[a-z0-9._-]+(?:\/[a-z0-9._-]+)+$/i.test(display) ? display : 'Remote repository';
 }
 
+function findingReadinessSummary(vulnerability) {
+  return record(vulnerability.readiness);
+}
+
+// Latest result per v2.7 stage from serialized enrichments (`stage` is set by
+// the finding serializer; results already carry their engine blocks).
+function findingStageResults(vulnerability) {
+  const stages = {};
+  for (const enrichment of vulnerability.enrichments || []) {
+    const result = record(enrichment?.result);
+    if (!result || enrichment.stub) continue;
+    if (['d3', 'd4', 'd5'].includes(enrichment.stage)) stages[enrichment.stage] = result;
+  }
+  return stages;
+}
+
+function list(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function markdownTable(headers, rows) {
+  return [
+    `| ${headers.join(' | ')} |`,
+    `| ${headers.map(() => '---').join(' | ')} |`,
+    ...rows.map((row) => `| ${row.map((cell) => markdownTableValue(cell)).join(' | ')} |`),
+  ];
+}
+
+function evidencePathsMarkdown(paths, evidence) {
+  const captured = new Set(list(evidence?.captured_paths));
+  const entries = list(paths).filter((path) => typeof path === 'string' && path);
+  if (!entries.length) return '—';
+  return entries
+    .map((path) => `${markdownText(path)} (${captured.has(path) ? 'captured' : 'unresolved'})`)
+    .join('<br>');
+}
+
+function openMaterialAssumptions(...sources) {
+  const seen = new Map();
+  for (const assumptions of sources) {
+    for (const assumption of list(assumptions)) {
+      if (!record(assumption)) continue;
+      seen.set(`${assumption.id ?? seen.size}`, assumption);
+    }
+  }
+  const open = [...seen.values()].filter((assumption) => assumption.material === true && assumption.status === 'open');
+  return { all: [...seen.values()], open };
+}
+
+// Spec 8: the "Readiness" chapter of finding.md. Rendered only for findings
+// with a v2.7 pipeline stage.
+function readinessMarkdown(vulnerability) {
+  const summary = findingReadinessSummary(vulnerability);
+  if (!summary) return [];
+  const { d3 = {}, d4 = {}, d5 = {} } = findingStageResults(vulnerability);
+  const evidence = record(d4._engine_evidence);
+  const decision = record(d5._engine_readiness);
+  const objective = record(d3.impact_objective) || {};
+  const assumptions = openMaterialAssumptions(d3.unverified_assumptions, d4.unverified_assumptions);
+  const readyLabel = summary.ready ? 'ready' : 'not ready';
+  const reasons = list(summary.blockingReasons).filter((reason) => typeof reason === 'string' && reason);
+  const dimensions = [
+    ['Bug', evidence?.bug_status ?? d4.bug_status ?? '—'],
+    ['Impact', evidence?.impact_status ?? d4.impact_status ?? '—'],
+    ['Terminal outcome', d4.observed_terminal_outcome || '—'],
+    [
+      'Deployment',
+      assumptions.open.length
+        ? `${assumptions.open.length} open material assumption${assumptions.open.length === 1 ? '' : 's'}`
+        : 'no open material assumptions',
+    ],
+    ['Scope', d5.scope_status ?? d3.scope_status ?? '—'],
+    ['Novelty', d5.novelty_status ?? d3.novelty_status ?? '—'],
+    ['Readiness', [summary.label, readyLabel, reasons[0]].filter(Boolean).join(' — ')],
+  ];
+  const lines = ['## Readiness', '', ...markdownTable(['Dimension', 'Status'], dimensions), ''];
+
+  lines.push(
+    '### Required versus observed outcome',
+    '',
+    ...markdownTable(
+      ['Required', 'Observed'],
+      [[objective.terminal_outcome || '—', d4.observed_terminal_outcome || '—']]
+    ),
+    ''
+  );
+
+  const chain = list(d4.impact_chain).length ? list(d4.impact_chain) : list(d3.impact_chain_plan);
+  lines.push('### Evidence chain', '');
+  if (chain.length) {
+    lines.push(
+      `| Hop | Claim | Status | Covers | Assessment | Evidence |`,
+      `| --- | --- | --- | --- | --- | --- |`,
+      ...chain.map((hop) => {
+        const row = record(hop) || {};
+        return `| ${[row.id, row.claim, row.status, list(row.covers).join(', '), row.assessment]
+          .map((cell) => markdownTableValue(cell || null))
+          .join(' | ')} | ${evidencePathsMarkdown(row.evidence_paths, evidence)} |`;
+      })
+    );
+  } else {
+    lines.push('Not provided.');
+  }
+  lines.push(
+    '',
+    `Negative control: ${markdownText(d4.negative_control_status, '—')}`,
+    '',
+    `Repeatability: ${markdownText(d4.repeatability_status, '—')}`,
+    ''
+  );
+
+  lines.push('### Assumptions', '');
+  if (assumptions.all.length) {
+    lines.push(
+      ...markdownTable(
+        ['ID', 'Assumption', 'Kind', 'Material', 'Status'],
+        assumptions.all.map((assumption) => [
+          assumption.id,
+          assumption.assumption,
+          assumption.kind,
+          assumption.material === true ? 'yes' : 'no',
+          assumption.status,
+        ])
+      )
+    );
+  } else {
+    lines.push('None recorded.');
+  }
+  lines.push('');
+
+  const missingLinks = list(d4.missing_impact_links).filter((link) => typeof link === 'string' && link);
+  lines.push('### Missing links', '');
+  lines.push(...(missingLinks.length ? missingLinks.map((link) => `- ${markdownText(link)}`) : ['None.']), '');
+
+  const mapping = list(d5.impact_mapping).filter(record);
+  const missingRequirements = list(d5.missing_requirements).filter((entry) => typeof entry === 'string' && entry);
+  if (mapping.length || missingRequirements.length) {
+    lines.push('### Impact mapping', '');
+    if (mapping.length) {
+      lines.push(
+        `| Required | Observed | Status | Evidence |`,
+        `| --- | --- | --- | --- |`,
+        ...mapping.map(
+          (entry) =>
+            `| ${[entry.required_outcome, entry.observed_outcome, entry.status]
+              .map((cell) => markdownTableValue(cell || null))
+              .join(' | ')} | ${evidencePathsMarkdown(entry.evidence_paths, evidence)} |`
+        ),
+        ''
+      );
+    }
+    if (missingRequirements.length) {
+      lines.push('Missing requirements:', '', ...missingRequirements.map((entry) => `- ${markdownText(entry)}`), '');
+    }
+  }
+
+  lines.push('### Limitations', '', markdownText(d4.remaining_limits, 'None recorded.'), '');
+
+  lines.push(
+    '### Readiness decision',
+    '',
+    `**${summary.ready ? 'READY' : 'NOT READY'}** (${markdownText(summary.label, '—')}) — lifecycle ${markdownText(
+      summary.lifecycleStatus,
+      '—'
+    )}`,
+    '',
+    `Policy version: ${markdownText(summary.policyVersion, '—')}`,
+    '',
+    `Legacy decision: ${summary.legacy ? 'yes' : 'no'}`,
+    ''
+  );
+  if (decision) {
+    const claim = d5.model_readiness_claim === true || d5.submission_ready === true;
+    const checks = Object.entries(record(decision.checks) || {});
+    lines.push(`Model claimed readiness: ${claim ? 'yes' : 'no'}`, '');
+    if (checks.length) {
+      lines.push(
+        `Checks: ${checks.map(([name, status]) => `${markdownText(name)} ${markdownText(status)}`).join(', ')}`,
+        ''
+      );
+    }
+  }
+  lines.push('Blocking reasons:', '');
+  lines.push(...(reasons.length ? reasons.map((reason) => `- ${markdownText(reason)}`) : ['- None.']), '');
+  return lines;
+}
+
+// Spec 8: report.txt keeps the model's prose but is prefixed with the engine
+// decision so a reader cannot mistake a bounded report for a ready one.
+function reportHeader(vulnerability) {
+  const summary = findingReadinessSummary(vulnerability);
+  if (!summary) return '';
+  const plain = (value) =>
+    visibleText(`${value ?? ''}`)
+      .replace(/\s*\n\s*/g, ' ')
+      .trim();
+  const body = summary.ready
+    ? `READY under ${plain(summary.policyVersion) || 'unknown policy'}`
+    : `NOT READY — ${plain(summary.label) || 'unknown'} — ${plain(summary.lifecycleStatus) || 'unknown'} — reasons: ${
+        list(summary.blockingReasons).map(plain).filter(Boolean).join('; ') || 'none recorded'
+      }`;
+  return `\`\`\`\n${body}\n\`\`\`\n\n`;
+}
+
+function manifestReadiness(vulnerability) {
+  const summary = findingReadinessSummary(vulnerability);
+  if (!summary) return null;
+  return {
+    ready: summary.ready === true,
+    label: summary.label ?? null,
+    lifecycleStatus: summary.lifecycleStatus ?? null,
+    policyVersion: summary.policyVersion ?? null,
+    legacy: summary.legacy === true,
+  };
+}
+
 function findingMarkdown(vulnerability, ordinal) {
   const summary = text(vulnerability.summary, `Finding ${ordinal}`);
   const location = [vulnerability.file_path, vulnerability.line]
@@ -243,6 +459,7 @@ function findingMarkdown(vulnerability, ordinal) {
   if (typeof vulnerability.comments === 'string' && vulnerability.comments.trim()) {
     lines.push(markdownSection('Review comments', vulnerability.comments));
   }
+  lines.push(...readinessMarkdown(vulnerability));
   lines.push('## Complete workflow result', '', fencedJson(vulnerability.jsonAnswer || {}), '');
   return `${lines.join('\n').trim()}\n`;
 }
@@ -285,25 +502,42 @@ function readmeMarkdown(scan, findings, findingDirectories) {
     '> [!WARNING]',
     '> Findings are derived from untrusted repository and model output. Review all `.txt` and `.json` files before opening, executing, or sharing their contents.',
     '',
-    '| Rank | Severity | Finding | Report | PoC |',
-    '| ---: | --- | --- | :---: | :---: |',
+    '| Rank | Severity | Finding | Report | Lifecycle |',
+    '| ---: | --- | --- | :---: | --- |',
   ];
 
+  const lifecycleCounts = new Map();
+  let ungated = 0;
   findings.forEach((vulnerability, index) => {
     const sources = findingPostScriptSources(vulnerability, scan.postScriptName);
     const hasReport = Boolean(reservedFindingMarkdown(sources, REPORT_KEY));
-    const hasPoc = Boolean(reservedFindingMarkdown(sources, POC_KEY));
+    const readiness = findingReadinessSummary(vulnerability);
     const directory = findingDirectories[index];
+    let lifecycle = '—';
+    if (readiness) {
+      const status =
+        typeof readiness.lifecycleStatus === 'string' && readiness.lifecycleStatus
+          ? readiness.lifecycleStatus
+          : 'unknown';
+      lifecycleCounts.set(status, (lifecycleCounts.get(status) || 0) + 1);
+      lifecycle = `${markdownTableValue(status)} (${readiness.ready ? 'ready' : 'not ready'})`;
+    } else {
+      ungated += 1;
+    }
     lines.push(
       `| ${vulnerability.rank ?? index + 1} | ${markdownTableValue(findingSeverity(vulnerability))} | [${markdownTableValue(
         vulnerability.summary || `Finding ${index + 1}`
-      )}](${directory}/finding.md) | ${hasReport ? `[yes](${directory}/report.txt)` : '—'} | ${
-        hasPoc ? `[yes](${directory}/poc.txt)` : '—'
-      } |`
+      )}](${directory}/finding.md) | ${hasReport ? `[yes](${directory}/report.txt)` : '—'} | ${lifecycle} |`
     );
   });
 
+  const lifecycleSummary = [
+    ...[...lifecycleCounts].map(([status, count]) => `${markdownText(status)} ${count}`),
+    ...(ungated ? [`not gated ${ungated}`] : []),
+  ];
   lines.push(
+    '',
+    `Findings per lifecycle status: ${lifecycleSummary.join(', ') || 'none'}.`,
     '',
     'Each finding directory contains the readable overview, the complete structured finding, every post-processing result, and the generated report/PoC when present.',
     '',
@@ -313,7 +547,7 @@ function readmeMarkdown(scan, findings, findingDirectories) {
   return lines.join('\n');
 }
 
-function findingManifest(scan, ordered, findingDirectories) {
+function findingManifest(scan, ordered, findingDirectories, pocArtifacts = new Map()) {
   return {
     formatVersion: EXPORT_FORMAT_VERSION,
     privacyProfile: 'share-safe',
@@ -327,12 +561,20 @@ function findingManifest(scan, ordered, findingDirectories) {
         id: vulnerability.id,
         rank: vulnerability.rank ?? index + 1,
         severity: findingSeverity(vulnerability),
+        readiness: manifestReadiness(vulnerability),
         files: {
           finding: `${directory}/finding.md`,
           structuredFinding: `${directory}/finding.json`,
           postProcessing: `${directory}/post-processing.json`,
           report: hasReport ? `${directory}/report.txt` : null,
           poc: hasPoc ? `${directory}/poc.txt` : null,
+          ...((pocArtifacts.get(String(vulnerability.id)) || []).length
+            ? {
+                pocArtifacts: pocArtifacts
+                  .get(String(vulnerability.id))
+                  .map((file) => `${directory}/poc-artifacts/${file.name}`),
+              }
+            : {}),
         },
       };
     }),
@@ -352,9 +594,9 @@ function findingManifest(scan, ordered, findingDirectories) {
   };
 }
 
-function findingExportFiles(scan, ordered, findingDirectories, exportedAt) {
+function findingExportFiles(scan, ordered, findingDirectories, exportedAt, pocArtifacts = new Map()) {
   const manifest = {
-    ...findingManifest(scan, ordered, findingDirectories),
+    ...findingManifest(scan, ordered, findingDirectories, pocArtifacts),
     exportedAt: new Date(exportedAt).toISOString(),
   };
   const files = [
@@ -377,9 +619,15 @@ function findingExportFiles(scan, ordered, findingDirectories, exportedAt) {
       { path: `${directory}/post-processing.json`, content: () => json(postProcessing) }
     );
     if (report) {
-      files.push({ path: `${directory}/report.txt`, content: () => (report.endsWith('\n') ? report : `${report}\n`) });
+      files.push({
+        path: `${directory}/report.txt`,
+        content: () => `${reportHeader(vulnerability)}${report.endsWith('\n') ? report : `${report}\n`}`,
+      });
     }
     if (poc) files.push({ path: `${directory}/poc.txt`, content: () => (poc.endsWith('\n') ? poc : `${poc}\n`) });
+    for (const artifact of pocArtifacts.get(String(vulnerability.id)) || []) {
+      files.push({ path: `${directory}/poc-artifacts/${artifact.name}`, content: () => artifact.content });
+    }
   });
   return files;
 }
@@ -392,6 +640,7 @@ export function createFindingExport(
     maxBytes = MAX_FINDING_EXPORT_BYTES,
     maxFileBytes = MAX_FINDING_EXPORT_FILE_BYTES,
     maxFindings = MAX_FINDING_EXPORT_FINDINGS,
+    pocArtifacts = new Map(),
   } = {}
 ) {
   const byteLimit = Number.isSafeInteger(maxBytes) && maxBytes > 0 ? maxBytes : MAX_FINDING_EXPORT_BYTES;
@@ -412,7 +661,7 @@ export function createFindingExport(
     return `finding-${ordinal}-${exportSlug(vulnerability.summary, `id-${vulnerability.id}`, 72)}`;
   });
   const exportTime = new Date(exportedAt);
-  const files = findingExportFiles(scan, ordered, findingDirectories, exportTime);
+  const files = findingExportFiles(scan, ordered, findingDirectories, exportTime, pocArtifacts);
   let totalBytes = 0;
   for (const file of files) {
     // Content is generated one file at a time for preflight and discarded. The

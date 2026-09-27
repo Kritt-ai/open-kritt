@@ -1,0 +1,9 @@
+{
+  "bug_bounty_url": "https://hackenproof.com/audit-programs/somnia-audit-contest",
+  "program_rules_checked_at": "2026-09-16",
+  "program_rules_snapshot": "Historical contest ran from 2025-08-06 through 2025-09-20. In-scope impacts included consensus flaws, peer-to-peer network flaws, and cryptographic flaws. Only code paths enabled by mainnet or mainnet-small configuration qualify. Network-level DoS and protocol smart contracts were out of scope. Testing must remain local and must not affect public networks or services.",
+  "deployment_evidence": "The historical contest required NETWORK_PRESET=mainnet-small ./ci/run-local-deployment.sh. Treat a path as production-reachable only when it is enabled by mainnet-small or mainnet configuration.",
+  "known_issues_snapshot": "The July 2025 Hacken protocol audit at commit 0af8c04569b626dd5c0cace903998b9ec06ab5a6 is the historical known-issue baseline. Do not treat its sixteen reported root causes as new findings.",
+  "authorized_test_constraints": "Static analysis and isolated local tests only. Do not send traffic or transactions to public Somnia infrastructure. Do not perform availability testing against any external service.",
+  "repeat_runs": "2"
+}

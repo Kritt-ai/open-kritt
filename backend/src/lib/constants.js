@@ -37,7 +37,9 @@ export const POST_SCRIPT_MARKDOWN_OUTPUT_KEYS = ['_reserved_report', '_reserved_
 export const POST_SCRIPT_CHIP_PREFIX = '_chip_';
 
 // Allowed JSON-schema field types in the simplified output-format editor.
-export const FIELD_TYPES = ['string', 'number', 'boolean', 'array', 'object'];
+// Nested descriptors and the output-format normalizer live in fieldDefinitions.js;
+// they are re-exported here so existing imports keep working.
+export { FIELD_TYPES, normalizeOutputFormat } from './fieldDefinitions.js';
 
 // Default suggested types for known vulnerability keys.
 export const REQUIRED_KEY_TYPES = {
@@ -71,10 +73,10 @@ export const SCAN_STATUSES = [
 export const THINKING_EFFORTS = ['default', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 export const DEFAULT_THINKING_EFFORT = 'medium';
 
-export const MODEL_PROVIDERS = ['codex', 'claude', 'openrouter', 'xai', 'deepseek'];
+export const MODEL_PROVIDERS = ['codex', 'claude', 'openrouter', 'omniroute', 'xai', 'deepseek', 'ollama'];
 export const DEFAULT_MODEL_PROVIDER = 'openrouter';
 
-export const HARNESSES = ['codex', 'claude-code', 'cursor', 'grok-build'];
+export const HARNESSES = ['codex', 'claude-code', 'cursor', 'grok-build', 'ollama'];
 export const HARNESS_ALIASES = {
   'codex-cli': 'codex',
   'cursor-agent': 'cursor',
@@ -85,13 +87,16 @@ export const MODEL_PROVIDER_HARNESSES = {
   codex: ['codex'],
   claude: ['claude-code'],
   openrouter: ['codex', 'claude-code'],
+  omniroute: ['codex', 'claude-code'],
   xai: ['grok-build'],
   deepseek: ['codex'],
+  ollama: ['ollama'],
 };
 export const HARNESS_THINKING_EFFORTS = {
   codex: ['default', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
   'claude-code': ['default', 'low', 'medium', 'high', 'xhigh', 'max'],
   'grok-build': ['low', 'medium', 'high', 'xhigh'],
+  ollama: ['default'],
 };
 
 export const GENERATION_KINDS = ['workflow', 'post_script'];
@@ -266,34 +271,6 @@ export function extractExtraKeys(content) {
 export function refResolves(ref, available, allowExtra = false) {
   if (available && typeof available.has === 'function' && available.has(ref)) return true;
   return allowExtra && isExtraRef(ref);
-}
-
-// Normalize an output-format value (object map, array of {key,type}, or a JSON
-// string of either) into a plain { key: type } object. Throws on malformed JSON.
-export function normalizeOutputFormat(input) {
-  let value = input;
-  if (typeof value === 'string') {
-    value = JSON.parse(value); // may throw — caller catches
-  }
-  const out = {};
-  const setField = (key, type) => {
-    // defineProperty preserves keys such as `__proto__` as ordinary data so
-    // validation can reject them instead of silently changing the object.
-    Object.defineProperty(out, key, { value: type, enumerable: true, configurable: true, writable: true });
-  };
-  if (Array.isArray(value)) {
-    for (const f of value) {
-      if (f && typeof f === 'object' && 'key' in f) setField(f.key, f.type ?? 'string');
-    }
-  } else if (value && typeof value === 'object') {
-    for (const [k, v] of Object.entries(value)) {
-      if (v && typeof v === 'object' && 'type' in v) setField(k, v.type);
-      else if (typeof v === 'string') setField(k, v);
-      else if (Array.isArray(v)) setField(k, 'array');
-      else setField(k, typeof v);
-    }
-  }
-  return out;
 }
 
 export function duplicateOutputFormatKeys(input) {

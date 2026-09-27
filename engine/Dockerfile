@@ -10,9 +10,9 @@ WORKDIR /app
 COPY --from=node_runtime /usr/local/ /usr/local/
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends bash ca-certificates curl git util-linux \
+    && apt-get install -y --no-install-recommends bash ca-certificates curl git poppler-utils util-linux \
     && npm install --global --no-audit --no-fund npm@12.0.1 \
-    && npm install --global --no-audit --no-fund @openai/codex@0.145.0 \
+    && npm install --global --no-audit --no-fund @openai/codex@0.157.1 \
     && codex --version \
     && npm install --global --no-audit --no-fund --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code@2.1.215 \
     && apt-get clean \
@@ -57,6 +57,21 @@ RUN case "${TARGETARCH}" in \
     && install -m 0755 /tmp/grok /usr/local/bin/grok \
     && rm /tmp/grok \
     && grok --version
+
+# Foundry lets verification stages compile and run Solidity PoCs (forge test,
+# local anvil forks) inside the disposable runner containers.
+ARG FOUNDRY_VERSION=v1.8.3
+RUN case "${TARGETARCH}" in \
+      amd64) foundry_sha256=7ca48e6ca3cac1bce1403ca67e5bc1dc3bc1fd818199c9957c7165079c228568 ;; \
+      arm64) foundry_sha256=93fc23be26c8a902ca58fe54aa6ca28c880b58af95d052674933161df7928e6d ;; \
+      *) echo "unsupported Foundry architecture: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL "https://github.com/foundry-rs/foundry/releases/download/${FOUNDRY_VERSION}/foundry_${FOUNDRY_VERSION}_linux_${TARGETARCH}.tar.gz" -o /tmp/foundry.tar.gz \
+    && echo "${foundry_sha256}  /tmp/foundry.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/foundry.tar.gz -C /usr/local/bin forge cast anvil \
+    && rm /tmp/foundry.tar.gz \
+    && forge --version \
+    && anvil --version
 
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 

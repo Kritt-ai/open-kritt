@@ -7,7 +7,7 @@ WORKDIR /app
 # node_modules, so deps are installed again on first start to be safe.)
 COPY package*.json ./
 RUN npm install
-RUN npm install --global --no-audit --no-fund @openai/codex@0.145.0 \
+RUN npm install --global --no-audit --no-fund @openai/codex@0.157.1 \
     && codex --version \
     && npm install --global --no-audit --no-fund --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code@2.1.215
 # Accounts spawns `grok login --device-auth` inside this image. Pin the same

@@ -77,9 +77,9 @@ describe('configuredModelProviders', () => {
   it('uses only supported provider IDs returned by the API', () => {
     expect(
       configuredModelProviders({
-        providers: ['OPENROUTER', 'unknown', 'claude', 'codex', 'codex', 'xai', 'deepseek'],
+        providers: ['OPENROUTER', 'unknown', 'claude', 'codex', 'codex', 'xai', 'deepseek', 'ollama'],
       })
-    ).toEqual(['codex', 'claude', 'openrouter', 'xai', 'deepseek']);
+    ).toEqual(['codex', 'claude', 'openrouter', 'xai', 'deepseek', 'ollama']);
   });
 
   it('handles empty and malformed availability responses', () => {
@@ -95,6 +95,7 @@ describe('model provider defaults', () => {
     expect(defaultModelForModelProvider('openrouter')).toBe('z-ai/glm-5.2');
     expect(defaultModelForModelProvider('xai')).toBe('grok-4.6');
     expect(defaultModelForModelProvider('deepseek')).toBe('deepseek-flash');
+    expect(defaultModelForModelProvider('ollama')).toBe('qwen2.5-coder:7b-instruct');
   });
 
   it('moves provider-owned model defaults with the provider', () => {
@@ -212,6 +213,13 @@ describe('model catalog', () => {
     expect(isModelSelectionValid('grok-4.5', loadingCatalog, 'xai')).toBe(true);
     expect(modelForCatalogChange('grok-4.5', 'xai', 'xai', loadingCatalog)).toBe('grok-4.5');
     expect(modelForCatalogChange('gpt-5-codex', 'codex', 'xai', loadingCatalog)).toBe('');
+  });
+
+  it('keeps exact local Ollama model tags usable', () => {
+    expect(usesFreeTextModelInput({}, 'ollama')).toBe(true);
+    expect(defaultHarnessForModelProvider('ollama')).toBe('ollama');
+    expect(harnessesForModelProvider('ollama')).toEqual(['ollama']);
+    expect(isModelSelectionValid('huihui_ai/qwen2.5-coder-abliterate:7b-instruct', {}, 'ollama')).toBe(true);
   });
 
   it('uses Grok Build model-specific efforts and includes xhigh for Grok 4.6', () => {

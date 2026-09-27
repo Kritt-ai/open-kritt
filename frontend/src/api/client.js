@@ -128,7 +128,7 @@ async function download(path, fallbackFilename) {
 
 export const api = {
   // overview
-  overview: () => request('/overview'),
+  overview: (scanId = '') => request(`/overview${scanId ? `?scanId=${encodeURIComponent(scanId)}` : ''}`),
   // non-secret engine runtime settings
   settings: () => request('/settings'),
   updateSettings: (body) => request('/settings', { method: 'PATCH', body }),
@@ -149,6 +149,7 @@ export const api = {
   },
   scan: (id) => request(`/scans/${id}`),
   scanVulnerabilities: (id) => request(`/scans/${id}/vulnerabilities`),
+  scanGraph: (id) => request(`/scans/${id}/graph`),
   supplementalPostScriptRuns: (id) => request(`/scans/${id}/supplemental-post-script-runs`),
   createSupplementalPostScriptRun: (id, body) =>
     request(`/scans/${id}/supplemental-post-script-runs`, { method: 'POST', body }),
@@ -203,7 +204,16 @@ export const api = {
   generation: (id) => request(`/generations/${id}`),
   updateScanStatus: (id, status) => request(`/scans/${id}`, { method: 'PATCH', body: { status } }),
   resumeScan: (id) => request(`/scans/${id}`, { method: 'PATCH', body: { status: 'pending' } }),
-  deleteScan: (id) => request(`/scans/${id}`, { method: 'DELETE' }),
+  deleteScan: async (id) => {
+    try {
+      return await request(`/scans/${id}`, { method: 'DELETE' });
+    } catch (error) {
+      // Deletion is intentionally idempotent in the UI. A stale card or detail
+      // page can outlive a successful delete performed from another view.
+      if (error instanceof ApiError && error.status === 404) return null;
+      throw error;
+    }
+  },
   // vulnerabilities
   vulnerability: (id) => request(`/vulnerabilities/${id}`),
   updateVulnerability: (id, body) => request(`/vulnerabilities/${id}`, { method: 'PATCH', body }),

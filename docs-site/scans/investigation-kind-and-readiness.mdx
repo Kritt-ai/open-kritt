@@ -1,0 +1,263 @@
+---
+title: "Investigation kind and readiness"
+description: "How gated workflows separate a reproduced bug from a proven impact and decide report readiness."
+---
+
+Some workflows, such as the built-in v2.7 profile, run a **readiness gate**. For those the
+engine answers two questions with separate evidence:
+
+1. Did the bug happen?
+2. Did the security consequence required by *this* investigation happen?
+
+```text
+Bug reproduced ≠ Impact proven ≠ Report ready
+```
+
+The model produces the evidence assessment in the D3, D4, and D5 post-scripts; the engine
+enforces structure, provenance, consistency, and the readiness rules below. Both the model's
+claim (`submission_ready`) and the engine's decision are stored, and the engine never treats
+the model's claim as proof.
+
+## Investigation kinds
+
+A gated workflow requires an **investigation kind** when the scan is created. The create-scan
+form shows a select with no default value and a recommendation with its reason
+(`public_bounty` when a bounty URL extra is present, otherwise `internal_research`); the
+UI recommends, it never commits silently. The run settings show the chosen kind and policy
+version read-only afterwards.
+
+| Kind | Meaning | Readiness label |
+| --- | --- | --- |
+| `public_bounty` | Submission to a public bounty program with published eligible-impact rules | `submission_ready` |
+| `audit_competition` | Submission to a competitive audit with a specification or scope document | `submission_ready` |
+| `private_audit` | Engagement report for a client | `report_ready` |
+| `threat_model_validation` | Validation of a threat model's assumptions | `report_ready` |
+| `internal_research` | Research with the researcher's own hypothesis as objective | `report_ready` |
+
+Three configuration keys are snapshotted into the scan:
+
+| Key | Values | Set by |
+| --- | --- | --- |
+| `investigation_kind` | one of the kinds above | you, at creation |
+| `investigation_kind_source` | `user`, `legacy_default` | backend writes `user` for every new gated scan |
+| `readiness_policy_version` | `v2.7-impact-gate-1` | backend copies the workflow's gate identifier |
+
+Once the scan exists, these keys are immutable. A run-settings update may omit them or
+resubmit them unchanged; any addition, removal, or change is rejected. Non-gated workflows
+accept the keys but no gate runs.
+
+## Source-type matrix
+
+D3 defines an **impact objective** whose `source_type` names where the required outcome
+comes from. Each investigation kind allows only some sources, and adds its own scope,
+novelty, and repeatability requirements:
+
+| Kind | Allowed objective sources | Scope required | Novelty required | Probabilistic evidence |
+| --- | --- | --- | --- | --- |
+| `public_bounty` | `bounty_rule` | yes | yes | no |
+| `audit_competition` | `audit_spec`, `engagement_scope` | yes | yes | no |
+| `private_audit` | `audit_spec`, `engagement_scope`, `threat_model`, `researcher_hypothesis` | yes | no | no |
+| `threat_model_validation` | `threat_model`, `engagement_scope` | no | no | no |
+| `internal_research` | `threat_model`, `researcher_hypothesis`, `engagement_scope` | no | no | no |
+
+A public bounty scan without an exact eligible-impact rule stays blocked; D3 must set
+`impact_definition_status: unavailable` rather than relabelling the objective as a
+researcher hypothesis.
+
+## Lifecycle statuses
+
+Every gated finding carries one lifecycle status, written by the engine after each stage and
+shown as the `lifecycle` chip in the findings list:
+
+- `hypothesis` - no D3 result yet
+- `false_positive` - D3 rejected the candidate
+- `not_advanced` - any other non-passing D3 verdict (the verdict is in the reason)
+- `code_confirmed` - D3 passed, D4 pending
+- `bug_not_reproduced`, `bug_falsified`, `bug_blocked` - D4 could not reproduce the bug
+- `bug_proven_impact_unproven` - the bug reproduced, the terminal outcome was not observed
+- `impact_partial` - some required outcomes observed, not the terminal one
+- `impact_falsified` - the test showed the impact does not occur
+- `impact_blocked_by_configuration`, `impact_blocked_by_deployment_fact`, `impact_blocked` -
+  a precondition outside the workspace prevented the impact test
+- `impact_proven` - the terminal outcome was observed and captured, gate not yet passed
+- `report_ready` - every readiness rule passed
+- `legacy_bug_reproduced_impact_unverified` - a result from before the gate existed
+
+A technically valid bug is never deleted or marked a false positive because the
+bounty-relevant impact was not established; it keeps the accurate status above.
+
+## Stage flow
+
+- **D3** verifies the candidate at source level and defines the proof target: `bug_claim`,
+  `impact_claim`, `impact_family`, `impact_objective` (with `terminal_outcome` and
+  `required_evidence`), the resolved `evidence_dimensions`, an `impact_chain_plan` of hops,
+  structured `unverified_assumptions`, the `first_unsupported_hop`, and a
+  `falsification_plan`.
+- **D4** runs the local PoC and reports `bug_status` and `impact_status` separately, fills
+  the `impact_chain` with the same hop ids as the plan (it may add hops, never remove or
+  rename one), and lists `impact_artifact_paths` and `missing_impact_links`. The engine
+  captures the union of all artifact paths (at most 20 files after deduplication; an
+  overflow marks capture incomplete instead of truncating) and writes `_engine_evidence`.
+- **D5** runs when `bug_status` is `reproduced`, capture is complete, and `impact_status` is
+  `proven`, `partial`, or `not_proven`. It builds the `impact_mapping` of required versus
+  observed outcomes and claims `submission_ready`. The engine then evaluates the rules
+  below and writes `_engine_readiness`.
+
+<Warning>
+  D5 eligibility does not imply readiness eligibility. `partial` and `not_proven` impact
+  reach D5 so scope, mapping, and a bounded non-ready report are still recorded, but only
+  `impact_status: proven` can pass the gate.
+</Warning>
+
+## Readiness rules
+
+The engine evaluates nine named checks. `ready` is true only when every one passes; each
+failure adds a blocking reason.
+
+1. **`policy_version_supported`** - `readiness_policy_version` is known to the engine.
+   Unknown versions block; nothing falls through to the latest policy.
+2. **`investigation_kind_explicit`** - `investigation_kind_source` is `user`.
+3. **`d3_defined`** - the D3 verdict is `confirmed` or `plausible_needs_poc`,
+   `impact_definition_status` is `defined`, the objective has a non-empty `claim`,
+   `terminal_outcome`, and `required_evidence`, and its `source_type` is allowed for the
+   investigation kind.
+4. **`d4_bug_and_impact`** - `bug_status` is `reproduced`, `impact_status` is `proven`,
+   `observed_terminal_outcome` is non-empty, `negative_control_status` is `passed`, and
+   `repeatability_status` is `deterministic` unless the policy allows probabilistic
+   evidence.
+5. **`chain_complete`** - the D4 hop ids are a superset of the D3 plan ids with identical
+   ids and no duplicates; every hop is `proven` or `not_applicable` (with an assessment);
+   `missing_impact_links` is empty; no assumption is both `material` and `open`.
+6. **`provenance`** - every `proven` hop has at least one `evidence_paths` entry; every
+   path in the hops and in the D5 `impact_mapping` resolves to a captured artifact; capture
+   is complete.
+7. **`dimension_coverage`** - every evidence dimension marked `required` is covered by at
+   least one `proven` hop's `covers`; `not_applicable` dimensions carry a rationale; tags
+   outside the family table are rejected, so a weaker substitute tag cannot satisfy the
+   gate.
+8. **`d5_match`** - `impact_match_status` is `exact`, `impact_evidence_status` is
+   `verified`, every mapping entry is `proven`, `artifact_reference` equals the D4 artifact
+   directory, and `missing_requirements` is empty.
+9. **`scope_and_novelty`** - `scope_status` is `in_scope_verified` with non-empty
+   `scope_evidence` when the kind requires scope; `novelty_status` is `novel_verified` with
+   non-empty `novelty_evidence` when the kind requires novelty.
+
+## Impact families and evidence dimensions
+
+D3 classifies the impact into one family. Each family supplies default evidence dimensions;
+D3 resolves each as `required` or `not_applicable` (with a rationale), and rule 7 checks
+that every required dimension is covered by a proven hop. Every family also implicitly
+requires `terminal_outcome`.
+
+| Family | Default dimensions |
+| --- | --- |
+| `unauthorized_action` | `initial_actor`, `permission_boundary`, `protected_operation`, `unauthorized_result` |
+| `funds_loss` | `balance_before`, `balance_after`, `asset_ownership`, `net_change`, `recipient_control` |
+| `availability_loss` | `attacker_workload`, `measurable_degradation`, `duration`, `affected_component`, `recovery` |
+| `resource_exhaustion` | `pool_size`, `attacker_cost_per_iteration`, `iterations_required`, `replenishment`, `recovery` |
+| `consensus_failure` | `conflicting_state`, `halt_or_divergence`, `affected_participants`, `recovery_requirements` |
+| `integrity_violation` | `trusted_value_before`, `trusted_value_after`, `unauthorized_mutation`, `downstream_consumer` |
+| `confidentiality_loss` | `protected_data`, `unauthorized_actor`, `disclosure_boundary` |
+| `privilege_escalation` | `initial_role`, `acquired_capability`, `protected_operation` |
+| `temporary_freezing` | `affected_value`, `duration`, `release_conditions`, `recovery_path` |
+| `permanent_freezing` | `affected_value`, `irrecoverability_under_recovery_model` |
+| `other` | `terminal_outcome` |
+
+## Worked examples
+
+One short example per family, showing where the finding stops.
+
+<AccordionGroup>
+  <Accordion title="unauthorized_action - protected action succeeds">
+    A missing ownership check lets a low-privileged caller invoke an admin-only operation.
+    D4 shows the caller, the check it bypassed, the operation, and the resulting state
+    change, each with a captured artifact. All four dimensions are covered, the terminal
+    outcome matches the objective, and the finding proceeds to `impact_proven` and, with
+    scope and novelty verified, `report_ready`.
+  </Accordion>
+  <Accordion title="funds_loss - before and after balances">
+    A rounding error lets a withdrawal exceed a deposit. D4 captures the balance before, the
+    balance after, the ownership of the drained asset, the net change, and the attacker's
+    control of the recipient. With every dimension covered the impact is proven. If D4 had
+    captured only the withdrawal transcript and not the balances, `balance_before` and
+    `balance_after` stay uncovered and the finding stops at `bug_proven_impact_unproven`.
+  </Accordion>
+  <Accordion title="availability_loss - crash without degradation">
+    A malformed request crashes one worker process. The bug reproduces, but the process
+    supervisor restarts it and no request fails. `measurable_degradation` and `duration`
+    are not covered, the terminal outcome ("service unavailable to other users") was not
+    observed, and the finding stops at `bug_proven_impact_unproven`.
+  </Accordion>
+  <Accordion title="resource_exhaustion - one unit consumed">
+    A request path leaks one connection from a pool per call. D4 proves the leak of a
+    single unit. The pool size, the attacker's cost per iteration, the iterations required,
+    and replenishment were never measured, so the exhaustion itself is not shown. The hop
+    "pool exhausted" stays `unverified`, `missing_impact_links` names it, and the finding
+    stops at `bug_proven_impact_unproven`. Measuring the pool and driving it to failure
+    would turn this into `impact_proven`.
+  </Accordion>
+  <Accordion title="consensus_failure - halt or divergence">
+    Two nodes accept conflicting state for the same height. D4 captures the conflicting
+    state, the divergence in a local multi-node simulation, the affected participants, and
+    what recovery requires. The impact is proven. If only one node's misbehaviour was shown
+    without a second node diverging, `halt_or_divergence` is uncovered and the finding
+    stops at `impact_partial`.
+  </Accordion>
+  <Accordion title="integrity_violation - corruption without a consumer">
+    An unchecked write corrupts a cached value. D4 shows the trusted value before and after
+    and the unauthorized mutation, but no component reads the corrupted value in a way that
+    changes behaviour. `downstream_consumer` is not covered and the finding stops at
+    `impact_partial`.
+  </Accordion>
+  <Accordion title="confidentiality_loss - disclosure">
+    An error response includes a secret meant for another tenant. D4 captures the protected
+    data, the unauthorized actor receiving it, and the boundary it crossed. The impact is
+    proven and the finding continues to D5.
+  </Accordion>
+  <Accordion title="privilege_escalation - acquired capability">
+    A role check compares the wrong field. D4 shows the initial role, the capability
+    acquired, and the protected operation performed with it. Proven. If the capability was
+    acquired but no protected operation was exercised, `protected_operation` is uncovered
+    and the finding stops at `impact_partial`.
+  </Accordion>
+  <Accordion title="temporary_freezing - release conditions">
+    A pause flag can be set by an unprivileged caller and cleared by an operator. D4 shows
+    the affected value, the duration the value was locked, and the release path. All
+    dimensions covered; proven. If the operator's ability to clear the flag was assumed
+    rather than shown, that material assumption stays `open` and rule 5 blocks readiness
+    even though `impact_status` is `proven`.
+  </Accordion>
+  <Accordion title="permanent_freezing - recovery model">
+    Assets can be sent to an address with no owner. D4 shows the affected value and, under
+    the documented recovery model (no upgrade or admin recovery), that nothing can release
+    it. Proven. If the deployment's recovery capability is unknown, the objective depends on
+    a `deployment_fact` blocker and the finding stops at
+    `impact_blocked_by_deployment_fact`.
+  </Accordion>
+  <Accordion title="other - weaker than the required outcome">
+    The bounty rule requires "theft of user funds"; the PoC observes a reverted transfer
+    that emits a misleading event. The bug reproduces, but the D5 mapping marks the required
+    outcome `missing` and `impact_match_status` is `partial`. The model may not claim
+    readiness, and even if it did, rule 8 fails and the engine records `ready: false`.
+  </Accordion>
+</AccordionGroup>
+
+## Legacy behaviour
+
+Scans created before the gate existed have none of the three configuration keys. They are
+interpreted at read time - never rewritten - as `internal_research` with
+`investigation_kind_source: legacy_default` and `readiness_policy_version:
+legacy-unverified`. The engine blocks and the backend synthesizes the same blocks with
+`legacy: true`:
+
+- a D4 result with `poc_status: reproduced` becomes `bug_status: reproduced` and
+  `impact_status: unverified`, lifecycle `legacy_bug_reproduced_impact_unverified`;
+- every readiness decision is `ready: false` with the blocking reason "Investigation kind
+  and readiness policy were not explicitly selected when this legacy scan was created.";
+- a legacy D5 `missing_requirements` string is read as an array (`""` → `[]`,
+  `"text"` → `["text"]`).
+
+The finding page shows a **legacy** badge when blocks were synthesized. Historical
+enrichment JSON is never migrated.
+
+Next: [how to view results](/scan-results/how-to-view).
