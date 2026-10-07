@@ -7,6 +7,7 @@ import unicodedata
 from datetime import timedelta
 from typing import Any
 
+from .adaptive_discovery import discovery_config, discovery_prompt, validate_discovery
 from .artifact_cleanup import (
     ArtifactCleanupResult,
     cleanup_checkout_caches,
@@ -28,6 +29,7 @@ from .harnesses import (
     RETRYABLE_RATE_LIMIT_FAILURES,
     HarnessError,
     cleanup_stale_scan_sandboxes,
+    harness_deadline,
     harness_failure_retry_count,
     harness_for,
     normalize_harness_name,
@@ -623,6 +625,13 @@ class Worker:
                 error=ORPHANED_METADATA_ERROR,
             )
             conn.commit()
+        reconcile_discovery = getattr(self.db, "reconcile_interrupted_discovery", None)
+        if callable(reconcile_discovery):
+            # Native metadata repair commits first: discovery always takes the
+            # scan lock before inspecting path/metadata lifecycle state.
+            with self.db.connect() as conn:
+                reconcile_discovery(conn)
+                conn.commit()
         repaired = sum(counts.values())
         if repaired:
             LOGGER.info("marked %s orphaned running metadata rows interrupted: %s", repaired, counts)
@@ -1358,9 +1367,13 @@ class Worker:
             workflow = self.db.load_workflow(conn, int(scan["workflow_id"]))
 
         while True:
+            frontier = None
             with self.db.connect() as conn:
                 current = self.db.load_scan(conn, scan_id)
                 if not current or current["status"] in NON_RUNNABLE_SCAN_STATUSES:
+                    if current and discovery_config(current) is not None:
+                        self.db.reconcile_existing_discovery(conn, scan_id)
+                        conn.commit()
                     return did_work
                 if not self._worker_can_pick_job(worker_id):
                     return did_work
@@ -1373,6 +1386,11 @@ class Worker:
                     jobs = None
                     completed = claimed = set()
                 else:
+                    frontier = (
+                        self.db.discovery_snapshot(conn, current, workflow)
+                        if discovery_config(current) is not None
+                        else None
+                    )
                     completed = self.db.load_completed_metadata(conn, scan_id)
                     claimed = self.db.load_claimed_metadata(conn, scan_id)
                     skip_attempted_step_ids = configured_step_ids(current, "skip_attempted_step_ids")
@@ -1386,6 +1404,7 @@ class Worker:
                         completed=completed,
                         claimed=claimed,
                         step_results=step_results,
+                        discovery_frontier=frontier,
                     )
                     conn.commit()
 
@@ -1416,6 +1435,8 @@ class Worker:
                 return did_work
 
             if not jobs:
+                if frontier is not None and frontier["status"] == "running":
+                    return did_work
                 if claimed != completed:
                     return did_work
                 with self.db.connect() as conn:
@@ -1451,8 +1472,12 @@ class Worker:
         checked_out_commit = None
         prompt_filled = ""
         prepared = None
+        adaptive = discovery_config(scan)
+        is_discovery = adaptive is not None and adaptive["step_id"] == step.id
+        if is_discovery and state.prev_table != "workflows.discovery_paths":
+            raise ValueError("adaptive discovery job requires a persisted investigation path")
         try:
-            schema = output_schema(step.output_format, step.multi_output)
+            schema = output_schema(step.output_format, step.multi_output, discovery=is_discovery)
             selection = model_selection or model_selection_for_depth(scan, step.depth)
             thinking_effort = selection.thinking_effort
             harness_name = normalize_harness_name(selection.harness)
@@ -1464,7 +1489,8 @@ class Worker:
                     if not current_scan or current_scan["status"] in NON_RUNNABLE_SCAN_STATUSES:
                         conn.commit()
                         return False
-                    metadata_id = self.db.claim_step_metadata(
+                    claim_metadata = self.db.claim_discovery_metadata if is_discovery else self.db.claim_step_metadata
+                    metadata_id = claim_metadata(
                         conn,
                         scan_id=int(scan["id"]),
                         workflow_id=workflow_id,
@@ -1521,6 +1547,7 @@ class Worker:
                         native_agent_skills_prompt(agent_skills, harness_name),
                         workspace_prompt_context(prepared.layout, prepared.manifest_json),
                         rendered_prompt,
+                        discovery_prompt(state.context["discovery_path"]) if is_discovery else "",
                         repeat_append_prompt(state.repeat_run, prior_repeat_results),
                     ]
                     prompt_filled = harness_prompt(
@@ -1532,6 +1559,8 @@ class Worker:
                         current_scan = self.db.load_scan(conn, int(scan["id"]))
                         if not current_scan or current_scan["status"] in NON_RUNNABLE_SCAN_STATUSES:
                             status = current_scan["status"] if current_scan else "missing"
+                            if is_discovery:
+                                self.db.lock_discovery(conn, int(scan["id"]))
                             self.db.update_metadata(
                                 conn,
                                 metadata_id,
@@ -1546,6 +1575,14 @@ class Worker:
                                 codex_account_id=getattr(prepared.workspace, "provider_account_id", None),
                                 codex_account_email=getattr(prepared.workspace, "provider_account_email", None),
                             )
+                            if is_discovery:
+                                self.db.stop_discovery_path(
+                                    conn,
+                                    int(scan["id"]),
+                                    state.prev_id,
+                                    metadata_id,
+                                    f"scan became {status} before harness started",
+                                )
                             conn.commit()
                             return True
                         self.db.update_metadata(
@@ -1565,6 +1602,8 @@ class Worker:
                         conn.commit()
                 except ClaudeCredentialRateLimited as exc:
                     with self.db.connect() as conn:
+                        if is_discovery:
+                            self.db.lock_discovery(conn, int(scan["id"]))
                         self.db.update_metadata(
                             conn,
                             metadata_id,
@@ -1574,6 +1613,8 @@ class Worker:
                             raw_token_usage=None,
                             phase="interrupted",
                         )
+                        if is_discovery:
+                            self.db.stop_discovery_path(conn, int(scan["id"]), state.prev_id, metadata_id, str(exc))
                         conn.commit()
                     raise RateLimitExhausted(
                         str(exc),
@@ -1584,6 +1625,8 @@ class Worker:
                     ) from exc
                 except Exception as exc:
                     with self.db.connect() as conn:
+                        if is_discovery:
+                            self.db.lock_discovery(conn, int(scan["id"]))
                         self.db.update_metadata(
                             conn,
                             metadata_id,
@@ -1593,7 +1636,13 @@ class Worker:
                             raw_token_usage=None,
                             phase="failed",
                         )
+                        if is_discovery:
+                            self.db.stop_discovery_path(
+                                conn, int(scan["id"]), state.prev_id, metadata_id, f"workspace setup failed: {exc}"
+                            )
                         conn.commit()
+                    if is_discovery:
+                        return True
                     raise StepExecutionError(f"workspace setup failed for step {step.id}: {exc}") from exc
 
             retry_count = self.runtime_retry_count()
@@ -1613,6 +1662,8 @@ class Worker:
                 try:
                     if not self._new_scan_container_allowed(int(scan["id"])):
                         with self.db.connect() as conn:
+                            if is_discovery:
+                                self.db.lock_discovery(conn, int(scan["id"]))
                             self.db.update_metadata(
                                 conn,
                                 metadata_id,
@@ -1622,6 +1673,14 @@ class Worker:
                                 raw_token_usage=None,
                                 phase="interrupted",
                             )
+                            if is_discovery:
+                                self.db.stop_discovery_path(
+                                    conn,
+                                    int(scan["id"]),
+                                    state.prev_id,
+                                    metadata_id,
+                                    "Native resource guard interrupted this investigation",
+                                )
                             conn.commit()
                         return True
                     with provider_account_lease(
@@ -1641,9 +1700,23 @@ class Worker:
                         runner_image = getattr(prepared, "runner_image", None)
                         if runner_image:
                             harness_arguments["runner_image"] = runner_image
-                        result = harness.run(
-                            **harness_arguments,
-                        )
+                        remaining = None
+                        if is_discovery:
+                            with self.db.connect() as conn:
+                                current_scan = self.db.load_scan(conn, int(scan["id"]))
+                                if not current_scan or current_scan["status"] in NON_RUNNABLE_SCAN_STATUSES:
+                                    raise HarnessError(
+                                        "Scan stopped before discovery dispatch.",
+                                        code="configuration_error",
+                                        retryable=False,
+                                    )
+                                remaining = self.db.discovery_remaining_seconds(conn, int(scan["id"]))
+                            if remaining <= 0:
+                                raise HarnessError(
+                                    "Discovery wall-time budget expired.", code="timeout", retryable=False
+                                )
+                        with harness_deadline(remaining):
+                            result = harness.run(**harness_arguments)
                     mark_provider_account_available(
                         getattr(prepared.workspace, "provider_account_provider", None),
                         getattr(prepared.workspace, "provider_account_home", None),
@@ -1653,6 +1726,7 @@ class Worker:
                     payload_stub = bool(result.payload.get("stub"))
                     stub_explanation = (result.payload.get("stub_explanation") or "").strip() or None
                     rows = validate_payload(result.payload, schema, step.multi_output)
+                    discovery = validate_discovery(result.payload.get("discovery")) if is_discovery else None
                     run_time_ms = int((now_utc() - started).total_seconds() * 1000)
                     with self.db.connect() as conn:
                         self.db.update_metadata(
@@ -1670,6 +1744,8 @@ class Worker:
                         )
                         conn.commit()
                     with self.db.connect() as conn:
+                        if is_discovery:
+                            self.db.lock_discovery(conn, int(scan["id"]))
                         self.db.update_metadata(
                             conn,
                             metadata_id,
@@ -1683,6 +1759,14 @@ class Worker:
                             stub_explanation=stub_explanation,
                             phase="completed",
                         )
+                        if is_discovery:
+                            self.db.complete_discovery_path(
+                                conn,
+                                int(scan["id"]),
+                                state.prev_id,
+                                metadata_id,
+                                discovery,
+                            )
                         if step.is_last_step:
                             conn.execute(
                                 "SELECT pg_advisory_xact_lock(hashtext(%s))", (f"vulnerability-rank:{int(scan['id'])}",)
@@ -1815,6 +1899,8 @@ class Worker:
                 + " | ".join(attempt_errors)
             )
             with self.db.connect() as conn:
+                if is_discovery:
+                    self.db.lock_discovery(conn, int(scan["id"]))
                 self.db.update_metadata(
                     conn,
                     metadata_id,
@@ -1824,6 +1910,20 @@ class Worker:
                     raw_token_usage=None,
                     phase="interrupted" if exhausted_rate_limit else "failed",
                 )
+                if is_discovery:
+                    path_status = (
+                        "budget_stopped"
+                        if self.db.discovery_remaining_seconds(conn, int(scan["id"])) <= 0
+                        else "blocked"
+                    )
+                    self.db.stop_discovery_path(
+                        conn,
+                        int(scan["id"]),
+                        state.prev_id,
+                        metadata_id,
+                        failure_summary,
+                        status=path_status,
+                    )
                 conn.commit()
             if exhausted_rate_limit:
                 raise RateLimitExhausted(
@@ -1833,6 +1933,10 @@ class Worker:
                     account_home=getattr(prepared.workspace, "provider_account_home", None),
                     limit_kind=last_exception.code,
                 )
+            if is_discovery:
+                # A failed investigation is explicit evidence of incomplete
+                # exploration; other already identified paths can still run.
+                return True
             raise StepExecutionError(f"step {step.id} {failure_summary}")
         finally:
             if metadata_id is not None:

@@ -210,6 +210,8 @@ test('scan cleanup deletes every owned record in dependency order', async () => 
     vulnerabilityEnrichment: deletion('vulnerabilityEnrichment'),
     supplementalPostScriptTarget: deletion('supplementalPostScriptTarget'),
     supplementalPostScriptRun: deletion('supplementalPostScriptRun'),
+    discoveryPath: deletion('discoveryPath'),
+    discoveryFrontier: deletion('discoveryFrontier'),
     stepMetadata: deletion('stepMetadata'),
     postProcessMetadata: deletion('postProcessMetadata'),
     stepResult: deletion('stepResult'),
@@ -225,6 +227,8 @@ test('scan cleanup deletes every owned record in dependency order', async () => 
       'vulnerabilityEnrichment',
       'supplementalPostScriptTarget',
       'supplementalPostScriptRun',
+      'discoveryPath',
+      'discoveryFrontier',
       'stepMetadata',
       'postProcessMetadata',
       'vulnerability',
@@ -233,6 +237,8 @@ test('scan cleanup deletes every owned record in dependency order', async () => 
     ]
   );
   assert.deepEqual(calls[0].args, { where: { vulnerabilityId: { in: [31n, 32n] } } });
+  assert.deepEqual(calls.find((call) => call.name === 'discoveryPath').args, { where: { scanId: 9n } });
+  assert.deepEqual(calls.find((call) => call.name === 'discoveryFrontier').args, { where: { scanId: 9n } });
   for (const call of calls.slice(1)) {
     assert.deepEqual(call.args, call.name === 'scan' ? { where: { id: 9n } } : { where: { scanId: 9n } });
   }
@@ -250,6 +256,8 @@ test('scan deletion requires a terminal status and no active engine metadata', a
       deleteMany: async () => mutations.push('supplementalTarget'),
     },
     supplementalPostScriptRun: { deleteMany: async () => mutations.push('supplementalRun') },
+    discoveryPath: { deleteMany: async () => mutations.push('discoveryPath') },
+    discoveryFrontier: { deleteMany: async () => mutations.push('discoveryFrontier') },
     stepResult: { deleteMany: async () => mutations.push('stepResult') },
   };
   const nonTerminal = {
