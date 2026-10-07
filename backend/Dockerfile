@@ -26,6 +26,22 @@ RUN apk add --no-cache curl ca-certificates \
     && install -m 0755 /tmp/grok /usr/local/bin/grok \
     && rm /tmp/grok \
     && grok --version
+# Accounts spawns `devin auth login` inside this image. Pin the same Devin CLI
+# version as the engine; the published binary is statically linked so the same
+# tarball serves glibc and musl hosts.
+ARG DEVIN_CLI_VERSION=3000.11.3
+RUN case "${TARGETARCH}" in \
+      amd64) devin_arch=x86_64-unknown-linux; devin_sha256=83b3b113c01bf2a3e9e100db08d77e6b086806a7754f091e20831bdfe215157e ;; \
+      arm64) devin_arch=aarch64-unknown-linux; devin_sha256=21a2d7a8dea67987067cde7eb3fe7193a48daa8f8c3d50d414c603c4a2b67f15 ;; \
+      *) echo "unsupported Devin CLI architecture: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL "https://static.devin.ai/cli/${DEVIN_CLI_VERSION}/devin-${DEVIN_CLI_VERSION}-${devin_arch}.tar.gz" -o /tmp/devin.tar.gz \
+    && echo "${devin_sha256}  /tmp/devin.tar.gz" | sha256sum -c - \
+    && mkdir -p "/opt/devin/versions/${DEVIN_CLI_VERSION}" \
+    && tar -xzf /tmp/devin.tar.gz -C "/opt/devin/versions/${DEVIN_CLI_VERSION}" \
+    && ln -s "/opt/devin/versions/${DEVIN_CLI_VERSION}/bin/devin" /usr/local/bin/devin \
+    && rm /tmp/devin.tar.gz \
+    && devin --version
 COPY . .
 RUN npx prisma generate
 

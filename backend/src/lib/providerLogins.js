@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 
 export const CODEX_PRIMARY_HOME = process.env.OPEN_KRITT_CODEX_HOME_DIR || '/provider-homes/codex';
@@ -7,6 +7,11 @@ export const CLAUDE_HOME = process.env.OPEN_KRITT_CLAUDE_HOME || '/provider-home
 export const CLAUDE_ACCOUNTS_ROOT = process.env.OPEN_KRITT_CLAUDE_ACCOUNTS_DIR || '/provider-homes/claude-accounts';
 export const GROK_PRIMARY_HOME = process.env.OPEN_KRITT_GROK_HOME_DIR || '/provider-homes/grok';
 export const GROK_ACCOUNTS_ROOT = process.env.OPEN_KRITT_GROK_ACCOUNTS_DIR || '/provider-homes/grok-accounts';
+// Devin login sessions treat these homes as the leaf `devin` XDG directory
+// containing credentials.toml. Login processes run with XDG_* pointed at the
+// parent directory.
+export const DEVIN_PRIMARY_HOME = process.env.OPEN_KRITT_DEVIN_HOME_DIR || '/provider-homes/devin';
+export const DEVIN_ACCOUNTS_ROOT = process.env.OPEN_KRITT_DEVIN_ACCOUNTS_DIR || '/provider-homes/devin-accounts';
 const ENGINE_RUNTIME_CONFIG_PATH =
   process.env.OPEN_KRITT_ENGINE_RUNTIME_CONFIG_PATH || '/engine-data/engine-runtime.env';
 const CODEX_RUNTIME_PRIMARY_HOME = process.env.OPEN_KRITT_CODEX_RUNTIME_PRIMARY_HOME || '/root/.codex';
@@ -18,6 +23,10 @@ const CLAUDE_INITIAL_HOME = process.env.OPEN_KRITT_CLAUDE_INITIAL_HOME || CLAUDE
 export const GROK_RUNTIME_PRIMARY_HOME = process.env.OPEN_KRITT_GROK_RUNTIME_PRIMARY_HOME || '/root/.grok';
 export const GROK_RUNTIME_ACCOUNTS_ROOT = process.env.OPEN_KRITT_GROK_RUNTIME_ACCOUNTS_DIR || '/grok-accounts';
 const GROK_INITIAL_HOME = process.env.OPEN_KRITT_GROK_INITIAL_HOME || GROK_RUNTIME_PRIMARY_HOME;
+export const DEVIN_RUNTIME_PRIMARY_HOME =
+  process.env.OPEN_KRITT_DEVIN_RUNTIME_PRIMARY_HOME || '/root/.local/share/devin';
+export const DEVIN_RUNTIME_ACCOUNTS_ROOT = process.env.OPEN_KRITT_DEVIN_RUNTIME_ACCOUNTS_DIR || '/devin-accounts';
+const DEVIN_INITIAL_HOME = process.env.OPEN_KRITT_DEVIN_INITIAL_HOME || DEVIN_RUNTIME_PRIMARY_HOME;
 const ACCOUNT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 function readableJsonObject(path) {
@@ -121,11 +130,44 @@ export function grokLoginIsConfigured({
   return homes.filter(Boolean).some((home) => readableJsonObject(join(home, 'auth.json')));
 }
 
+// credentials.toml holds api_key/windsurf_api_key plus non-secret endpoint
+// fields. A home is usable when the file parses loosely and names an API key;
+// the value itself is never read beyond a field-name match.
+export function usableDevinLoginHome(home) {
+  try {
+    const credentials = join(home, 'credentials.toml');
+    const stats = statSync(credentials);
+    if (!stats.isFile() || stats.size === 0 || stats.size > 1024 * 1024) return false;
+    return /^\s*(api_key|windsurf_api_key)\s*=\s*["']?[^\s"']+/m.test(readFileSync(credentials, 'utf8'));
+  } catch {
+    return false;
+  }
+}
+
+export function devinLoginIsConfigured({
+  primaryHome = DEVIN_PRIMARY_HOME,
+  accountsRoot = DEVIN_ACCOUNTS_ROOT,
+  runtimeConfigPath = ENGINE_RUNTIME_CONFIG_PATH,
+  runtimePrimaryHome = DEVIN_RUNTIME_PRIMARY_HOME,
+  runtimeAccountsRoot = DEVIN_RUNTIME_ACCOUNTS_ROOT,
+  initialHome = DEVIN_INITIAL_HOME,
+} = {}) {
+  const homes = configuredRuntimeHomes(runtimeConfigPath, 'ENGINE_DEVIN_HOME', initialHome).map((runtimeHome) => {
+    if (runtimeHome === runtimePrimaryHome) return primaryHome;
+    const accountPath = relative(runtimeAccountsRoot, runtimeHome);
+    const parts = accountPath.split(/[\\/]/);
+    if (parts.length !== 2 || parts[1] !== 'devin' || !ACCOUNT_ID_PATTERN.test(parts[0])) return null;
+    return join(accountsRoot, parts[0], 'devin');
+  });
+  return homes.filter(Boolean).some((home) => usableDevinLoginHome(home));
+}
+
 export function providerLoginIsConfigured(provider, options = {}) {
   if (provider === 'codex') {
     return codexLoginIsConfigured(options.codex);
   }
   if (provider === 'claude') return claudeLoginIsConfigured(options.claude);
   if (provider === 'xai') return grokLoginIsConfigured(options.grok || options.xai);
+  if (provider === 'devin') return devinLoginIsConfigured(options.devin);
   return false;
 }

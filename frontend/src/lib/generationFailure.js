@@ -5,12 +5,14 @@ const PROVIDER_LABELS = {
   claude: 'Claude',
   openrouter: 'OpenRouter',
   xai: 'xAI',
+  devin: 'Devin',
 };
 
 const HARNESS_LABELS = {
   codex: 'Codex CLI',
   'claude-code': 'Claude Code',
   'grok-build': 'Grok Build',
+  devin: 'Devin CLI',
 };
 
 function text(value) {

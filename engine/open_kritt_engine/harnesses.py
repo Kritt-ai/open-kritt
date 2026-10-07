@@ -203,9 +203,10 @@ CLAUDE_MODEL_ALIASES = {
     "opus-4.8": "claude-opus-4-8",
 }
 DEFAULT_MODEL_PROVIDER = "openrouter"
-MODEL_PROVIDERS = {"codex", "claude", "openrouter", "xai", "deepseek"}
+MODEL_PROVIDERS = {"codex", "claude", "openrouter", "xai", "deepseek", "devin"}
 GROK_BUILD_THINKING_EFFORTS = frozenset({"low", "medium", "high", "xhigh"})
 DEFAULT_GROK_BUILD_MODEL = "grok-4.6"
+DEFAULT_DEVIN_MODEL = "swe-2"
 GROK_BUILD_RUNTIME_ENV = {
     # A fresh per-job GROK_HOME prevents account-level configuration from
     # leaking into scans. Keep the CLI's project-config trust gate enabled too,
@@ -448,6 +449,8 @@ def _command_harness(cmd: list[str]) -> str:
         return "claude-code"
     if "grok" in executables:
         return "grok-build"
+    if "devin" in executables:
+        return "devin"
     return Path(str(cmd[0])).name if cmd else "model"
 
 
@@ -992,6 +995,7 @@ def _scan_docker_command(
         "CURSOR_AUTH_TOKEN",
         "CURSOR_AGENT_BIN",
         "GROK_BIN",
+        "DEVIN_BIN",
         "SSL_CERT_FILE",
         "SSL_CERT_DIR",
         "NODE_EXTRA_CA_CERTS",
@@ -2394,6 +2398,128 @@ class GrokBuildHarness:
                 prompt_path.unlink(missing_ok=True)
 
 
+_DEVIN_ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_]|[()][0-2A-Z])")
+
+
+def _devin_output_text(value: str) -> str:
+    """Strip terminal control sequences from devin -p output before parsing."""
+
+    return _DEVIN_ANSI_RE.sub("", value or "")
+
+
+def _devin_executable(env: dict[str, str]) -> str:
+    configured = env.get("DEVIN_BIN") or os.getenv("DEVIN_BIN")
+    if configured:
+        return configured
+    found = shutil.which("devin", path=env.get("PATH"))
+    if found:
+        return found
+    local_devin = Path(env.get("HOME") or str(Path.home())) / ".local/bin/devin"
+    if local_devin.exists():
+        return str(local_devin)
+    raise HarnessError(
+        "devin CLI is not available; install Devin CLI into the engine image.",
+        code="start_failed",
+        harness="devin",
+    )
+
+
+class DevinHarness:
+    name = "devin"
+
+    def __init__(
+        self,
+        timeout_seconds: int,
+        model_provider: str | None = None,
+        runner_memory_mb: int = 0,
+        runner_memory_reservation_mb: int = 0,
+    ):
+        self.timeout_seconds = timeout_seconds
+        self.model_provider = model_provider
+        self.runner_memory_mb = max(0, int(runner_memory_mb))
+        self.runner_memory_reservation_mb = max(0, int(runner_memory_reservation_mb))
+
+    def run(
+        self,
+        *,
+        prompt: str,
+        schema: dict[str, Any],
+        repo_dir: str,
+        model: str,
+        thinking_effort: str | None = None,
+        env: dict[str, str] | None = None,
+        allow_tools: bool = True,
+        runner_image: str | None = None,
+    ) -> HarnessResult:
+        if not allow_tools:
+            # devin -p exposes no tools-disable or schema flag. Refuse
+            # tool-free generation rather than pretend it is isolated.
+            raise HarnessError(
+                "Devin does not support isolated tool-free generation.",
+                code="configuration_error",
+                harness="devin",
+            )
+        actual_env = dict(env if env is not None else _base_env())
+        # ACP bridge mode ignores file credentials; job environments must not
+        # inherit a parent IDE's ACP wiring.
+        for key in tuple(actual_env):
+            if key == "ACP_BACKEND" or key.startswith("ACP_BACKEND_"):
+                actual_env.pop(key, None)
+        executable = _devin_executable(actual_env)
+        model_name = (model or DEFAULT_DEVIN_MODEL).strip() or DEFAULT_DEVIN_MODEL
+        workspace = Path(repo_dir)
+        workspace.mkdir(parents=True, exist_ok=True)
+        # Snapshot runners do not bind-mount the host workspace, but their
+        # per-job home is always mounted. Keep the prompt there so Devin can
+        # read a file created after the workspace image was committed.
+        prompt_dir = Path(actual_env.get("HOME") or workspace)
+        prompt_dir.mkdir(parents=True, exist_ok=True)
+        suffix = f"{os.getpid()}.{time.time_ns()}"
+        prompt_path = prompt_dir / f".open-kritt-devin-prompt.{suffix}.txt"
+        prompt_path.write_text(prompt, encoding="utf-8")
+        prompt_path.chmod(0o600)
+        try:
+            cmd = [
+                executable,
+                "-p",
+                "--prompt-file",
+                str(prompt_path),
+                "--model",
+                model_name,
+                "--permission-mode",
+                "dangerous",
+                "--respect-workspace-trust",
+                "false",
+            ]
+            run_cmd = _scan_docker_command(
+                cmd,
+                repo_dir,
+                actual_env,
+                runner_image=runner_image,
+                memory_limit_mb=self.runner_memory_mb,
+                memory_reservation_mb=self.runner_memory_reservation_mb,
+            )
+            # Prompt content is already on disk; do not also send it on stdin.
+            proc = _run_process(run_cmd, "", repo_dir, self.timeout_seconds, env=actual_env)
+            process_output = _process_output(proc, files={"devin-prompt.txt": prompt})
+            try:
+                payload = _parse_json_text(_devin_output_text(proc.stdout), schema)
+            except (HarnessError, json.JSONDecodeError) as exc:
+                raise HarnessError(
+                    "Devin did not return a usable structured response.",
+                    output=process_output,
+                    code="invalid_output",
+                    harness="devin",
+                ) from exc
+            usage = {"thinking_effort": thinking_effort} if thinking_effort else None
+            if normalize_model_provider(self.model_provider) == "devin":
+                usage = {**(usage or {}), "model_provider": "devin", "devin_model": model_name}
+            return HarnessResult(payload=payload, usage=usage, output=process_output)
+        finally:
+            with suppress(OSError):
+                prompt_path.unlink(missing_ok=True)
+
+
 def normalize_harness_name(name: str) -> str:
     if name == "codex-cli":
         return "codex"
@@ -2401,6 +2527,8 @@ def normalize_harness_name(name: str) -> str:
         return "cursor"
     if name == "grok":
         return "grok-build"
+    if name == "devin-cli":
+        return "devin"
     return name
 
 
@@ -2445,6 +2573,13 @@ def harness_for(
         )
     if normalized == "grok-build":
         return GrokBuildHarness(
+            timeout_seconds,
+            provider,
+            runner_memory_mb=runner_memory_mb,
+            runner_memory_reservation_mb=runner_memory_reservation_mb,
+        )
+    if normalized == "devin":
+        return DevinHarness(
             timeout_seconds,
             provider,
             runner_memory_mb=runner_memory_mb,

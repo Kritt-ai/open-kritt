@@ -23,10 +23,11 @@ const SOURCE_LABELS = {
   codex_login: 'Codex login',
   claude_login: 'Claude login',
   xai_login: 'xAI login',
+  devin_login: 'Devin login',
   environment: 'Environment configuration',
 };
 
-const LOGIN_PROVIDERS = new Set(['codex', 'claude', 'xai']);
+const LOGIN_PROVIDERS = new Set(['codex', 'claude', 'xai', 'devin']);
 
 export default function Accounts() {
   const { visible } = useProviderVisibility();
@@ -148,7 +149,8 @@ export default function Accounts() {
 
   const removeLoginAccount = async (provider, account) => {
     const label = account.email || account.label;
-    const providerName = provider.id === 'codex' ? 'Codex' : provider.id === 'xai' ? 'xAI' : 'Claude';
+    const providerName =
+      provider.id === 'codex' ? 'Codex' : provider.id === 'xai' ? 'xAI' : provider.id === 'devin' ? 'Devin' : 'Claude';
     const impact = `This signs ${providerName} out locally and removes its managed account home when applicable. Existing scans and results are kept.`;
     if (!window.confirm(`Remove ${label}?\n\n${impact}`)) return;
     const key = `${provider.id}:${account.id}`;
@@ -512,7 +514,7 @@ export function removeProviderFromOverview(overview, providerId) {
 }
 
 function ProviderMark({ provider }) {
-  const label = { codex: 'CX', claude: 'CL', xai: 'XA', openrouter: 'OR', deepseek: 'DS' }[provider] || provider;
+  const label = { codex: 'CX', claude: 'CL', xai: 'XA', openrouter: 'OR', deepseek: 'DS', devin: 'DV' }[provider] || provider;
   return <span className={`mono account-provider-mark account-provider-mark-${provider}`}>{label}</span>;
 }
 
@@ -995,7 +997,7 @@ function LoginDialog({ provider, onClose, onComplete }) {
                   ? 'Add Codex account'
                   : provider.id === 'xai'
                     ? 'Add Grok account'
-                    : 'Add Claude account'}
+                    : `Add ${provider.label} account`}
             </div>
           </div>
           <button className="account-dialog-close" type="button" aria-label="Close" onClick={cancel}>
@@ -1014,6 +1016,11 @@ function LoginDialog({ provider, onClose, onComplete }) {
               <>
                 Grok will create a one-time device code. Open the xAI sign-in page, enter the code, and authenticate the
                 account you want open·kritt to use for Grok Build.
+              </>
+            ) : provider.id === 'devin' ? (
+              <>
+                Devin will open its CLI sign-in page. After authentication, copy the callback code into this dialog to{' '}
+                {relogin ? 'replace the expired login on this account' : 'add this Devin account'}.
               </>
             ) : (
               <>
@@ -1050,7 +1057,7 @@ function LoginDialog({ provider, onClose, onComplete }) {
         {session?.requiresInput && session.status === 'waiting' && (
           <form onSubmit={submitCode}>
             <label htmlFor="claude-callback-code" style={{ display: 'block', fontWeight: 500, fontSize: 13 }}>
-              Claude callback code
+              {provider.label} callback code
             </label>
             <input
               id="claude-callback-code"
@@ -1063,7 +1070,7 @@ function LoginDialog({ provider, onClose, onComplete }) {
               className="account-credential-input mono"
             />
             <Button type="submit" disabled={submitting} style={{ marginTop: 12 }}>
-              {submitting ? 'Verifying…' : 'Finish Claude login'}
+              {submitting ? 'Verifying…' : `Finish ${provider.label} login`}
             </Button>
           </form>
         )}

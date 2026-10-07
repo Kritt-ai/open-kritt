@@ -8,7 +8,12 @@ import ModelConfiguration, {
 import { Spinner } from '../components/ui.jsx';
 import ResourceNotice from '../components/ResourceNotice.jsx';
 import { usePageChrome } from '../context/ui.jsx';
-import { configuredModelCatalog, configuredModelProviders, modelCatalogIsReady } from '../lib/modelProviders.js';
+import {
+  GENERATION_MODEL_PROVIDER_IDS,
+  configuredModelCatalog,
+  configuredModelProviders,
+  modelCatalogIsReady,
+} from '../lib/modelProviders.js';
 import {
   GENERATION_POLL_FAILURE_LIMIT,
   generationIsRunning,
@@ -95,7 +100,9 @@ export default function AiGeneration({ kind }) {
       ])
         .then(([providerPayload, catalogResult]) => {
           if (!active) return;
-          const providers = configuredModelProviders(providerPayload);
+          const providers = configuredModelProviders(providerPayload).filter((provider) =>
+            GENERATION_MODEL_PROVIDER_IDS.includes(provider)
+          );
           const catalog = configuredModelCatalog(catalogResult.catalog);
           hasLoaded = true;
           setLoadError(null);

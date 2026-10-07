@@ -749,3 +749,205 @@ test('xAI sign-in again rejects a symbolic-link account home', async (t) => {
   await assert.rejects(manager.start('xai', 'reviewer'), { statusCode: 404 });
   assert.equal(manager.sessions.size, 0);
 });
+
+test('login output parser recognizes the Devin callback step', () => {
+  // Output captured from a real `devin auth login --force-manual-token-flow`.
+  const output =
+    'Visit https://app.devin.ai/auth/cli/continue?state=abc&prompt=select_account to sign in, ' +
+    'then copy the code and paste it below.\n';
+  assert.deepEqual(parseLoginInstructions('devin', output), {
+    authorizationUrl: 'https://app.devin.ai/auth/cli/continue?state=abc&prompt=select_account',
+    deviceCode: null,
+    requiresInput: true,
+  });
+});
+
+function fakeDevinLoginChild() {
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.stdin = {
+    written: [],
+    writable: true,
+    write(chunk) {
+      this.written.push(chunk);
+    },
+  };
+  child.kill = () => {};
+  return child;
+}
+
+test('Devin login spawns the CLI inside the session XDG root without secrets', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'open-kritt-login-devin-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const accountsRoot = join(directory, 'devin-accounts');
+  let invocation;
+  const manager = new AccountLoginManager({
+    devinAccountsRoot: accountsRoot,
+    devinRuntimeAccountsRoot: '/runtime-devin-accounts',
+    spawnProcess(command, args, options) {
+      invocation = { command, args, options };
+      return fakeDevinLoginChild();
+    },
+  });
+
+  const session = await manager.start('devin');
+
+  assert.equal(invocation.command, 'devin');
+  assert.deepEqual(invocation.args, ['auth', 'login', '--force-manual-token-flow']);
+  const internal = manager.sessions.get(session.id);
+  assert.equal(invocation.options.env.XDG_DATA_HOME, internal.devinDirectory);
+  assert.equal(invocation.options.env.XDG_CONFIG_HOME, internal.devinDirectory);
+  assert.equal(invocation.options.env.HOME, internal.devinDirectory);
+  assert.equal(internal.devinHome, join(internal.devinDirectory, 'devin'));
+  assert.equal(internal.devinRuntimeHome.startsWith('/runtime-devin-accounts/'), true);
+  assert.equal(internal.devinRuntimeHome.endsWith('/devin'), true);
+  assert.equal(invocation.options.env.DATABASE_URL, undefined);
+  assert.equal(invocation.options.env.GITHUB_TOKEN, undefined);
+  assert.equal(invocation.options.env.OPENROUTER_API_KEY, undefined);
+  assert.equal(invocation.options.env.XAI_API_KEY, undefined);
+  assert.equal(invocation.options.env.ANTHROPIC_API_KEY, undefined);
+});
+
+test('completed Devin login registers the runtime home and writes identity sidecar', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'open-kritt-login-devin-finish-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const accountsRoot = join(directory, 'devin-accounts');
+  const runtimeConfigPath = join(directory, 'engine-runtime.env');
+  const environmentFilePath = join(directory, '.env');
+  await writeFile(runtimeConfigPath, 'ENGINE_DEVIN_HOME=/root/.local/share/devin\n');
+  await writeFile(environmentFilePath, 'ENGINE_DEVIN_HOME=/root/.local/share/devin\nDEVIN_LOGIN_CONFIGURED=\n');
+  const calls = [];
+  const manager = new AccountLoginManager({
+    devinAccountsRoot: accountsRoot,
+    devinRuntimeAccountsRoot: '/runtime-devin-accounts',
+    runtimeConfigPath,
+    environmentFilePath,
+    spawnProcess(command, args) {
+      calls.push(args);
+      const child = fakeDevinLoginChild();
+      if (args[0] === 'auth' && args[1] === 'status') {
+        queueMicrotask(() => {
+          child.stdout.emit(
+            'data',
+            'Logged in (via Devin)\n  Email: reviewer@example.com\n  User ID: usr-123\n  Plan: Devin Pro\n'
+          );
+          child.emit('close', 0);
+        });
+      }
+      return child;
+    },
+  });
+
+  const session = await manager.start('devin');
+  const internal = manager.sessions.get(session.id);
+  await writeFile(
+    join(internal.devinHome, 'credentials.toml'),
+    'api_key = "devin-test"\nwindsurf_api_key = "windsurf-test"\napi_server_url = "https://api.devin.ai"\n'
+  );
+  await manager.finish(internal, 0);
+
+  assert.equal(internal.status, 'completed');
+  assert.match(await readFile(runtimeConfigPath, 'utf8'), /ENGINE_DEVIN_HOME=.*runtime-devin-accounts.*\/devin/);
+  const profile = JSON.parse(await readFile(join(internal.devinHome, '.open-kritt-account.json'), 'utf8'));
+  assert.equal(profile.provider, 'devin');
+  assert.equal(profile.email, 'reviewer@example.com');
+  assert.equal(profile.accountId, 'usr-123');
+  assert.equal(profile.plan, 'Devin Pro');
+  const mode = (await stat(join(internal.devinHome, '.open-kritt-account.json'))).mode & 0o777;
+  assert.equal(mode, 0o600);
+  assert.equal(
+    calls.some((args) => args[0] === 'auth' && args[1] === 'status'),
+    true
+  );
+});
+
+test('failed Devin login removes the staged account directory', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'open-kritt-login-devin-fail-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const accountsRoot = join(directory, 'devin-accounts');
+  const manager = new AccountLoginManager({
+    devinAccountsRoot: accountsRoot,
+    spawnProcess() {
+      return fakeDevinLoginChild();
+    },
+  });
+
+  const session = await manager.start('devin');
+  const internal = manager.sessions.get(session.id);
+  await manager.finish(internal, 1);
+
+  assert.equal(internal.status, 'failed');
+  // fail() schedules the staged-directory cleanup without awaiting it; poll
+  // briefly for the removal to land.
+  let removed = false;
+  for (let attempt = 0; attempt < 50 && !removed; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    removed = await stat(internal.devinDirectory).then(
+      () => false,
+      (error) => error?.code === 'ENOENT'
+    );
+  }
+  assert.equal(removed, true);
+});
+
+test('managed Devin account removal deletes the account directory and runtime entry', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'open-kritt-login-devin-remove-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const accountsRoot = join(directory, 'devin-accounts');
+  const accountDirectory = join(accountsRoot, 'reviewer');
+  const accountHome = join(accountDirectory, 'devin');
+  const otherDirectory = join(accountsRoot, 'other');
+  const runtimeConfigPath = join(directory, 'engine-runtime.env');
+  const environmentFilePath = join(directory, '.env');
+  await mkdir(accountHome, { recursive: true });
+  await mkdir(join(otherDirectory, 'devin'), { recursive: true });
+  await writeFile(
+    runtimeConfigPath,
+    'ENGINE_DEVIN_HOME=/runtime-devin-accounts/reviewer/devin,/runtime-devin-accounts/other/devin\n'
+  );
+  await writeFile(
+    environmentFilePath,
+    'ENGINE_DEVIN_HOME=/runtime-devin-accounts/reviewer/devin,/runtime-devin-accounts/other/devin\nDEVIN_LOGIN_CONFIGURED=1\n'
+  );
+  const manager = new AccountLoginManager({
+    devinAccountsRoot: accountsRoot,
+    devinRuntimeAccountsRoot: '/runtime-devin-accounts',
+    runtimeConfigPath,
+    environmentFilePath,
+  });
+
+  assert.deepEqual(await manager.removeAccount('devin', 'reviewer'), {
+    provider: 'devin',
+    accountId: 'reviewer',
+    removed: true,
+  });
+  await assert.rejects(stat(accountDirectory), { code: 'ENOENT' });
+  assert.equal((await stat(otherDirectory)).isDirectory(), true);
+  assert.match(
+    await readFile(runtimeConfigPath, 'utf8'),
+    /^ENGINE_DEVIN_HOME=\/runtime-devin-accounts\/other\/devin$/m
+  );
+});
+
+test('Devin sign-in again rejects an unknown target before creating a session', async () => {
+  const manager = new AccountLoginManager({ devinAccountsRoot: '/definitely/missing/devin-accounts' });
+
+  await assert.rejects(manager.start('devin', 'missing'), { statusCode: 404 });
+  assert.equal(manager.sessions.size, 0);
+});
+
+test('Devin sign-in again rejects a symbolic-link account home', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'open-kritt-login-devin-symlink-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const accountsRoot = join(directory, 'devin-accounts');
+  const accountDirectory = join(accountsRoot, 'reviewer');
+  const linkedHome = join(directory, 'linked-devin-home');
+  await mkdir(accountDirectory, { recursive: true });
+  await mkdir(linkedHome);
+  await symlink(linkedHome, join(accountDirectory, 'devin'));
+  const manager = new AccountLoginManager({ devinAccountsRoot: accountsRoot });
+
+  await assert.rejects(manager.start('devin', 'reviewer'), { statusCode: 404 });
+  assert.equal(manager.sessions.size, 0);
+});

@@ -1,0 +1,97 @@
+---
+title: "Devin"
+description: "Sign in with the Devin CLI, then run scans with the Devin harness and SWE models."
+---
+
+The **Devin** provider runs SWE models through the **Devin** harness (`devin`,
+alias `devin-cli`). Access is configured with a **Devin CLI login**; there is no
+API-key environment variable — the CLI stores session credentials in a local
+`credentials.toml` file.
+
+After a login is configured, the engine periodically refreshes a searchable
+model catalog through `devin models list` against the stored credentials.
+
+## Sign in with Devin
+
+<Steps>
+  <Step title="Start open·kritt">
+    Complete `./kritt setup` if needed, then start the stack so the Accounts page can
+    drive the login:
+
+    ```bash
+    ./kritt start
+    ```
+  </Step>
+  <Step title="Open Accounts">
+    In the web UI, open **Accounts** and find the **Devin** provider card.
+  </Step>
+  <Step title="Start Devin login">
+    Choose **Add Devin account** (or **Sign in to Devin again** if a saved login
+    expired). open·kritt runs `devin auth login --force-manual-token-flow` in the
+    backend and shows a sign-in URL.
+  </Step>
+  <Step title="Complete the flow">
+    Open the Devin sign-in page, finish authentication in the browser, and paste
+    the returned one-time code back into Accounts. When the CLI writes
+    credentials, Accounts marks the session complete.
+  </Step>
+  <Step title="Confirm storage">
+    Login material is stored under `ENGINE_DEVIN_HOME_HOST` /
+    `ENGINE_DEVIN_ACCOUNTS_HOST` (defaults `./.data/devin` and
+    `./.data/devin-accounts`). Each account home is the leaf `devin` XDG
+    directory holding `credentials.toml`. Treat those directories as secrets.
+  </Step>
+</Steps>
+
+## Harness and model compatibility
+
+Devin supports only the **Devin** harness. The engine image pins the Devin CLI
+to **3000.11.3** (`/usr/local/bin/devin`) and verifies the official binary
+checksum during each image build.
+
+The default model is `swe-2`; the catalog also lists the SWE-2 variants
+(`swe-2-medium`, `swe-2-high`, `swe-2-max`) exposed by the account. Devin model
+variants carry the effort level in their names, so **thinking effort** is fixed
+to `default` — there is no separate effort flag on the CLI.
+
+The Devin CLI has no way to disable tools or enforce a response schema. Scans
+and post-processing request structured JSON through the prompt and validate it
+server-side. For the same reason, Devin cannot be used for **tool-free
+generation** paths that require an isolated model call; choose a different
+provider for those.
+
+## Security and isolation
+
+Every Devin job receives a fresh home containing only the selected account's
+`credentials.toml` plus open·kritt-selected skills. The account's `config.json`
+is deliberately not copied because it can carry user-level CLI hooks that would
+execute inside the job. Account-level
+Devin configuration, sessions, and caches are not copied into the job, and the
+job environment strips `ACP_BACKEND` wiring so an IDE-parented process cannot
+hijack the CLI's agent bridge. The harness runs with
+`--permission-mode dangerous --respect-workspace-trust false` inside the
+disposable repository copy, matching the other harnesses. The scan container has
+outbound internet access, so run untrusted scans on a dedicated Docker host or
+VM as described in the [threat model](https://github.com/Kritt-ai/open-kritt/blob/main/docs/threat-model.md).
+
+## Verify and troubleshoot
+
+- Accounts should show an active **Devin** login.
+- The scan create form should list **Devin** with a `swe-2` model picker once
+  a login is configured (draft-generation forms exclude it by design).
+- If login fails, confirm the backend image includes `devin` and that the
+  sign-in URL appears in Accounts. Re-run **Sign in to Devin again** for
+  expired sessions.
+- If the catalog stays loading or unavailable, inspect
+  `docker compose logs engine` and confirm the stored login can run
+  `devin models list`.
+- A `401` or "not logged in" error usually means the credential expired;
+  sign in again. A model-not-found error means the ID is unavailable to the
+  account — copy the exact ID from the model catalog.
+
+See Devin's official [documentation](https://docs.devin.ai/) for account and
+model availability.
+
+Next: configure [Codex](/ai-provider-setup/codex),
+[Claude Code](/ai-provider-setup/claude-code), [xAI](/ai-provider-setup/xai),
+or learn how to choose a [model and harness](/scans/model-and-harness).

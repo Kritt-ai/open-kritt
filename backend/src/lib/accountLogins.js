@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { chmod, chown, lstat, mkdir, readFile, rm, stat } from 'node:fs/promises';
+import { chmod, chown, lstat, mkdir, open, readFile, rename, rm, stat } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 
 import { accountIsActive } from './accountActivity.js';
@@ -17,6 +17,10 @@ import {
   CLAUDE_RUNTIME_PRIMARY_HOME,
   CODEX_ACCOUNTS_ROOT,
   CODEX_PRIMARY_HOME,
+  DEVIN_ACCOUNTS_ROOT,
+  DEVIN_PRIMARY_HOME,
+  DEVIN_RUNTIME_ACCOUNTS_ROOT,
+  DEVIN_RUNTIME_PRIMARY_HOME,
   GROK_ACCOUNTS_ROOT,
   GROK_PRIMARY_HOME,
   GROK_RUNTIME_ACCOUNTS_ROOT,
@@ -24,8 +28,8 @@ import {
 } from './providerLogins.js';
 import { CLAUDE_CREDENTIAL_FILENAMES, promoteClaudeCredential, withClaudeCredentialLock } from './claudeCredentials.js';
 
-const LOGIN_PROVIDERS = new Set(['codex', 'claude', 'xai']);
-const PROVIDER_LABELS = { codex: 'Codex', claude: 'Claude', xai: 'xAI' };
+const LOGIN_PROVIDERS = new Set(['codex', 'claude', 'xai', 'devin']);
+const PROVIDER_LABELS = { codex: 'Codex', claude: 'Claude', xai: 'xAI', devin: 'Devin' };
 const SESSION_TIMEOUT_MS = 20 * 60 * 1000;
 const MAX_CAPTURED_OUTPUT = 32 * 1024;
 const ACCOUNT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -85,7 +89,9 @@ export function parseLoginInstructions(provider, rawOutput) {
   // Codex uses ABCD-12345; Grok device-auth uses ABCD-EFGH (and embeds it in the URL).
   const deviceCode =
     provider === 'codex' || provider === 'xai' ? output.match(/\b[A-Z0-9]{4}-[A-Z0-9]{4,5}\b/)?.[0] || null : null;
-  const requiresInput = provider === 'claude' && /paste code here/i.test(output);
+  const requiresInput =
+    (provider === 'claude' && /paste code here/i.test(output)) ||
+    (provider === 'devin' && /copy the code and paste it below|paste the code/i.test(output));
   return { authorizationUrl, deviceCode, requiresInput };
 }
 
@@ -294,6 +300,81 @@ export async function removeGrokRuntimeHome(
   return true;
 }
 
+async function updateDevinRuntimeHome(
+  home,
+  present,
+  { runtimeConfigPath = ENGINE_RUNTIME_CONFIG_PATH, initialHomes = [] } = {}
+) {
+  let nextHomes = [];
+  const state = await mutateEnvironmentFile(
+    (values) => {
+      const homes = splitConfiguredHomes(values.ENGINE_DEVIN_HOME || initialHomes.join(','));
+      const updatedHomes = present
+        ? homes.includes(home)
+          ? homes
+          : [...homes, home]
+        : homes.filter((candidate) => candidate !== home);
+      nextHomes = updatedHomes;
+      const changed = updatedHomes.length !== homes.length;
+      return changed ? { ENGINE_DEVIN_HOME: updatedHomes.join(',') } : null;
+    },
+    { environmentFilePath: runtimeConfigPath }
+  );
+  return { changed: state.changed, homes: nextHomes };
+}
+
+async function environmentDevinHomes(environmentFilePath) {
+  if (!environmentFilePath) return [];
+  try {
+    const values = parseEnvironmentText(await readFile(environmentFilePath, 'utf8'));
+    return splitConfiguredHomes(values.ENGINE_DEVIN_HOME);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return [];
+    throw error;
+  }
+}
+
+async function syncDevinEnvironment(homes, environmentFilePath) {
+  await updateEnvironmentFile(
+    {
+      ENGINE_DEVIN_HOME: homes.join(','),
+      DEVIN_LOGIN_CONFIGURED: homes.length ? '1' : '',
+    },
+    { environmentFilePath }
+  );
+}
+
+export async function addDevinRuntimeHome(
+  home,
+  { runtimeConfigPath = ENGINE_RUNTIME_CONFIG_PATH, environmentFilePath = PROJECT_ENV_FILE_PATH } = {}
+) {
+  const initialHomes = await environmentDevinHomes(environmentFilePath);
+  const state = await updateDevinRuntimeHome(home, true, { runtimeConfigPath, initialHomes });
+  try {
+    await syncDevinEnvironment(state.homes, environmentFilePath);
+  } catch (error) {
+    if (state.changed) await updateDevinRuntimeHome(home, false, { runtimeConfigPath });
+    throw error;
+  }
+  return state.homes;
+}
+
+export async function removeDevinRuntimeHome(
+  home,
+  { runtimeConfigPath = ENGINE_RUNTIME_CONFIG_PATH, environmentFilePath = PROJECT_ENV_FILE_PATH } = {}
+) {
+  const initialHomes = await environmentDevinHomes(environmentFilePath);
+  const state = await updateDevinRuntimeHome(home, false, { runtimeConfigPath, initialHomes });
+  if (!state.changed) return false;
+  try {
+    await syncDevinEnvironment(state.homes, environmentFilePath);
+  } catch (error) {
+    await updateDevinRuntimeHome(home, true, { runtimeConfigPath });
+    throw error;
+  }
+  return true;
+}
+
 async function usableJsonFile(path) {
   try {
     const file = await stat(path);
@@ -302,6 +383,101 @@ async function usableJsonFile(path) {
     return value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length > 0;
   } catch {
     return false;
+  }
+}
+
+async function usableDevinCredentials(path) {
+  try {
+    const file = await stat(path);
+    if (!file.isFile() || file.size === 0 || file.size > 1024 * 1024) return false;
+    const text = await readFile(path, 'utf8');
+    return /^\s*(api_key|windsurf_api_key)\s*=\s*["']?[^\s"']+/m.test(text);
+  } catch {
+    return false;
+  }
+}
+
+// `devin auth status` prints labelled account fields after a successful login.
+// Probe it inside the session XDG root and keep only non-secret identity fields.
+function probeDevinAccountProfile(devinDirectory, { spawnProcess = spawn, timeoutMs = 30000 } = {}) {
+  if (!devinDirectory) return Promise.resolve(null);
+  const env = scopedLoginEnvironment();
+  env.HOME = devinDirectory;
+  env.XDG_DATA_HOME = devinDirectory;
+  env.XDG_CONFIG_HOME = devinDirectory;
+  env.XDG_CACHE_HOME = join(devinDirectory, '.cache');
+  return new Promise((resolvePromise) => {
+    let child;
+    try {
+      child = spawnProcess('devin', ['auth', 'status'], {
+        env,
+        cwd: devinDirectory,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch {
+      resolvePromise(null);
+      return;
+    }
+    let output = '';
+    const capture = (chunk) => {
+      output = `${output}${String(chunk)}`.slice(-MAX_CAPTURED_OUTPUT);
+    };
+    const finish = () => {
+      const text = stripTerminalFormatting(output);
+      if (!/logged in/i.test(text)) {
+        resolvePromise(null);
+        return;
+      }
+      const field = (label) => {
+        const match = text.match(new RegExp(`^\\s*${label}:\\s*(.+?)\\s*$`, 'im'));
+        return match ? match[1].slice(0, 320) : null;
+      };
+      const profile = { provider: 'devin' };
+      const email = field('Email');
+      const userId = field('User ID');
+      const name = field('Name');
+      const plan = field('Plan') || field('Tier');
+      const teamId = field('Team ID');
+      if (userId) profile.accountId = userId;
+      if (email) profile.email = email;
+      if (name) profile.name = name;
+      if (plan) profile.plan = plan;
+      if (teamId) profile.organization = teamId;
+      resolvePromise(profile.accountId || profile.email || profile.name ? profile : null);
+    };
+    const timer = setTimeout(() => {
+      child.kill('SIGTERM');
+      resolvePromise(null);
+    }, timeoutMs);
+    timer.unref?.();
+    child.stdout?.on('data', capture);
+    child.stderr?.on('data', capture);
+    child.once('error', () => {
+      clearTimeout(timer);
+      resolvePromise(null);
+    });
+    child.once('close', () => {
+      clearTimeout(timer);
+      finish();
+    });
+  });
+}
+
+async function writeDevinAccountProfile(home, profile) {
+  const targetPath = join(home, '.open-kritt-account.json');
+  const temporaryPath = join(home, `.open-kritt-account.json.${process.pid}.${randomUUID()}.tmp`);
+  let temporary;
+  try {
+    temporary = await open(temporaryPath, 'wx', 0o600);
+    await temporary.writeFile(`${JSON.stringify(profile, null, 2)}\n`);
+    await temporary.sync();
+    await temporary.close();
+    temporary = null;
+    await rename(temporaryPath, targetPath);
+    await chmod(targetPath, 0o600);
+  } finally {
+    await temporary?.close().catch(() => {});
+    await rm(temporaryPath, { force: true }).catch(() => {});
   }
 }
 
@@ -392,6 +568,37 @@ async function grokReloginTarget(accountId, { primaryHome, primaryRuntimeHome, a
   return { home, runtimeHome: join(runtimeAccountsRoot, accountId, '.grok') };
 }
 
+// The session "directory" is the XDG root the CLI writes into; the account home
+// passed to the engine is the leaf `devin` directory inside it.
+async function devinReloginTarget(accountId, { primaryHome, primaryRuntimeHome, accountsRoot, runtimeAccountsRoot }) {
+  if (!accountId) return null;
+  if (accountId === 'primary') {
+    if (!(await usableDevinCredentials(join(primaryHome, 'credentials.toml')))) {
+      throw loginError('Devin account not found.', 404);
+    }
+    return { directory: dirname(primaryHome), home: primaryHome, runtimeHome: primaryRuntimeHome };
+  }
+  if (typeof accountId !== 'string' || !ACCOUNT_ID_PATTERN.test(accountId)) {
+    throw loginError('Devin account not found.', 404);
+  }
+  const resolvedAccountsRoot = resolve(accountsRoot);
+  const accountDirectory = resolve(resolvedAccountsRoot, accountId);
+  if (dirname(accountDirectory) !== resolvedAccountsRoot) throw loginError('Devin account not found.', 404);
+  try {
+    const entry = await lstat(accountDirectory);
+    if (!entry.isDirectory() || entry.isSymbolicLink()) throw loginError('Devin account not found.', 404);
+  } catch (error) {
+    if (error?.statusCode) throw error;
+    if (error?.code === 'ENOENT') throw loginError('Devin account not found.', 404);
+    throw error;
+  }
+  const home = join(accountDirectory, 'devin');
+  if (!(await usableDevinCredentials(join(home, 'credentials.toml')))) {
+    throw loginError('Devin account not found.', 404);
+  }
+  return { directory: accountDirectory, home, runtimeHome: join(runtimeAccountsRoot, accountId, 'devin') };
+}
+
 function publicSession(session) {
   const instructions = parseLoginInstructions(session.provider, session.output);
   return {
@@ -436,6 +643,10 @@ export class AccountLoginManager {
     grokAccountsRoot = GROK_ACCOUNTS_ROOT,
     grokRuntimePrimaryHome = GROK_RUNTIME_PRIMARY_HOME,
     grokRuntimeAccountsRoot = GROK_RUNTIME_ACCOUNTS_ROOT,
+    devinPrimaryHome = DEVIN_PRIMARY_HOME,
+    devinAccountsRoot = DEVIN_ACCOUNTS_ROOT,
+    devinRuntimePrimaryHome = DEVIN_RUNTIME_PRIMARY_HOME,
+    devinRuntimeAccountsRoot = DEVIN_RUNTIME_ACCOUNTS_ROOT,
     runtimeConfigPath = ENGINE_RUNTIME_CONFIG_PATH,
     environmentFilePath = PROJECT_ENV_FILE_PATH,
     timeoutMs = SESSION_TIMEOUT_MS,
@@ -454,6 +665,10 @@ export class AccountLoginManager {
     this.grokAccountsRoot = grokAccountsRoot;
     this.grokRuntimePrimaryHome = grokRuntimePrimaryHome;
     this.grokRuntimeAccountsRoot = grokRuntimeAccountsRoot;
+    this.devinPrimaryHome = devinPrimaryHome;
+    this.devinAccountsRoot = devinAccountsRoot;
+    this.devinRuntimePrimaryHome = devinRuntimePrimaryHome;
+    this.devinRuntimeAccountsRoot = devinRuntimeAccountsRoot;
     this.runtimeConfigPath = runtimeConfigPath;
     this.environmentFilePath = environmentFilePath;
     this.timeoutMs = timeoutMs;
@@ -461,7 +676,7 @@ export class AccountLoginManager {
   }
 
   async start(provider, accountId = null) {
-    if (!LOGIN_PROVIDERS.has(provider)) throw loginError('Choose Codex, Claude, or xAI login.');
+    if (!LOGIN_PROVIDERS.has(provider)) throw loginError('Choose Codex, Claude, xAI, or Devin login.');
     const activeForProvider = [...this.sessions.values()].find(
       (session) => session.provider === provider && ['starting', 'waiting'].includes(session.status)
     );
@@ -482,12 +697,19 @@ export class AccountLoginManager {
               accountsRoot: this.claudeAccountsRoot,
               runtimeAccountsRoot: this.claudeRuntimeAccountsRoot,
             })
-          : await grokReloginTarget(accountId, {
-              primaryHome: this.grokPrimaryHome,
-              primaryRuntimeHome: this.grokRuntimePrimaryHome,
-              accountsRoot: this.grokAccountsRoot,
-              runtimeAccountsRoot: this.grokRuntimeAccountsRoot,
-            });
+          : provider === 'xai'
+            ? await grokReloginTarget(accountId, {
+                primaryHome: this.grokPrimaryHome,
+                primaryRuntimeHome: this.grokRuntimePrimaryHome,
+                accountsRoot: this.grokAccountsRoot,
+                runtimeAccountsRoot: this.grokRuntimeAccountsRoot,
+              })
+            : await devinReloginTarget(accountId, {
+                primaryHome: this.devinPrimaryHome,
+                primaryRuntimeHome: this.devinRuntimePrimaryHome,
+                accountsRoot: this.devinAccountsRoot,
+                runtimeAccountsRoot: this.devinRuntimeAccountsRoot,
+              });
 
     const id = randomUUID();
     const createdAt = new Date();
@@ -542,7 +764,7 @@ export class AccountLoginManager {
       env.HOME = session.claudeLoginHome;
       env.CLAUDE_HOME = session.claudeLoginHome;
       env.CLAUDE_CONFIG_DIR = session.claudeLoginHome;
-    } else {
+    } else if (provider === 'xai') {
       // Grok is a separately distributed binary. Give device login only the
       // process settings it needs, never backend/database or provider secrets.
       env = scopedLoginEnvironment();
@@ -561,6 +783,29 @@ export class AccountLoginManager {
       args = ['login', '--device-auth'];
       env.GROK_HOME = session.grokHome;
       env.HOME = session.grokDirectory || dirname(session.grokHome);
+    } else {
+      // Devin stores login material under XDG_DATA_HOME/devin. Give the login
+      // process a scoped environment and point every XDG root at the session
+      // directory so the account home stays self-contained.
+      env = scopedLoginEnvironment();
+      if (reloginTarget) {
+        session.devinDirectory = reloginTarget.directory;
+        session.devinHome = reloginTarget.home;
+        session.devinRuntimeHome = reloginTarget.runtimeHome;
+        session.replacesAccountId = accountId;
+      } else {
+        const folder = `account-${createdAt.toISOString().replace(/\D/g, '').slice(0, 14)}-${id.slice(0, 8)}`;
+        session.devinDirectory = join(this.devinAccountsRoot, folder);
+        session.devinHome = join(session.devinDirectory, 'devin');
+        session.devinRuntimeHome = join(this.devinRuntimeAccountsRoot, folder, 'devin');
+      }
+      await mkdir(session.devinHome, { recursive: true, mode: 0o700 });
+      command = 'devin';
+      args = ['auth', 'login', '--force-manual-token-flow'];
+      env.HOME = session.devinDirectory;
+      env.XDG_DATA_HOME = session.devinDirectory;
+      env.XDG_CONFIG_HOME = session.devinDirectory;
+      env.XDG_CACHE_HOME = join(session.devinDirectory, '.cache');
     }
     delete env.CI;
 
@@ -573,6 +818,9 @@ export class AccountLoginManager {
       if (session.claudeDirectory) void rm(session.claudeDirectory, { recursive: true, force: true });
       if (session.claudeLoginHome) void rm(session.claudeLoginHome, { recursive: true, force: true });
       if (session.grokDirectory) void rm(session.grokDirectory, { recursive: true, force: true });
+      if (session.devinDirectory && !session.replacesAccountId) {
+        void rm(session.devinDirectory, { recursive: true, force: true });
+      }
       throw loginError(session.message, 503);
     }
     session.child = child;
@@ -606,15 +854,17 @@ export class AccountLoginManager {
   submit(id, code) {
     const session = this.sessions.get(id);
     if (!session) throw loginError('Login session not found.', 404);
-    if (session.provider !== 'claude') throw loginError('Only Claude login accepts a callback code.');
+    if (session.provider !== 'claude' && session.provider !== 'devin') {
+      throw loginError('Only Claude and Devin logins accept a callback code.');
+    }
     if (session.status !== 'waiting' || !session.child?.stdin?.writable) {
       throw loginError('This login is not waiting for a callback code.', 409);
     }
     if (typeof code !== 'string' || !code.trim() || code.length > 4096 || /[\r\n]/.test(code)) {
-      throw loginError('Paste the single-line callback code from Claude.');
+      throw loginError(`Paste the single-line callback code from ${PROVIDER_LABELS[session.provider]}.`);
     }
     session.child.stdin.write(`${code.trim()}\n`);
-    session.message = 'Verifying the Claude login…';
+    session.message = `Verifying the ${PROVIDER_LABELS[session.provider]} login…`;
     return publicSession(session);
   }
 
@@ -717,7 +967,7 @@ export class AccountLoginManager {
   }
 
   async removeAccount(provider, accountId) {
-    if (!LOGIN_PROVIDERS.has(provider)) throw loginError('Choose a Codex, Claude, or xAI account.', 404);
+    if (!LOGIN_PROVIDERS.has(provider)) throw loginError('Choose a Codex, Claude, xAI, or Devin account.', 404);
     const activeForProvider = [...this.sessions.values()].some(
       (session) => session.provider === provider && ['starting', 'waiting'].includes(session.status)
     );
@@ -753,6 +1003,40 @@ export class AccountLoginManager {
         environmentFilePath: this.environmentFilePath,
       });
       if (!configured) throw loginError('xAI account not found.', 404);
+      await rm(accountDirectory, { recursive: true });
+      return { provider, accountId, removed: true };
+    }
+
+    if (provider === 'devin') {
+      if (accountId === 'primary') {
+        const configured = await removeDevinRuntimeHome(this.devinRuntimePrimaryHome, {
+          runtimeConfigPath: this.runtimeConfigPath,
+          environmentFilePath: this.environmentFilePath,
+        });
+        if (!configured) throw loginError('Devin account not found.', 404);
+        await rm(join(this.devinPrimaryHome, 'credentials.toml'), { force: true });
+        return { provider, accountId, removed: true };
+      }
+      if (typeof accountId !== 'string' || !ACCOUNT_ID_PATTERN.test(accountId)) {
+        throw loginError('Devin account not found.', 404);
+      }
+      const accountsRoot = resolve(this.devinAccountsRoot);
+      const accountDirectory = resolve(accountsRoot, accountId);
+      if (dirname(accountDirectory) !== accountsRoot) throw loginError('Devin account not found.', 404);
+      try {
+        const entry = await lstat(accountDirectory);
+        if (!entry.isDirectory() || entry.isSymbolicLink()) throw loginError('Devin account not found.', 404);
+      } catch (error) {
+        if (error?.statusCode) throw error;
+        if (error?.code === 'ENOENT') throw loginError('Devin account not found.', 404);
+        throw error;
+      }
+      const runtimeHome = join(this.devinRuntimeAccountsRoot, accountId, 'devin');
+      const configured = await removeDevinRuntimeHome(runtimeHome, {
+        runtimeConfigPath: this.runtimeConfigPath,
+        environmentFilePath: this.environmentFilePath,
+      });
+      if (!configured) throw loginError('Devin account not found.', 404);
       await rm(accountDirectory, { recursive: true });
       return { provider, accountId, removed: true };
     }
@@ -833,6 +1117,9 @@ export class AccountLoginManager {
     if (session.claudeDirectory) void rm(session.claudeDirectory, { recursive: true, force: true });
     if (session.claudeLoginHome) void rm(session.claudeLoginHome, { recursive: true, force: true });
     if (session.grokDirectory) void rm(session.grokDirectory, { recursive: true, force: true });
+    if (session.devinDirectory && !session.replacesAccountId) {
+      void rm(session.devinDirectory, { recursive: true, force: true });
+    }
   }
 
   async finish(session, code) {
@@ -845,6 +1132,9 @@ export class AccountLoginManager {
       if (session.claudeDirectory) await rm(session.claudeDirectory, { recursive: true, force: true });
       if (session.claudeLoginHome) await rm(session.claudeLoginHome, { recursive: true, force: true });
       if (session.grokDirectory) await rm(session.grokDirectory, { recursive: true, force: true });
+      if (session.devinDirectory && !session.replacesAccountId) {
+        await rm(session.devinDirectory, { recursive: true, force: true });
+      }
       return;
     }
     if (code !== 0) {
@@ -863,6 +1153,8 @@ export class AccountLoginManager {
         usable = await usableJsonFile(join(session.codexHome, 'auth.json'));
       } else if (session.provider === 'xai') {
         usable = await usableJsonFile(join(session.grokHome, 'auth.json'));
+      } else if (session.provider === 'devin') {
+        usable = await usableDevinCredentials(join(session.devinHome, 'credentials.toml'));
       } else {
         usable = await promoteClaudeCredential(session.claudeLoginHome, session.claudeHome || this.claudeHome);
       }
@@ -889,6 +1181,27 @@ export class AccountLoginManager {
           runtimeConfigPath: this.runtimeConfigPath,
           environmentFilePath: this.environmentFilePath,
         });
+      } else if (session.provider === 'devin') {
+        if (!(await usableDevinCredentials(join(this.devinPrimaryHome, 'credentials.toml')))) {
+          await removeDevinRuntimeHome(this.devinRuntimePrimaryHome, {
+            runtimeConfigPath: this.runtimeConfigPath,
+            environmentFilePath: this.environmentFilePath,
+          });
+        }
+        await addDevinRuntimeHome(session.devinRuntimeHome, {
+          runtimeConfigPath: this.runtimeConfigPath,
+          environmentFilePath: this.environmentFilePath,
+        });
+        // Best-effort identity capture for the Accounts UI; the login is still
+        // complete if the status probe fails.
+        try {
+          const profile = await probeDevinAccountProfile(session.devinDirectory, {
+            spawnProcess: this.spawnProcess,
+          });
+          if (profile) await writeDevinAccountProfile(session.devinHome, profile);
+        } catch {
+          // Identity capture is best-effort; the login itself is complete.
+        }
       } else if (session.claudeRuntimeHome) {
         const primaryCredentials = await Promise.all(
           CLAUDE_CREDENTIAL_FILENAMES.map((name) => usableJsonFile(join(this.claudeHome, name)))
@@ -910,6 +1223,9 @@ export class AccountLoginManager {
       if (session.codexDirectory) await rm(session.codexDirectory, { recursive: true, force: true });
       if (session.claudeDirectory) await rm(session.claudeDirectory, { recursive: true, force: true });
       if (session.grokDirectory) await rm(session.grokDirectory, { recursive: true, force: true });
+      if (session.devinDirectory && !session.replacesAccountId) {
+        await rm(session.devinDirectory, { recursive: true, force: true });
+      }
     } finally {
       if (session.claudeLoginHome) await rm(session.claudeLoginHome, { recursive: true, force: true });
       session.settled = true;

@@ -7,7 +7,9 @@ import logging
 import os
 import re
 import selectors
+import shutil
 import subprocess
+import tempfile
 import time
 from collections.abc import Callable, Mapping
 from contextlib import nullcontext, suppress
@@ -17,14 +19,23 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+import tomllib
+
 from .codex_auth import isolated_codex_home
 from .provider_credentials import provider_environment
+from .workspace import _configured_devin_homes
 
 LOGGER = logging.getLogger("open_kritt_engine")
 ANTHROPIC_MODELS_URL = "https://api.anthropic.com/v1/models"
 DEEPSEEK_MODELS_URL = "https://api.deepseek.com/models"
 DEEPSEEK_DEFAULT_MODEL_ID = "deepseek-flash"
 DEEPSEEK_THINKING_EFFORTS = ("low", "high", "max")
+DEVIN_DEFAULT_MODEL_ID = "swe-2"
+# Devin model families carry effort in their variant names (swe-2-high,
+# swe-2-max, ...); the CLI exposes no separate effort flag.
+DEVIN_THINKING_EFFORTS = ("default",)
+DEVIN_MAX_CREDENTIAL_BYTES = 1024 * 1024
+_DEVIN_ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_]|[()][0-2A-Z])")
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models/user"
 OPENROUTER_DEFAULT_MODEL_ID = "z-ai/glm-5.2"
 XAI_MODELS_URL = "https://api.x.ai/v1/language-models"
@@ -603,6 +614,144 @@ def fetch_xai_models(api_key: str, timeout_seconds: float) -> tuple[list[dict[st
     return models, default_model or XAI_DEFAULT_MODEL_ID
 
 
+def _devin_credentials_present(home: str) -> bool:
+    """A Devin home is usable when credentials.toml holds a non-empty API key."""
+
+    path = Path(home) / "credentials.toml"
+    try:
+        if not path.is_file() or path.is_symlink() or path.stat().st_size > DEVIN_MAX_CREDENTIAL_BYTES:
+            return False
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    return bool(_clean_text(data.get("api_key")) or _clean_text(data.get("windsurf_api_key")))
+
+
+def _devin_home_with_credentials(env: Mapping[str, str]) -> str | None:
+    data_dir = _clean_text(env.get("ENGINE_DATA_DIR")) or None
+    for home in _configured_devin_homes(data_dir=data_dir):
+        if _devin_credentials_present(home):
+            return home
+    return None
+
+
+def devin_is_configured(env: Mapping[str, str]) -> bool:
+    return _devin_home_with_credentials(env) is not None
+
+
+def fetch_devin_models(env: Mapping[str, str], timeout_seconds: float) -> tuple[list[dict[str, Any]], str]:
+    """List models through the Devin CLI against the selected login home."""
+
+    home = _devin_home_with_credentials(env)
+    if home is None:
+        raise ModelCatalogError("Devin login is not configured")
+    executable = _clean_text(env.get("DEVIN_BIN")) or shutil.which("devin", path=env.get("PATH"))
+    if not executable:
+        raise ModelCatalogError("Devin CLI is not available")
+    with tempfile.TemporaryDirectory(prefix="open-kritt-devin-catalog-") as staging:
+        # Stage only the credential file so the CLI never writes session state
+        # back into the shared account home. config.json intentionally stays
+        # behind: it can carry user-level hooks that would fire inside the
+        # staged environment.
+        staged = Path(staging) / "devin"
+        staged.mkdir(mode=0o700)
+        for name in ("credentials.toml",):
+            source = Path(home) / name
+            try:
+                if source.is_file() and not source.is_symlink() and source.stat().st_size <= DEVIN_MAX_CREDENTIAL_BYTES:
+                    target = staged / name
+                    shutil.copyfile(source, target)
+                    target.chmod(0o600)
+            except OSError:
+                continue
+        child_env = {
+            "PATH": env.get("PATH") or os.environ.get("PATH") or "/usr/local/bin:/usr/bin:/bin",
+            "HOME": staging,
+            "XDG_DATA_HOME": staging,
+            "XDG_CONFIG_HOME": staging,
+            "XDG_CACHE_HOME": str(Path(staging) / ".cache"),
+            "TERM": "dumb",
+        }
+        for key in (
+            "LANG",
+            "LC_ALL",
+            "SSL_CERT_FILE",
+            "SSL_CERT_DIR",
+            "NODE_EXTRA_CA_CERTS",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "NO_PROXY",
+        ):
+            value = env.get(key)
+            if isinstance(value, str) and value:
+                child_env[key] = value
+        try:
+            proc = subprocess.run(
+                [str(executable), "models", "list", "--format", "json"],
+                capture_output=True,
+                text=True,
+                timeout=max(1.0, timeout_seconds),
+                env=child_env,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ModelCatalogError("Could not read the Devin model catalog") from exc
+    if proc.returncode != 0 or not proc.stdout.strip():
+        raise ModelCatalogError("Devin model catalog request failed")
+    text = _DEVIN_ANSI_RE.sub("", proc.stdout)
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        try:
+            payload = json.loads(text[start:]) if start >= 0 else None
+        except json.JSONDecodeError as exc:
+            raise ModelCatalogError("Devin model catalog response was invalid") from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("families"), list):
+        raise ModelCatalogError("Devin model catalog response was invalid")
+
+    entries: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+
+    def add_model(model_id: Any, label: Any) -> None:
+        model_id = _clean_text(model_id)
+        if not model_id or model_id in seen_ids:
+            return
+        seen_ids.add(model_id)
+        entries.append(
+            {
+                "model": model_id,
+                "displayName": label,
+                "supportedReasoningEfforts": list(DEVIN_THINKING_EFFORTS),
+                "isDefault": model_id == DEVIN_DEFAULT_MODEL_ID,
+            }
+        )
+
+    for family in payload["families"]:
+        if not isinstance(family, Mapping):
+            continue
+        # The family slug (swe-2) and each variant uid (swe-2-high, ...) are
+        # both valid --model arguments.
+        add_model(family.get("slug"), family.get("family_label"))
+        variants = family.get("variants")
+        if not isinstance(variants, list):
+            continue
+        for variant in variants:
+            if not isinstance(variant, Mapping):
+                continue
+            add_model(variant.get("model_uid"), variant.get("label"))
+        if len(entries) >= MAX_CATALOG_MODELS:
+            break
+
+    models, default_model = normalize_catalog_models(entries)
+    if not models:
+        raise ModelCatalogError("Devin model catalog was empty")
+    return models, default_model
+
+
 CatalogFetcher = Callable[[], tuple[list[dict[str, Any]], str]]
 
 
@@ -620,6 +769,7 @@ class ModelCatalogRefresher:
         fetch_deepseek: CatalogFetcher | None = None,
         fetch_openrouter: CatalogFetcher | None = None,
         fetch_xai: CatalogFetcher | None = None,
+        fetch_devin: CatalogFetcher | None = None,
         codex_cli_gate: Any | None = None,
     ):
         self.db = db
@@ -630,6 +780,7 @@ class ModelCatalogRefresher:
         self.fetch_deepseek = fetch_deepseek
         self.fetch_openrouter = fetch_openrouter
         self.fetch_xai = fetch_xai
+        self.fetch_devin = fetch_devin
         self.codex_cli_gate = codex_cli_gate
 
     def refresh(self, env: Mapping[str, str] | None = None) -> dict[str, bool]:
@@ -664,6 +815,9 @@ class ModelCatalogRefresher:
         if _clean_text(env.get("XAI_API_KEY")):
             fetch_xai = self.fetch_xai or (lambda: fetch_xai_models(env["XAI_API_KEY"], self.timeout_seconds))
             outcomes["xai"] = self._refresh_provider("xai", fetch_xai)
+        if devin_is_configured(env):
+            fetch_devin = self.fetch_devin or (lambda: fetch_devin_models(env, self.timeout_seconds))
+            outcomes["devin"] = self._refresh_provider("devin", fetch_devin)
         return outcomes
 
     def _refresh_provider(self, provider: str, fetcher: CatalogFetcher) -> bool:

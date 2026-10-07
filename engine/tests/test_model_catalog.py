@@ -589,3 +589,118 @@ def test_refresher_never_persists_openrouter_failure_details():
         {"provider": "openrouter", "error": "Unable to refresh the provider model catalog."},
     ]
     assert secret not in json.dumps(db.errors)
+
+
+def _write_fake_devin(executable, payload):
+    executable.write_text(
+        f"""#!{sys.executable}
+import json
+import sys
+
+if sys.argv[1:] == ["models", "list", "--format", "json"]:
+    sys.stdout.write({json.dumps(json.dumps(payload))})
+""",
+        encoding="utf-8",
+    )
+    executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
+
+
+def _devin_home(tmp_path):
+    home = tmp_path / "devin"
+    home.mkdir()
+    (home / "credentials.toml").write_text(
+        'api_key = "devin-test-key"\nwindsurf_api_key = "windsurf-test-key"\napi_server_url = "https://api.devin.ai"\n',
+        encoding="utf-8",
+    )
+    (home / "config.json").write_text("{}", encoding="utf-8")
+    return home
+
+
+# Shape captured from a real `devin models list --format json` response.
+DEVIN_MODELS_PAYLOAD = {
+    "families": [
+        {
+            "family_label": "Adaptive",
+            "family_uid": "adaptive",
+            "slug": "adaptive",
+            "aliases": [],
+            "variants": [
+                {
+                    "model_uid": "adaptive",
+                    "label": "Adaptive",
+                    "cost_summary": "$0.5 / 1M Input",
+                    "is_new": False,
+                    "is_beta": False,
+                }
+            ],
+        },
+        {
+            "family_label": "SWE-2",
+            "family_uid": "swe-2",
+            "slug": "swe-2",
+            "aliases": ["swe"],
+            "variants": [
+                {"model_uid": "swe-2-high", "label": "SWE-2 High", "cost_tier": "Free"},
+                {"model_uid": "swe-2-medium", "label": "SWE-2 Medium", "cost_tier": "Free"},
+                {"model_uid": "swe-2-max", "label": "SWE-2 Max", "cost_tier": "Free"},
+            ],
+        },
+    ]
+}
+
+
+def test_fetch_devin_models_flattens_family_slugs_and_variants(tmp_path, monkeypatch):
+    home = _devin_home(tmp_path)
+    executable = tmp_path / "fake-devin"
+    _write_fake_devin(executable, DEVIN_MODELS_PAYLOAD)
+    monkeypatch.setattr(model_catalog, "_configured_devin_homes", lambda data_dir=None: [str(home)])
+
+    models, default_model = model_catalog.fetch_devin_models({"DEVIN_BIN": str(executable), "PATH": "/usr/bin"}, 5)
+
+    ids = [model["id"] for model in models]
+    assert "swe-2" in ids
+    assert "swe-2-high" in ids
+    assert "swe-2-medium" in ids
+    assert "swe-2-max" in ids
+    assert "adaptive" in ids
+    assert default_model == "swe-2"
+    swe = next(model for model in models if model["id"] == "swe-2")
+    assert swe["isDefault"] is True
+    assert swe["thinkingEfforts"] == ["default"]
+    assert all(len(model["id"]) <= 200 for model in models)
+
+
+def test_fetch_devin_models_requires_a_usable_login(tmp_path, monkeypatch):
+    home = tmp_path / "devin"
+    home.mkdir()
+    (home / "credentials.toml").write_text('api_key = ""\n', encoding="utf-8")
+    executable = tmp_path / "fake-devin"
+    _write_fake_devin(executable, DEVIN_MODELS_PAYLOAD)
+    monkeypatch.setattr(model_catalog, "_configured_devin_homes", lambda data_dir=None: [str(home)])
+
+    with pytest.raises(model_catalog.ModelCatalogError, match="not configured"):
+        model_catalog.fetch_devin_models({"DEVIN_BIN": str(executable)}, 5)
+
+
+def test_devin_is_configured_checks_credentials(tmp_path, monkeypatch):
+    home = _devin_home(tmp_path)
+    monkeypatch.setattr(model_catalog, "_configured_devin_homes", lambda data_dir=None: [str(home)])
+    assert model_catalog.devin_is_configured({}) is True
+
+    (home / "credentials.toml").write_text("# empty\n", encoding="utf-8")
+    assert model_catalog.devin_is_configured({}) is False
+
+
+def test_refresher_includes_devin_when_configured(tmp_path, monkeypatch):
+    home = _devin_home(tmp_path)
+    monkeypatch.setattr(model_catalog, "_configured_devin_homes", lambda data_dir=None: [str(home)])
+    db = FakeDatabase()
+    devin_models = [{"id": "swe-2", "label": "SWE-2", "thinkingEfforts": ["default"], "isDefault": True}]
+    refresher = ModelCatalogRefresher(
+        db,
+        env={"ENGINE_DATA_DIR": str(tmp_path)},
+        fetch_devin=lambda: (devin_models, "swe-2"),
+    )
+
+    assert refresher.refresh() == {"devin": True}
+    assert db.catalogs == [{"provider": "devin", "models": devin_models, "default_model": "swe-2"}]

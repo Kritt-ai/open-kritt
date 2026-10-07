@@ -172,6 +172,39 @@ test('xAI status supports device login alongside managed API keys', async (t) =>
   assert.equal(xai.canManageKey, true);
 });
 
+test('Devin status recognizes credentials.toml homes in the runtime registry', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'open-kritt-provider-devin-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const primaryHome = join(directory, 'devin');
+  const accountsRoot = join(directory, 'devin-accounts');
+  const runtimeConfigPath = join(directory, 'engine-runtime.env');
+  await mkdir(join(accountsRoot, 'reviewer', 'devin'), { recursive: true });
+  await writeFile(
+    join(accountsRoot, 'reviewer', 'devin', 'credentials.toml'),
+    'api_key = "devin-test"\nwindsurf_api_key = "windsurf-test"\n'
+  );
+  await writeFile(runtimeConfigPath, 'ENGINE_DEVIN_HOME=/devin-accounts/reviewer/devin\n');
+
+  const devin = providerCredentialStatuses({
+    env: {},
+    credentialsPath: join(directory, 'missing.json'),
+    loginOptions: { devin: { primaryHome, accountsRoot, runtimeConfigPath } },
+  }).find((provider) => provider.id === 'devin');
+
+  assert.equal(devin.management, 'login');
+  assert.equal(devin.configured, true);
+  assert.equal(devin.source, 'devin_login');
+
+  // A leaf without an api_key/windsurf_api_key field does not count as a login.
+  await writeFile(join(accountsRoot, 'reviewer', 'devin', 'credentials.toml'), '# expired\n');
+  const expired = providerCredentialStatuses({
+    env: {},
+    credentialsPath: join(directory, 'missing.json'),
+    loginOptions: { devin: { primaryHome, accountsRoot, runtimeConfigPath } },
+  }).find((provider) => provider.id === 'devin');
+  assert.equal(expired.configured, false);
+});
+
 test('Codex homes left on disk but removed from the runtime registry stay inactive', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'open-kritt-provider-orphaned-login-'));
   t.after(() => rm(directory, { recursive: true, force: true }));

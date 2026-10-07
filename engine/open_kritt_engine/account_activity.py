@@ -61,13 +61,21 @@ def filter_account_environment(env, entries):
     return result
 
 
+def _credential_file_present(home, filename):
+    try:
+        return (Path(home) / filename).is_file()
+    except OSError:
+        return False
+
+
 def assert_account_assignment(provider, home=None, env=None):
     # This fresh atomic-file read is the assignment boundary. A toggle committed
     # after this read affects subsequent assignments, not this admitted call.
     entries = read_account_activity()
     keys = API_ACCOUNT_KEYS.get(provider, ())
     has_login = home and any(
-        (Path(home) / filename).is_file() for filename in ("auth.json", ".credentials.json", "credentials.json")
+        _credential_file_present(home, filename)
+        for filename in ("auth.json", ".credentials.json", "credentials.json", "credentials.toml")
     )
     uses_key = keys and (any((env or {}).get(key) for key in keys) or not has_login)
     paths = ([home] if home else []) + ([keys[0]] if uses_key else [])

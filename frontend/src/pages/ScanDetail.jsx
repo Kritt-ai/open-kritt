@@ -1979,6 +1979,7 @@ const ACTIVE_JOB_HARNESS_LABELS = Object.freeze({
   codex: 'Codex CLI',
   'claude-code': 'Claude Code',
   'grok-build': 'Grok Build',
+  devin: 'Devin CLI',
   droid: 'Factory Droid',
 });
 
