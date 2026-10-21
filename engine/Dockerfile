@@ -15,6 +15,9 @@ RUN apt-get update \
     && npm install --global --no-audit --no-fund @openai/codex@0.145.0 \
     && codex --version \
     && npm install --global --no-audit --no-fund --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code@2.1.215 \
+    && npm install --global --no-audit --no-fund --allow-scripts=postinstall.mjs "opencode-ai@${OPENCODE_VERSION}" \
+    && cd "$(npm root -g)/opencode-ai" && node postinstall.mjs \
+    && opencode --version \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -35,6 +38,9 @@ RUN mkdir -p /run/open-kritt-secrets \
 ARG TARGETARCH
 ARG CURSOR_AGENT_VERSION=2026.07.09-a3815c0
 ARG GROK_BUILD_VERSION=1.0.5
+# OpenCode CLI for the native opencode harness. Pinned so the JSON event format
+# the harness parses stays stable across rebuilds.
+ARG OPENCODE_VERSION=1.19.3
 RUN case "${TARGETARCH}" in \
       amd64) cursor_arch=x64; cursor_sha256=c7c1f32249cedb99cc20cd4eed1f9308dc2299a78c283bbc6efd6d658cd4977e ;; \
       arm64) cursor_arch=arm64; cursor_sha256=11b2b6801136a11a3632a4b1080ea3bfc7d97d0a68382be9ede1faf5333207fb ;; \

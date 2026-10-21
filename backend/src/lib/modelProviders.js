@@ -8,6 +8,9 @@ const PROVIDER_CREDENTIALS = {
   openrouter: ['OPENROUTER_API_KEY'],
   xai: ['XAI_API_KEY'],
   deepseek: ['DEEPSEEK_API_KEY'],
+  // The opencode harness authenticates with the opencode-go subscription key,
+  // which rides in CODEX_API_KEY. OPENCODE_KRITT_MODEL pins the real model id.
+  opencode: ['CODEX_API_KEY', 'OPENCODE_KRITT_MODEL'],
 };
 
 function hasValue(value) {

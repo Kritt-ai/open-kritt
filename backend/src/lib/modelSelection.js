@@ -15,7 +15,10 @@ export async function assertModelSelectionAvailable(
     throw new ValidationError([{ field: 'model_provider', message: 'The selected model provider is not configured.' }]);
   }
 
-  if (modelProvider === 'openrouter' || modelProvider === 'xai') return;
+  // openrouter and xai are exempt from catalog checks (models come from their own
+  // APIs). opencode is exempt because the model id is passed straight to
+  // `opencode run` — there is no server-side catalog to validate against.
+  if (modelProvider === 'openrouter' || modelProvider === 'xai' || modelProvider === 'opencode') return;
 
   const catalog = modelCatalogEntry(modelProvider, await getCatalog(modelProvider));
   if (catalog.status !== 'ready') {

@@ -1,8 +1,8 @@
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
-import { defineConfig } from 'vite';
-import react from '@vitejs/plugin-react';
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
 
 // Version injected as the compile-time constant __APP_VERSION__ so the UI never
 // hardcodes a version. The root VERSION file is the source of truth, but it isn't
@@ -13,9 +13,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 function resolveAppVersion() {
   if (process.env.APP_VERSION) return process.env.APP_VERSION.trim();
   try {
-    return JSON.parse(readFileSync(join(here, 'package.json'), 'utf8')).version;
+    return JSON.parse(readFileSync(join(here, "package.json"), "utf8")).version;
   } catch {
-    return '0.0.0-dev';
+    return "0.0.0-dev";
   }
 }
 const appVersion = resolveAppVersion();
@@ -31,9 +31,17 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    // Vite rejects requests whose Host header it doesn't recognize (HTTP 403
+    // "Blocked request"). Access via Tailscale Serve arrives with the tailnet
+    // hostname, so it must be allowlisted. VITE_ALLOWED_HOSTS is a
+    // comma-separated list; unset keeps the local-only default behavior.
+    allowedHosts: (process.env.VITE_ALLOWED_HOSTS || "")
+      .split(",")
+      .map((h) => h.trim())
+      .filter(Boolean),
     proxy: {
-      '/api': {
-        target: process.env.VITE_PROXY_TARGET || 'http://localhost:3002',
+      "/api": {
+        target: process.env.VITE_PROXY_TARGET || "http://localhost:3002",
         changeOrigin: true,
       },
     },

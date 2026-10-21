@@ -38,6 +38,14 @@ export const PROVIDER_DEFINITIONS = {
     description: 'Grok Build through an xAI device login or API key.',
     management: 'login',
   },
+  opencode: {
+    label: 'OpenCode',
+    envKeys: ['CODEX_API_KEY', 'OPENCODE_KRITT_MODEL'],
+    credentialLabel: 'OpenCode subscription key',
+    description:
+      'OpenCode models through the opencode harness. The model id is passed straight to `opencode run` (set OPENCODE_KRITT_MODEL to pin it); there is no server-side catalog to validate against.',
+    management: 'api_key',
+  },
   deepseek: {
     label: 'DeepSeek',
     envKeys: ['DEEPSEEK_API_KEY'],
