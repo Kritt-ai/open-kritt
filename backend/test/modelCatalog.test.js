@@ -196,6 +196,19 @@ test('cached model lookup identifies exact catalog entries', () => {
   assert.equal(isCachedModel('xai', 'grok-4.6-high', null), false);
 });
 
+test('Devin keeps the bounded SWE-2 catalog when the CLI catalog is missing', () => {
+  const entry = buildModelCatalogResponse(['devin']).providers[0];
+  assert.equal(entry.input, 'select');
+  assert.equal(entry.status, 'ready');
+  assert.equal(entry.defaultModel, 'swe-2');
+  assert.deepEqual(
+    entry.models.map((model) => model.id),
+    ['swe-2', 'swe-2-medium', 'swe-2-high', 'swe-2-max']
+  );
+  assert.ok(entry.models.every((model) => model.thinkingEfforts.join(',') === 'default'));
+  assert.ok(entry.models.find((model) => model.id === 'swe-2')?.isDefault);
+});
+
 test('xAI device login keeps a default Grok model when the API catalog is empty', () => {
   assert.deepEqual(buildModelCatalogResponse(['xai']).providers[0], {
     provider: 'xai',

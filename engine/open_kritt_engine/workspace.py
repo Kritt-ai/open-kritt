@@ -152,10 +152,16 @@ def prepare_job_workspace(
     codex_home = home / ".codex"
     claude_home = home / ".claude"
     grok_home = home / ".grok"
+    # Devin resolves credentials through XDG paths: XDG_DATA_HOME/devin holds
+    # credentials.toml; XDG_CONFIG_HOME/devin only receives managed skills
+    # (the account's config.json can carry user hooks and is never copied).
+    devin_data_home = home / ".local" / "share" / "devin"
+    devin_config_home = home / ".config" / "devin"
     claude_oauth_expires_at_ms = None
     needs_codex_home = selected_harness == "codex"
     needs_claude_home = selected_harness == "claude-code"
     needs_grok_home = selected_harness == "grok-build"
+    needs_devin_home = selected_harness == "devin"
     codex_source = (
         provider_home_for_job("codex", metadata_id, data_dir=data_dir)
         if needs_codex_home and selected_provider == "codex"
@@ -171,6 +177,11 @@ def prepare_job_workspace(
         if needs_grok_home and selected_provider == "xai"
         else None
     )
+    devin_source = (
+        provider_home_for_job("devin", metadata_id, data_dir=data_dir)
+        if needs_devin_home and selected_provider == "devin"
+        else None
+    )
     provider_account = (
         _codex_account_info(codex_source)
         if codex_source
@@ -178,6 +189,8 @@ def prepare_job_workspace(
         if claude_source
         else _grok_account_info(grok_source)
         if grok_source
+        else _devin_account_info(devin_source)
+        if devin_source
         else {}
     )
     if needs_codex_home and codex_source:
@@ -199,12 +212,19 @@ def prepare_job_workspace(
         _copy_credential_files(Path(grok_source), grok_home, ("auth.json",))
     elif needs_grok_home:
         grok_home.mkdir(parents=True, exist_ok=True)
+    if needs_devin_home and devin_source:
+        _copy_credential_files(Path(devin_source), devin_data_home, ("credentials.toml",))
+    elif needs_devin_home:
+        devin_data_home.mkdir(parents=True, exist_ok=True)
     if needs_codex_home:
         _install_agent_skills(codex_home, agent_skills or [])
     if needs_claude_home:
         _install_agent_skills(claude_home, agent_skills or [])
     if needs_grok_home:
         _install_agent_skills(grok_home, agent_skills or [])
+    if needs_devin_home:
+        # Devin user skills live under $XDG_CONFIG_HOME/devin/skills.
+        _install_agent_skills(devin_config_home, agent_skills or [])
     job_uid, job_gid = _job_identity(metadata_id)
     env = job_environment(selected_provider, selected_harness)
     env.update(
@@ -234,7 +254,7 @@ def prepare_job_workspace(
         codex_account_id=provider_account.get("id") if codex_source else None,
         codex_account_email=provider_account.get("email") if codex_source else None,
         provider_account_provider=selected_provider,
-        provider_account_home=codex_source or claude_source or grok_source or None,
+        provider_account_home=codex_source or claude_source or grok_source or devin_source or None,
         provider_account_id=provider_account.get("id"),
         provider_account_email=provider_account.get("email"),
     )
@@ -1445,7 +1465,11 @@ def provider_home_for_job(provider: str, metadata_id: int, *, data_dir: str | No
     del metadata_id
     homes = _configured_provider_homes(provider, data_dir=data_dir)
     if not homes:
-        homes = [{"codex": "/root/.codex", "xai": "/root/.grok"}.get(provider, "/root/.claude")]
+        homes = [
+            {"codex": "/root/.codex", "xai": "/root/.grok", "devin": "/root/.local/share/devin"}.get(
+                provider, "/root/.claude"
+            )
+        ]
     entries = read_account_activity()
     homes = [home for home in homes if account_is_active(provider, home, entries)]
     if not homes:
@@ -1487,7 +1511,7 @@ def codex_home_for_job(metadata_id: int, *, data_dir: str | None = None) -> str:
 
 
 def mark_provider_account_rate_limited(provider: str | None, home: str | None) -> None:
-    if provider not in {"codex", "claude", "xai"} or not home:
+    if provider not in {"codex", "claude", "xai", "devin"} or not home:
         return
     with _PROVIDER_HOME_LOCK:
         _RATE_LIMITED_PROVIDER_HOMES.setdefault(provider, set()).add(home)
@@ -1495,7 +1519,7 @@ def mark_provider_account_rate_limited(provider: str | None, home: str | None) -
 
 
 def mark_provider_account_available(provider: str | None, home: str | None) -> None:
-    if provider not in {"codex", "claude", "xai"} or not home:
+    if provider not in {"codex", "claude", "xai", "devin"} or not home:
         return
     with _PROVIDER_HOME_LOCK:
         _RATE_LIMITED_PROVIDER_HOMES.setdefault(provider, set()).discard(home)
@@ -1541,7 +1565,7 @@ def _provider_account_worker_limit(data_dir: str | None = None) -> int:
 def provider_account_lease(provider: str | None, home: str | None, *, data_dir: str | None = None, env=None):
     """Limit concurrent root model calls assigned to one native provider account."""
 
-    if provider not in {"codex", "claude", "xai"} or not home:
+    if provider not in {"codex", "claude", "xai", "devin"} or not home:
         assert_account_assignment(provider, home, env)
         yield
         return
@@ -1562,7 +1586,7 @@ def provider_account_lease(provider: str | None, home: str | None, *, data_dir: 
 
 
 def provider_accounts_all_rate_limited(provider: str | None, *, data_dir: str | None = None) -> bool:
-    if provider not in {"codex", "claude", "xai"}:
+    if provider not in {"codex", "claude", "xai", "devin"}:
         return True
     homes = _configured_provider_homes(provider, data_dir=data_dir)
     entries = read_account_activity()
@@ -1579,7 +1603,7 @@ def provider_accounts_all_rate_limited(provider: str | None, *, data_dir: str | 
 def _provider_account_health(provider: str) -> dict[str, _ProviderAccountHealth]:
     """Return authoritative account availability from the local account service."""
 
-    if provider not in {"codex", "claude", "xai"}:
+    if provider not in {"codex", "claude", "xai", "devin"}:
         return {}
     base_url = os.getenv("EXECUTOR_VIEW_URL", "").strip().rstrip("/")
     token_path = os.getenv("EXECUTOR_VIEW_INTERNAL_TOKEN_FILE", "").strip()
@@ -1650,6 +1674,8 @@ def _configured_provider_homes(provider: str, *, data_dir: str | None = None) ->
         return _configured_claude_homes(data_dir=data_dir)
     if provider == "xai":
         return _configured_grok_homes(data_dir=data_dir)
+    if provider == "devin":
+        return _configured_devin_homes(data_dir=data_dir)
     return []
 
 
@@ -1659,10 +1685,15 @@ def _configured_codex_homes(data_dir: str | None = None) -> list[str]:
     homes: list[str] = []
     for raw_path in _split_home_list(raw or ""):
         source = Path(raw_path).expanduser()
-        if source.exists() and not (source / "auth.json").exists() and not (source / ".codex").exists():
-            candidates = sorted(path for path in source.glob("*/.codex") if path.is_dir())
-        else:
-            candidates = [Path(_resolve_codex_home(raw_path))]
+        try:
+            if source.exists() and not (source / "auth.json").exists() and not (source / ".codex").exists():
+                candidates = sorted(path for path in source.glob("*/.codex") if path.is_dir())
+            else:
+                candidates = [Path(_resolve_codex_home(raw_path))]
+        except OSError:
+            # Unreadable configured roots must not crash job setup on hosts
+            # where the engine does not run as root.
+            continue
         for candidate in candidates:
             home = str(candidate)
             if home and home not in seen:
@@ -1689,10 +1720,36 @@ def _configured_grok_homes(data_dir: str | None = None) -> list[str]:
     homes: list[str] = []
     for raw_path in _split_home_list(raw or ""):
         source = Path(raw_path).expanduser()
-        if source.exists() and not (source / "auth.json").exists() and not (source / ".grok").exists():
-            candidates = sorted(path for path in source.glob("*/.grok") if path.is_dir())
-        else:
-            candidates = [Path(_resolve_grok_home(raw_path))]
+        try:
+            if source.exists() and not (source / "auth.json").exists() and not (source / ".grok").exists():
+                candidates = sorted(path for path in source.glob("*/.grok") if path.is_dir())
+            else:
+                candidates = [Path(_resolve_grok_home(raw_path))]
+        except OSError:
+            continue
+        for candidate in candidates:
+            home = str(candidate)
+            if home and home not in seen:
+                seen.add(home)
+                homes.append(home)
+    return homes
+
+
+def _configured_devin_homes(data_dir: str | None = None) -> list[str]:
+    raw = runtime_value("ENGINE_DEVIN_HOME", os.getenv("DEVIN_HOME") or "/root/.local/share/devin", data_dir=data_dir)
+    seen: set[str] = set()
+    homes: list[str] = []
+    for raw_path in _split_home_list(raw or ""):
+        source = Path(raw_path).expanduser()
+        try:
+            if source.exists() and not (source / "credentials.toml").exists() and not (source / "devin").exists():
+                candidates = sorted(path for path in source.glob("*/devin") if path.is_dir())
+            else:
+                candidates = [Path(_resolve_devin_home(raw_path))]
+        except OSError:
+            # Unreadable configured roots must not crash catalog refreshes or
+            # job setup on hosts where the engine does not run as root.
+            continue
         for candidate in candidates:
             home = str(candidate)
             if home and home not in seen:
@@ -1726,6 +1783,14 @@ def _resolve_codex_home(path: str) -> str:
 def _resolve_grok_home(path: str) -> str:
     source = Path(path).expanduser()
     nested = source / ".grok"
+    if nested.exists():
+        return str(nested)
+    return str(source)
+
+
+def _resolve_devin_home(path: str) -> str:
+    source = Path(path).expanduser()
+    nested = source / "devin"
     if nested.exists():
         return str(nested)
     return str(source)
@@ -1795,6 +1860,33 @@ def _first_account_profile_value(value: Any, keys: set[str]) -> str | None:
         if found:
             return found
     return None
+
+
+def _devin_account_info(home: str) -> dict[str, str | None]:
+    """Identity for a Devin login home (the leaf ``devin`` directory)."""
+
+    source = Path(home)
+    payloads: list[Any] = []
+    for name in (".open-kritt-account.json",):
+        path = source / name
+        try:
+            if path.stat().st_size > 1024 * 1024:
+                continue
+            payloads.append(json.loads(path.read_text(encoding="utf-8")))
+        except (OSError, json.JSONDecodeError):
+            continue
+    email = _first_account_profile_value(
+        payloads,
+        {"email", "emailaddress", "useremail", "accountemail"},
+    )
+    account_id = _first_account_profile_value(
+        payloads,
+        {"accountid", "accountuuid", "userid", "useruuid"},
+    )
+    return {
+        "id": account_id or email or str(home),
+        "email": email,
+    }
 
 
 def _claude_account_info(home: str) -> dict[str, str | None]:

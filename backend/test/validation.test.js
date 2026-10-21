@@ -95,6 +95,44 @@ test('generation and scan model selections share normalization rules', () => {
   );
 });
 
+test('devin selections validate for scans but are rejected for tool-free generation', () => {
+  const selection = validateModelSelection({
+    model: 'swe-2',
+    model_provider: 'DEVIN',
+    harness: 'devin-cli',
+    thinking_effort: 'default',
+  });
+  assert.deepEqual(selection, {
+    model: 'swe-2',
+    modelProvider: 'devin',
+    harness: 'devin',
+    thinkingEffort: 'default',
+  });
+
+  assert.throws(
+    () =>
+      validateGeneration({
+        kind: 'post_script',
+        request: 'Summarize the findings.',
+        model: 'swe-2',
+        model_provider: 'devin',
+        harness: 'devin',
+      }),
+    (error) =>
+      error instanceof ValidationError &&
+      error.errors.some((item) => item.field === 'model_provider' && item.message.includes('tool-free generation'))
+  );
+
+  const generated = validateGeneration({
+    kind: 'post_script',
+    request: 'Summarize the findings.',
+    model: 'gpt-5.6',
+    model_provider: 'codex',
+    harness: 'codex',
+  });
+  assert.equal(generated.modelProvider, 'codex');
+});
+
 test('model selection accepts the provider effort union', () => {
   for (const thinkingEffort of ['default', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']) {
     assert.equal(

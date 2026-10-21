@@ -43,10 +43,14 @@ JOB_PROVIDER_ENV_KEYS = {
     "openrouter": frozenset({"OPENROUTER_API_KEY"}),
     "xai": frozenset({"XAI_API_KEY"}),
     "deepseek": frozenset({"DEEPSEEK_API_KEY"}),
+    # Devin authenticates through a mounted credentials.toml resolved via
+    # XDG_DATA_HOME, not an environment variable.
+    "devin": frozenset(),
 }
 JOB_HARNESS_ENV_KEYS = {
     "cursor": frozenset({"CURSOR_API_KEY", "CURSOR_AUTH_TOKEN", "CURSOR_AGENT_BIN"}),
     "grok-build": frozenset({"GROK_BIN", "GROK_HOME"}),
+    "devin": frozenset({"DEVIN_BIN"}),
 }
 
 

@@ -26,6 +26,7 @@ RUN mkdir -p /run/open-kritt-secrets \
     && ln -s /run/open-kritt-secrets/codex-accounts /codex-accounts \
     && ln -s /run/open-kritt-secrets/claude-accounts /claude-accounts \
     && ln -s /run/open-kritt-secrets/grok-accounts /grok-accounts \
+    && ln -s /run/open-kritt-secrets/devin-accounts /devin-accounts \
     && ln -s /run/open-kritt-secrets/codex-home-source /codex-home-source \
     && ln -s /run/open-kritt-secrets/local-repos /local_repos
 
@@ -35,6 +36,7 @@ RUN mkdir -p /run/open-kritt-secrets \
 ARG TARGETARCH
 ARG CURSOR_AGENT_VERSION=2026.07.09-a3815c0
 ARG GROK_BUILD_VERSION=1.0.5
+ARG DEVIN_CLI_VERSION=3000.11.3
 RUN case "${TARGETARCH}" in \
       amd64) cursor_arch=x64; cursor_sha256=c7c1f32249cedb99cc20cd4eed1f9308dc2299a78c283bbc6efd6d658cd4977e ;; \
       arm64) cursor_arch=arm64; cursor_sha256=11b2b6801136a11a3632a4b1080ea3bfc7d97d0a68382be9ede1faf5333207fb ;; \
@@ -56,7 +58,19 @@ RUN case "${TARGETARCH}" in \
     && echo "${grok_sha256}  /tmp/grok" | sha256sum -c - \
     && install -m 0755 /tmp/grok /usr/local/bin/grok \
     && rm /tmp/grok \
-    && grok --version
+    && grok --version \
+    && case "${TARGETARCH}" in \
+      amd64) devin_arch=x86_64-unknown-linux; devin_sha256=83b3b113c01bf2a3e9e100db08d77e6b086806a7754f091e20831bdfe215157e ;; \
+      arm64) devin_arch=aarch64-unknown-linux; devin_sha256=21a2d7a8dea67987067cde7eb3fe7193a48daa8f8c3d50d414c603c4a2b67f15 ;; \
+      *) echo "unsupported Devin CLI architecture: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL "https://static.devin.ai/cli/${DEVIN_CLI_VERSION}/devin-${DEVIN_CLI_VERSION}-${devin_arch}.tar.gz" -o /tmp/devin.tar.gz \
+    && echo "${devin_sha256}  /tmp/devin.tar.gz" | sha256sum -c - \
+    && mkdir -p "/opt/devin/versions/${DEVIN_CLI_VERSION}" \
+    && tar -xzf /tmp/devin.tar.gz -C "/opt/devin/versions/${DEVIN_CLI_VERSION}" \
+    && ln -s "/opt/devin/versions/${DEVIN_CLI_VERSION}/bin/devin" /usr/local/bin/devin \
+    && rm /tmp/devin.tar.gz \
+    && devin --version
 
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 

@@ -1,4 +1,7 @@
-export const MODEL_PROVIDER_IDS = ['codex', 'claude', 'openrouter', 'xai', 'deepseek'];
+export const MODEL_PROVIDER_IDS = ['codex', 'claude', 'openrouter', 'xai', 'deepseek', 'devin'];
+// Devin cannot run with its tools disabled, so tool-free draft generation
+// excludes it even though the provider is valid for scans and post-processing.
+export const GENERATION_MODEL_PROVIDER_IDS = MODEL_PROVIDER_IDS.filter((provider) => provider !== 'devin');
 export const MODEL_CATALOG_STATUSES = ['ready', 'loading', 'unavailable'];
 const SAFE_MODEL_NOTE_URLS = new Set(['https://chatgpt.com/cyber']);
 
@@ -10,6 +13,7 @@ const PROVIDER_HARNESSES = {
   openrouter: ['claude-code', 'codex'],
   xai: ['grok-build'],
   deepseek: ['codex'],
+  devin: ['devin'],
 };
 
 const PROVIDER_DEFAULT_MODELS = {
@@ -18,6 +22,7 @@ const PROVIDER_DEFAULT_MODELS = {
   openrouter: 'z-ai/glm-5.2',
   xai: 'grok-4.6',
   deepseek: 'deepseek-flash',
+  devin: 'swe-2',
 };
 
 const PROVIDER_THINKING_EFFORTS = {
@@ -26,12 +31,16 @@ const PROVIDER_THINKING_EFFORTS = {
   openrouter: ['default', 'low', 'medium', 'high', 'xhigh', 'max'],
   xai: ['low', 'medium', 'high', 'xhigh'],
   deepseek: ['low', 'high', 'max'],
+  // Devin model variants carry the effort level (swe-2-high, swe-2-max, ...);
+  // the CLI exposes no separate effort flag.
+  devin: ['default'],
 };
 
 const HARNESS_THINKING_EFFORTS = {
   codex: ['default', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
   'claude-code': ['default', 'low', 'medium', 'high', 'xhigh', 'max'],
   'grok-build': ['low', 'medium', 'high', 'xhigh'],
+  devin: ['default'],
 };
 
 function normalizedProviderId(provider) {

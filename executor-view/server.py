@@ -119,6 +119,10 @@ GROK_HOME_RAW = os.getenv(
     "EXECUTOR_VIEW_GROK_HOME",
     os.getenv("ENGINE_GROK_HOME", os.getenv("GROK_HOME", "/root/.grok")),
 )
+DEVIN_HOME_RAW = os.getenv(
+    "EXECUTOR_VIEW_DEVIN_HOME",
+    os.getenv("ENGINE_DEVIN_HOME", os.getenv("DEVIN_HOME", "/root/.local/share/devin")),
+)
 CLAUDE_ACCOUNTS_ROOT = Path(
     os.getenv("EXECUTOR_VIEW_CLAUDE_ACCOUNTS_ROOT", "/claude-accounts")
 ).expanduser()
@@ -136,6 +140,12 @@ GROK_ACCOUNTS_ROOT = Path(
 ).expanduser()
 GROK_PRIMARY_HOME = Path(
     os.getenv("EXECUTOR_VIEW_GROK_PRIMARY_HOME", "/root/.grok")
+).expanduser()
+DEVIN_ACCOUNTS_ROOT = Path(
+    os.getenv("EXECUTOR_VIEW_DEVIN_ACCOUNTS_ROOT", "/devin-accounts")
+).expanduser()
+DEVIN_PRIMARY_HOME = Path(
+    os.getenv("EXECUTOR_VIEW_DEVIN_PRIMARY_HOME", "/root/.local/share/devin")
 ).expanduser()
 PROVIDER_CREDENTIALS_PATH = Path(
     os.getenv("OPEN_KRITT_PROVIDER_CREDENTIALS_PATH", "/credentials/providers.json")
@@ -336,7 +346,7 @@ def internal_request_path_allowed(method, path):
         method == "GET"
         and len(parts) == 3
         and parts[:2] == ["api", "accounts"]
-        and parts[2] in {"codex", "claude", "openrouter", "xai"}
+        and parts[2] in {"codex", "claude", "openrouter", "xai", "devin"}
     ):
         return True
     return (
@@ -1134,6 +1144,13 @@ def current_grok_home_raw():
     return GROK_HOME_RAW
 
 
+def current_devin_home_raw():
+    runtime_config = read_runtime_config()
+    if "ENGINE_DEVIN_HOME" in runtime_config:
+        return runtime_config["ENGINE_DEVIN_HOME"]
+    return DEVIN_HOME_RAW
+
+
 def current_worker_count():
     raw = (
         read_runtime_config().get("ENGINE_WORKER_COUNT")
@@ -1228,6 +1245,44 @@ def configured_grok_homes():
     return homes
 
 
+# Devin homes are leaf `devin` XDG directories containing credentials.toml.
+def resolve_devin_home(path):
+    source = Path(path).expanduser()
+    if (source / "credentials.toml").exists() or source.name == "devin":
+        return source
+    nested = source / "devin"
+    if nested.exists():
+        return nested
+    return source
+
+
+def configured_devin_homes():
+    seen = set()
+    homes = []
+    for raw_path in split_home_list(current_devin_home_raw()):
+        source = Path(raw_path).expanduser()
+        try:
+            if (
+                source.exists()
+                and source.name != "devin"
+                and not (source / "credentials.toml").exists()
+                and not (source / "devin").exists()
+            ):
+                candidates = sorted(
+                    path for path in source.glob("*/devin") if path.is_dir()
+                )
+            else:
+                candidates = [resolve_devin_home(raw_path)]
+        except OSError:
+            continue
+        for candidate in candidates:
+            key = str(candidate)
+            if key not in seen:
+                seen.add(key)
+                homes.append(candidate)
+    return homes
+
+
 def fetch_codex_accounts(force=False):
     now = time.monotonic()
     if (
@@ -1284,7 +1339,8 @@ def fetch_accounts(force=False):
         claude = fetch_claude_accounts(force=True)
         openrouter = fetch_openrouter_accounts(force=True)
         xai = fetch_xai_accounts(force=True)
-        data = build_account_overview(codex, claude, openrouter, xai, fetched=True)
+        devin = fetch_devin_accounts(force=True)
+        data = build_account_overview(codex, claude, openrouter, xai, devin, fetched=True)
         ACCOUNT_OVERVIEW_CACHE["data"] = data
         ACCOUNT_OVERVIEW_CACHE["expires_at"] = now + ACCOUNT_OVERVIEW_CACHE_SECONDS
         return data
@@ -1292,7 +1348,8 @@ def fetch_accounts(force=False):
     claude = fetch_claude_accounts(force=force)
     openrouter = fetch_openrouter_accounts(force=force)
     xai = fetch_xai_accounts(force=force)
-    data = build_account_overview(codex, claude, openrouter, xai, fetched=True)
+    devin = fetch_devin_accounts(force=force)
+    data = build_account_overview(codex, claude, openrouter, xai, devin, fetched=True)
     ACCOUNT_OVERVIEW_CACHE["data"] = data
     ACCOUNT_OVERVIEW_CACHE["expires_at"] = now + ACCOUNT_OVERVIEW_CACHE_SECONDS
     return data
@@ -1304,6 +1361,7 @@ def fetch_account_provider(kind, force=False):
         "claude": fetch_claude_accounts,
         "openrouter": fetch_openrouter_accounts,
         "xai": fetch_xai_accounts,
+        "devin": fetch_devin_accounts,
     }
     fetcher = fetchers.get(kind)
     if not fetcher:
@@ -1329,6 +1387,10 @@ def build_account_provider(kind, data):
             "xAI",
             "Grok device login homes and optional xAI API key status for Grok Build.",
         ),
+        "devin": (
+            "Devin",
+            "Devin CLI login homes with per-account credentials for SWE models.",
+        ),
     }
     label, description = metadata[kind]
     return {
@@ -1344,12 +1406,13 @@ def build_account_provider(kind, data):
     }
 
 
-def build_account_overview(codex, claude, openrouter, xai, fetched=True):
+def build_account_overview(codex, claude, openrouter, xai, devin, fetched=True):
     providers = [
         build_account_provider("codex", codex),
         build_account_provider("claude", claude),
         build_account_provider("openrouter", openrouter),
         build_account_provider("xai", xai),
+        build_account_provider("devin", devin),
     ]
     return {
         "generatedAt": datetime.now(timezone.utc),
@@ -1370,6 +1433,7 @@ def build_account_overview(codex, claude, openrouter, xai, fetched=True):
         "claude": claude,
         "openrouter": openrouter,
         "xai": xai,
+        "devin": devin,
         "providers": providers,
     }
 
@@ -2236,6 +2300,147 @@ def xai_api_key_account(api_key, force=False):
         "label": "xAI API key",
         "path": "XAI_API_KEY",
         "active": active,
+        "status": status,
+        "statusKind": status_kind,
+        "details": details,
+    }
+
+
+def fetch_devin_accounts(force=False):
+    homes = configured_devin_homes()
+    accounts = [devin_account(home) for home in homes]
+    active = sum(1 for account in accounts if account["active"])
+    limited = sum(1 for account in accounts if account["statusKind"] == "limited")
+    stale = sum(1 for account in accounts if account["statusKind"] == "stale")
+    return {
+        "generatedAt": datetime.now(timezone.utc),
+        "configuredRaw": current_devin_home_raw(),
+        "active": active,
+        "total": len(accounts),
+        "limited": limited,
+        "stale": stale,
+        "accounts": accounts,
+    }
+
+
+def removable_devin_account_id(home):
+    home = Path(home).expanduser()
+    if home == DEVIN_PRIMARY_HOME:
+        return "primary"
+    try:
+        relative = home.relative_to(DEVIN_ACCOUNTS_ROOT)
+    except ValueError:
+        return None
+    if len(relative.parts) != 2 or relative.parts[1] != "devin":
+        return None
+    account_id = relative.parts[0]
+    if not ACCOUNT_ID_PATTERN.fullmatch(account_id):
+        return None
+    return account_id
+
+
+def devin_account_label(home):
+    home = Path(home)
+    if home == DEVIN_PRIMARY_HOME:
+        return "primary"
+    return home.parent.name if home.name == "devin" else home.name
+
+
+def load_devin_auth(home):
+    """Read identity fields from a Devin login home.
+
+    credentials.toml holds secrets (api_key, windsurf_api_key); it is only
+    checked for presence, never parsed into the response. Identity comes from
+    the .open-kritt-account.json sidecar written by the backend login flow.
+    """
+
+    home = Path(home)
+    credentials_path = home / "credentials.toml"
+    out = {"exists": False, "hasApiKey": False}
+    try:
+        stats = credentials_path.stat()
+    except OSError:
+        stats = None
+    if stats and stats.is_file() and 0 < stats.st_size <= 1024 * 1024:
+        try:
+            text = credentials_path.read_text(encoding="utf-8")
+            out["exists"] = True
+            out["hasApiKey"] = bool(
+                re.search(
+                    r'^\s*(api_key|windsurf_api_key)\s*=\s*["\']?[^\s"\']+',
+                    text,
+                    re.MULTILINE,
+                )
+            )
+        except OSError:
+            pass
+    profile_path = home / ".open-kritt-account.json"
+    try:
+        if profile_path.is_file() and profile_path.stat().st_size <= 1024 * 1024:
+            profile = json.loads(profile_path.read_text(encoding="utf-8"))
+            if isinstance(profile, dict):
+                email = first_json_value_in(
+                    profile, {"email", "emailaddress", "user_email", "account_email"}
+                )
+                out["email"] = email if isinstance(email, str) else None
+                out["accountId"] = first_json_value_in(
+                    profile,
+                    {"accountid", "account_id", "userid", "user_id", "useruuid"},
+                )
+                out["name"] = first_json_value_in(
+                    profile, {"name", "username", "display_name"}
+                )
+                out["plan"] = first_json_value_in(
+                    profile, {"plan", "tier", "subscriptiontype", "subscription_type"}
+                )
+                out["organization"] = first_json_value_in(
+                    profile,
+                    {"organization", "organization_name", "team", "team_id"},
+                )
+    except (OSError, json.JSONDecodeError):
+        pass
+    return out
+
+
+def devin_account(home):
+    home = Path(home).expanduser()
+    auth = load_devin_auth(home)
+    account_id = removable_devin_account_id(home)
+    if auth.get("hasApiKey"):
+        status_kind = "available"
+        status = "logged in"
+        active = True
+    elif auth.get("exists"):
+        status_kind = "warning"
+        status = "credentials found; api key missing"
+        active = False
+    elif home.exists():
+        status_kind = "warning"
+        status = "no credentials found"
+        active = False
+    else:
+        status_kind = "missing"
+        status = "missing config"
+        active = False
+    details = []
+    add_detail(details, "Provider", "Devin")
+    add_detail(details, "Auth", "Devin CLI login")
+    email = auth.get("email")
+    if auth.get("name"):
+        add_detail(details, "Name", auth.get("name"))
+    if auth.get("plan"):
+        add_detail(details, "Plan", auth.get("plan"))
+    if auth.get("organization"):
+        add_detail(details, "Team", auth.get("organization"))
+    return {
+        "id": account_id or str(home),
+        "provider": "Devin",
+        "label": email or devin_account_label(home),
+        "path": str(home),
+        "email": email,
+        "plan": auth.get("plan"),
+        "active": active,
+        "canRemove": account_id is not None and auth.get("exists"),
         "status": status,
         "statusKind": status_kind,
         "details": details,
@@ -4706,7 +4911,7 @@ class Handler(BaseHTTPRequestHandler):
         if (
             len(parts) == 3
             and parts[:2] == ["api", "accounts"]
-            and parts[2] in {"codex", "claude", "openrouter", "xai"}
+            and parts[2] in {"codex", "claude", "openrouter", "xai", "devin"}
         ):
             try:
                 query = parse_qs(parsed.query)

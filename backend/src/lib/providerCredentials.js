@@ -45,6 +45,13 @@ export const PROVIDER_DEFINITIONS = {
     description: 'DeepSeek models through the Codex harness, with model discovery and API checks.',
     management: 'api_key',
   },
+  devin: {
+    label: 'Devin',
+    envKeys: [],
+    credentialLabel: 'Devin login',
+    description: 'SWE models through Devin CLI login credentials stored per account.',
+    management: 'login',
+  },
 };
 
 const MANAGED_CREDENTIAL_PROVIDERS = new Set(['openrouter', 'xai', 'deepseek']);

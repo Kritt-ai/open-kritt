@@ -21,6 +21,7 @@ import {
   HARNESS_THINKING_EFFORTS,
   isModelProviderHarnessCompatible,
   GENERATION_KINDS,
+  GENERATION_MODEL_PROVIDERS,
   GENERATION_REQUEST_MAX_LENGTH,
   MODEL_ID_MAX_LENGTH,
   REPO_KINDS,
@@ -742,6 +743,17 @@ export function validateGeneration(body) {
 
   const selection = modelSelectionValidation(body);
   errors.push(...selection.errors);
+  const generationProvider = selection.normalized.modelProvider;
+  if (
+    generationProvider &&
+    MODEL_PROVIDERS.includes(generationProvider) &&
+    !GENERATION_MODEL_PROVIDERS.includes(generationProvider)
+  ) {
+    errors.push({
+      field: 'model_provider',
+      message: `Model provider "${generationProvider}" cannot run isolated tool-free generation.`,
+    });
+  }
   if (errors.length) throw new ValidationError(errors);
 
   return { kind, request, ...selection.normalized };

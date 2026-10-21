@@ -71,15 +71,16 @@ export const SCAN_STATUSES = [
 export const THINKING_EFFORTS = ['default', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 export const DEFAULT_THINKING_EFFORT = 'medium';
 
-export const MODEL_PROVIDERS = ['codex', 'claude', 'openrouter', 'xai', 'deepseek'];
+export const MODEL_PROVIDERS = ['codex', 'claude', 'openrouter', 'xai', 'deepseek', 'devin'];
 export const DEFAULT_MODEL_PROVIDER = 'openrouter';
 
-export const HARNESSES = ['codex', 'claude-code', 'cursor', 'grok-build'];
+export const HARNESSES = ['codex', 'claude-code', 'cursor', 'grok-build', 'devin'];
 export const HARNESS_ALIASES = {
   'codex-cli': 'codex',
   'cursor-agent': 'cursor',
   'cursor-cli': 'cursor',
   grok: 'grok-build',
+  'devin-cli': 'devin',
 };
 export const MODEL_PROVIDER_HARNESSES = {
   codex: ['codex'],
@@ -87,12 +88,21 @@ export const MODEL_PROVIDER_HARNESSES = {
   openrouter: ['codex', 'claude-code'],
   xai: ['grok-build'],
   deepseek: ['codex'],
+  devin: ['devin'],
 };
 export const HARNESS_THINKING_EFFORTS = {
   codex: ['default', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
   'claude-code': ['default', 'low', 'medium', 'high', 'xhigh', 'max'],
   'grok-build': ['low', 'medium', 'high', 'xhigh'],
+  // Devin model variants carry the effort level (swe-2-high, swe-2-max, ...)
+  // and the CLI exposes no separate effort flag.
+  devin: ['default'],
 };
+
+// Tool-free draft generation needs a harness that can run with every optional
+// tool surface disabled. The Devin CLI has no such mode, so the provider is
+// valid for scans and post-processing but not for isolated generation.
+export const GENERATION_MODEL_PROVIDERS = MODEL_PROVIDERS.filter((provider) => provider !== 'devin');
 
 export const GENERATION_KINDS = ['workflow', 'post_script'];
 export const GENERATION_STATUSES = ['pending', 'running', 'completed', 'failed'];

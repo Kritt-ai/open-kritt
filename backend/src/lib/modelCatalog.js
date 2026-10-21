@@ -57,6 +57,33 @@ const XAI_GROK_MODELS = [
   },
 ];
 
+const DEVIN_MODELS = [
+  {
+    id: 'swe-2',
+    label: 'SWE-2',
+    thinkingEfforts: ['default'],
+    isDefault: true,
+  },
+  {
+    id: 'swe-2-medium',
+    label: 'SWE-2 Medium',
+    thinkingEfforts: ['default'],
+    isDefault: false,
+  },
+  {
+    id: 'swe-2-high',
+    label: 'SWE-2 High',
+    thinkingEfforts: ['default'],
+    isDefault: false,
+  },
+  {
+    id: 'swe-2-max',
+    label: 'SWE-2 Max',
+    thinkingEfforts: ['default'],
+    isDefault: false,
+  },
+];
+
 function normalizedProvider(provider) {
   return `${provider || ''}`.trim().toLowerCase();
 }
@@ -138,6 +165,18 @@ export function modelCatalogEntry(provider, catalog) {
       input: 'text',
       models: XAI_GROK_MODELS,
       defaultModel: 'grok-4.6',
+      status: 'ready',
+    };
+  }
+
+  // `devin models list` requires a logged-in CLI on the engine; keep the SWE-2
+  // family as a bounded fallback so the picker stays usable.
+  if (provider === 'devin' && (!models.length || !defaultModel)) {
+    return {
+      provider,
+      input: 'select',
+      models: DEVIN_MODELS,
+      defaultModel: 'swe-2',
       status: 'ready',
     };
   }
