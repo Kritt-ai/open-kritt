@@ -155,3 +155,8 @@ jobs:
       - name: Re-apply migrations (must be idempotent)
         working-directory: backend
         run: node prisma/migrate.js
+      - name: Verify migration replay with existing generation data
+        working-directory: backend
+        env:
+          MIGRATION_TEST_DATABASE_URL: ${{ env.DATABASE_URL }}
+        run: node --test test/migrationReplay.test.js
