@@ -49,7 +49,8 @@ imported this way; use the guided device flow instead.
 For ChatGPT sign-ins, **Accounts → Codex** shows the weekly reset time when Codex reports a
 weekly usage window. If that window has not started, choose **Start quota** to make a small
 Codex request through the selected account and refresh its usage. The refresh can take a
-short while.
+short while. If the action times out after two minutes, refresh the account status before
+retrying; the upstream request may already have started the usage window.
 
 When Codex reports manual reset credits, Accounts shows how many are available. Choose
 **Use reset** to consume one for an eligible usage window. open·kritt asks for confirmation
