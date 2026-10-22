@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { renewClaudeCredential } from '../src/lib/claudeCredentials.js';
+import {
+  CLAUDE_ACCOUNT_PROFILE_FILENAME,
+  promoteClaudeCredential,
+  renewClaudeCredential,
+} from '../src/lib/claudeCredentials.js';
 
 async function claudeHome(t) {
   const home = await mkdtemp(join(tmpdir(), 'open-kritt-claude-credential-'));
@@ -71,4 +75,25 @@ test('Claude credential renewal restores the original credential after an invali
 
   assert.equal(renewed, false);
   assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), JSON.parse(original));
+});
+
+test('credential promotion with no new profile invalidates the old managed identity', async (t) => {
+  const root = await claudeHome(t);
+  const source = join(root, 'source');
+  const target = join(root, 'target');
+  await mkdir(source);
+  await mkdir(target);
+  await writeFile(join(source, '.credentials.json'), credential('new-access', 20_000));
+  await writeFile(join(target, '.credentials.json'), credential('old-access', 10_000));
+  await writeFile(join(target, CLAUDE_ACCOUNT_PROFILE_FILENAME), JSON.stringify({ email: 'old@example.test' }));
+  await writeFile(join(target, '.claude.json'), JSON.stringify({ email: 'old-fallback@example.test' }));
+
+  await promoteClaudeCredential(source, target);
+
+  assert.equal(JSON.parse(await readFile(join(target, '.credentials.json'))).claudeAiOauth.accessToken, 'new-access');
+  assert.deepEqual(JSON.parse(await readFile(join(target, CLAUDE_ACCOUNT_PROFILE_FILENAME)), 'utf8'), {
+    provider: 'claude',
+    identityKnown: false,
+  });
+  assert.equal(JSON.parse(await readFile(join(target, '.claude.json'))).email, 'old-fallback@example.test');
 });

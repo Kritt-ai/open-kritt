@@ -328,7 +328,7 @@ export async function promoteClaudeCredential(sourceHome, targetHome) {
       for (const name of CLAUDE_CREDENTIAL_FILENAMES) {
         if (name !== targetName) await rm(join(targetHome, name), { force: true });
       }
-      await writeClaudeAccountProfile(targetHome, accountProfile);
+      await writeClaudeAccountProfile(targetHome, accountProfile || { provider: 'claude', identityKnown: false });
       return targetPath;
     } finally {
       await temporary?.close().catch(() => {});

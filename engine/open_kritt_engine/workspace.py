@@ -1799,21 +1799,36 @@ def _first_account_profile_value(value: Any, keys: set[str]) -> str | None:
 
 def _claude_account_info(home: str) -> dict[str, str | None]:
     source = Path(home)
-    candidates = [
-        source / ".open-kritt-account.json",
-        source / ".claude.json",
-        source / "claude.json",
-    ]
-    if source.name == ".claude":
-        candidates.append(source.parent / ".claude.json")
-    payloads: list[Any] = []
-    for path in candidates:
+    unknown = {"id": str(home), "email": None}
+    managed = source / ".open-kritt-account.json"
+    try:
+        managed_file = managed.lstat()
+    except FileNotFoundError:
+        managed_file = None
+    except OSError:
+        return unknown
+    if managed_file is not None:
         try:
-            if path.stat().st_size > 1024 * 1024:
-                continue
-            payloads.append(json.loads(path.read_text(encoding="utf-8")))
+            if managed_file.st_size > 1024 * 1024:
+                return unknown
+            payload = json.loads(managed.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            continue
+            return unknown
+        if not isinstance(payload, dict):
+            return unknown
+        payloads: list[Any] = [payload]
+    else:
+        candidates = [source / ".claude.json", source / "claude.json"]
+        if source.name == ".claude":
+            candidates.append(source.parent / ".claude.json")
+        payloads = []
+        for path in candidates:
+            try:
+                if path.stat().st_size > 1024 * 1024:
+                    continue
+                payloads.append(json.loads(path.read_text(encoding="utf-8")))
+            except (OSError, json.JSONDecodeError):
+                continue
     email = _first_account_profile_value(
         payloads,
         {"email", "emailaddress", "useremail", "accountemail"},
