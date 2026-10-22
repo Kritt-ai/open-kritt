@@ -72,3 +72,98 @@ test('Grok credential probe treats unrelated command failures as an unavailable 
 
   assert.deepEqual(result, { statusKind: 'stale' });
 });
+
+test('timed-out credential probe escalates when a diagnostic child ignores termination', async () => {
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  const signals = [];
+  child.kill = (signal) => {
+    signals.push(signal);
+    if (signal === 'SIGKILL') queueMicrotask(() => child.emit('close', null));
+    return true;
+  };
+
+  const result = await probeGrokCredential('/synthetic/grok', {
+    timeoutMs: 20,
+    spawnProcess: () => child,
+  });
+  assert.deepEqual(result, { statusKind: 'stale' });
+  assert.deepEqual(signals, ['SIGTERM', 'SIGKILL']);
+});
+
+test('cooperative diagnostic child closes after termination without escalation', async () => {
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  const signals = [];
+  child.kill = (signal) => {
+    signals.push(signal);
+    queueMicrotask(() => child.emit('close', null));
+    return true;
+  };
+  const result = await probeGrokCredential('/synthetic/grok', {
+    timeoutMs: 20,
+    spawnProcess: () => child,
+  });
+  assert.deepEqual(result, { statusKind: 'stale' });
+  assert.deepEqual(signals, ['SIGTERM']);
+});
+
+test('diagnostic probe settles if a child never closes after kill escalation', async () => {
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  const signals = [];
+  child.kill = (signal) => {
+    signals.push(signal);
+    return true;
+  };
+
+  const result = await probeGrokCredential('/synthetic/grok', {
+    timeoutMs: 20,
+    spawnProcess: () => child,
+  });
+  assert.deepEqual(result, { statusKind: 'stale' });
+  assert.deepEqual(signals, ['SIGTERM', 'SIGKILL']);
+  assert.equal(child.stdout.listenerCount('data'), 0);
+  assert.equal(child.stderr.listenerCount('data'), 0);
+});
+
+test('diagnostic probe remains bounded if termination signals throw', async () => {
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  const signals = [];
+  child.kill = (signal) => {
+    signals.push(signal);
+    throw new Error('synthetic signal failure');
+  };
+
+  const result = await probeGrokCredential('/synthetic/grok', {
+    timeoutMs: 20,
+    spawnProcess: () => child,
+  });
+  assert.deepEqual(result, { statusKind: 'stale' });
+  assert.deepEqual(signals, ['SIGTERM', 'SIGKILL']);
+});
+
+test('diagnostic child error after SIGTERM does not cancel kill escalation', async () => {
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  const signals = [];
+  child.kill = (signal) => {
+    signals.push(signal);
+    if (signal === 'SIGTERM') queueMicrotask(() => child.emit('error', new Error('synthetic child error')));
+    if (signal === 'SIGKILL') queueMicrotask(() => child.emit('close', null));
+    return true;
+  };
+
+  const result = await probeGrokCredential('/synthetic/grok', {
+    timeoutMs: 20,
+    spawnProcess: () => child,
+  });
+  assert.deepEqual(result, { statusKind: 'stale' });
+  assert.deepEqual(signals, ['SIGTERM', 'SIGKILL']);
+});
