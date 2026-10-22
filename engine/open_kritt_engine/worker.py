@@ -1630,6 +1630,20 @@ class Worker:
                         data_dir=getattr(self.config, "data_dir", None),
                         env=prepared.workspace.env,
                     ):
+                        with self.db.connect() as conn:
+                            current_scan = self.db.load_scan(conn, int(scan["id"]))
+                            if not current_scan or current_scan["status"] in NON_RUNNABLE_SCAN_STATUSES:
+                                self.db.update_metadata(
+                                    conn,
+                                    metadata_id,
+                                    status="interrupted",
+                                    error=None,
+                                    run_time_ms=int((now_utc() - started).total_seconds() * 1000),
+                                    raw_token_usage=None,
+                                    phase="interrupted",
+                                )
+                                conn.commit()
+                                return True
                         harness_arguments = {
                             "prompt": prompt_filled,
                             "schema": schema,
