@@ -127,6 +127,77 @@ def image_workspace_enabled(*, data_dir: str | None = None) -> bool:
     return str(mode or "copy").strip().lower() in IMAGE_WORKSPACE_MODES
 
 
+# The opencode client issues a tiny side-call to name the session (agent=title).
+# With no small model pinned it resolves one itself from the provider catalog by
+# family preference, and on the opencode gateway that can land on a PAID model
+# (observed: gpt-5.4-nano), which then fails with HTTP 402 "Insufficient account
+# funds" and burns a request on every attempt of every step. Pinning a known-free
+# model keeps that side-call free. Verified 2026-10-21 in the runner image: with
+# the pin the title call uses opencode/mimo-v2.6-flash-free; without it,
+# gpt-5.4-nano and a 402 per attempt.
+OPENCODE_SMALL_MODEL_DEFAULT = "opencode/mimo-v2.6-flash-free"
+
+
+def _prepare_opencode_config(
+    home: Path,
+    agent_skills: list[dict[str, Any]] | None = None,
+    *,
+    data_dir: str | None = None,
+):
+    """Prepare the opencode client's job config: a free small model, and the skills.
+
+    Two things the opencode harness needs that the codex/claude/grok harnesses get
+    from their own home directories:
+
+    1. A pinned small (side-call) model, so the session-title call cannot land on
+       a PAID gateway model and fail with HTTP 402 (see the note above).
+    2. The selected agent skills. The opencode client discovers skills from the
+       paths named in its config's `skills` array ("Additional paths or URLs to
+       discover skills from" — packages/schema/src/config.ts), and it has no
+       CODEX_HOME/CLAUDE_HOME equivalent, so the only place the engine can put
+       them is the job home's own config dir. Until this, every opencode scan
+       ran with zero skill guidance while the prompt pointed at a skill bundle
+       that was never installed.
+    """
+
+    small_model = (
+        runtime_value(
+            "OPENCODE_KRITT_SMALL_MODEL",
+            OPENCODE_SMALL_MODEL_DEFAULT,
+            data_dir=data_dir,
+        )
+        or OPENCODE_SMALL_MODEL_DEFAULT
+    ).strip()
+    config_dir = home / ".config" / "opencode"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config: dict[str, Any] = {
+        "$schema": "https://opencode.ai/config.json",
+        "small_model": small_model,
+    }
+    if agent_skills:
+        # _install_agent_skills writes <dir>/skills/<slug>/SKILL.md plus the
+        # selected-skills bundle, which is exactly the layout this client scans.
+        _install_agent_skills(config_dir, agent_skills)
+        # The path must be the one the CLIENT sees: the job home is bind-mounted
+        # at /home/runner inside the runner container, so the engine's host path
+        # (…/jobs/metadata-N/home/…) does not exist there. The 1.19.x client finds
+        # the skills under HOME anyway; this array is what a v2 client reads.
+        config["skills"] = ["/home/runner/.config/opencode/skills"]
+    config_path = config_dir / "opencode.json"
+    _atomic_write_text(
+        config_path,
+        json.dumps(
+            config,
+            indent=2,
+        )
+        + "\n",
+    )
+    try:
+        os.chmod(config_path, 0o600)
+    except OSError:
+        logging.getLogger(__name__).warning("could not tighten permissions on %s", config)
+
+
 def prepare_job_workspace(
     data_dir: str,
     metadata_id: int,
@@ -225,6 +296,8 @@ def prepare_job_workspace(
     )
     if claude_oauth_expires_at_ms is not None:
         env[CLAUDE_OAUTH_EXPIRY_ENV] = str(claude_oauth_expires_at_ms)
+    if selected_harness == "opencode":
+        _prepare_opencode_config(home, agent_skills=agent_skills, data_dir=data_dir)
     _secure_job_tree(root, job_uid, job_gid)
     return JobWorkspace(
         root_dir=str(root),

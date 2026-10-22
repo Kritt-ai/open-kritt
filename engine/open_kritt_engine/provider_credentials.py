@@ -12,6 +12,7 @@ PROVIDER_ENV_KEYS = {
     "openrouter": "OPENROUTER_API_KEY",
     "xai": "XAI_API_KEY",
     "deepseek": "DEEPSEEK_API_KEY",
+    "opencode": "CODEX_API_KEY",
 }
 MAX_CREDENTIAL_FILE_BYTES = 1024 * 1024
 _CREDENTIAL_WRITE_LOCK = threading.Lock()
@@ -35,6 +36,9 @@ JOB_COMMON_ENV_KEYS = frozenset(
         "https_proxy",
         "all_proxy",
         "no_proxy",
+        # OpenCode adapter: lets the codex shim pick the model it delegates to.
+        "OPENCODE_KRITT_MODEL",
+        "OPENCODE_KRITT_TIMEOUT",
     }
 )
 JOB_PROVIDER_ENV_KEYS = {
@@ -43,6 +47,25 @@ JOB_PROVIDER_ENV_KEYS = {
     "openrouter": frozenset({"OPENROUTER_API_KEY"}),
     "xai": frozenset({"XAI_API_KEY"}),
     "deepseek": frozenset({"DEEPSEEK_API_KEY"}),
+    # The opencode harness authenticates via CODEX_API_KEY (the opencode-go
+    # subscription key) and OPENCODE_KRITT_MODEL pins the real model id.
+    #
+    # 2026-07-21 — the per-attempt budget must be in this allowlist, or it never
+    # reaches the runner: the harness builds the docker command with `--env KEY`
+    # (name only), so the value is taken from the JOB env, and the wrapper inside
+    # the container expands ${OPENCODE_KRITT_ATTEMPT_TIMEOUT:-900}. With the key
+    # missing here, the 900 s default was baked in and no value in .env could
+    # change it — a 3k-file repo's first step was killed at 15 minutes every time.
+    "opencode": frozenset(
+        {
+            "CODEX_API_KEY",
+            "OPENAI_API_KEY",
+            "OPENCODE_KRITT_MODEL",
+            "OPENCODE_KRITT_TIMEOUT",
+            "OPENCODE_KRITT_ATTEMPT_TIMEOUT",
+            "OPENCODE_KRITT_RETRIES",
+        }
+    ),
 }
 JOB_HARNESS_ENV_KEYS = {
     "cursor": frozenset({"CURSOR_API_KEY", "CURSOR_AUTH_TOKEN", "CURSOR_AGENT_BIN"}),

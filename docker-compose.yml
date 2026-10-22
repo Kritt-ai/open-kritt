@@ -10,6 +10,8 @@ services:
       # Browser uses relative /api (proxied). Vite proxies it to the backend service.
       VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
       VITE_PROXY_TARGET: ${VITE_PROXY_TARGET:-http://backend:3002}
+      # Comma-separated hosts Vite may serve (needed for Tailscale Serve access).
+      VITE_ALLOWED_HOSTS: ${VITE_ALLOWED_HOSTS:-}
     depends_on:
       - backend
     volumes:
@@ -142,6 +144,11 @@ services:
       ENGINE_DOCKER_DATA_DIR_HOST: ${ENGINE_DOCKER_DATA_DIR_HOST:-${PWD}/.data/engine}
       CODEX_API_KEY: ${CODEX_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      # OpenCode adapter: model the codex shim delegates to inside scan runners.
+      OPENCODE_KRITT_MODEL: ${OPENCODE_KRITT_MODEL:-}
+      # In-place retries and per-attempt timeout for the opencode wrapper.
+      OPENCODE_KRITT_RETRIES: ${OPENCODE_KRITT_RETRIES:-}
+      OPENCODE_KRITT_ATTEMPT_TIMEOUT: ${OPENCODE_KRITT_ATTEMPT_TIMEOUT:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}

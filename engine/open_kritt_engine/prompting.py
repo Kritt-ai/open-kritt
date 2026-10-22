@@ -669,6 +669,17 @@ def native_agent_skills_prompt(agent_skills: list[dict[str, Any]] | None, harnes
             f"Use the installed native Open-Kritt selected scan skill `{SELECTED_AGENT_SKILLS_SLUG}` "
             "for this task (invoke it as a Grok Build skill/rule when available)."
         )
+    if normalized == "opencode":
+        # The opencode harness has no native "invoke the selected bundle" syntax
+        # that survives the CLI, and pointing the model at a bundle that may not
+        # be discovered is worse than useless: the model is told to use guidance
+        # it cannot reach. Inline the content instead — a handful of skills is a
+        # few KB, it is deterministic, and it does not depend on the client's
+        # discovery rules at all. The skills are ALSO installed into the job
+        # home (see workspace._prepare_opencode_config), so the client can
+        # discover them natively; this inline block is the mechanism that
+        # guarantees they reach the model.
+        return agent_skills_prompt(agent_skills)
     return f"Use the installed native Open-Kritt selected scan skill `{SELECTED_AGENT_SKILLS_SLUG}` for this task."
 
 

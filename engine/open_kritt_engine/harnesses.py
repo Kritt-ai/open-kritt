@@ -988,6 +988,10 @@ def _scan_docker_command(
         *CLAUDE_OPENROUTER_MODEL_ENV_KEYS,
         "CODEX_MODEL_PROVIDER",
         "CLAUDE_CODE_MODEL_PROVIDER",
+        "OPENCODE_KRITT_MODEL",
+        "OPENCODE_KRITT_TIMEOUT",
+        "OPENCODE_KRITT_RETRIES",
+        "OPENCODE_KRITT_ATTEMPT_TIMEOUT",
         "CURSOR_API_KEY",
         "CURSOR_AUTH_TOKEN",
         "CURSOR_AGENT_BIN",
@@ -2404,6 +2408,328 @@ def normalize_harness_name(name: str) -> str:
     return name
 
 
+def _opencode_normalize_to_schema(payload: Any, schema: dict[str, Any] | None) -> Any:
+    """Align a model's JSON to open-kritt's schema, leniently.
+
+    Models drift on field names (wrote `terminal_action` for `flow_terminal_action`)
+    and sometimes omit the `results` wrapper on a "no findings" stub. The analysis
+    may still be correct, so correct the shape rather than discard it.
+    """
+    if not isinstance(payload, dict) or not isinstance(schema, dict):
+        return payload
+    top_required = schema.get("required")
+    props = schema.get("properties")
+    # Multi-output steps wrap results in an array under `results`.
+    is_multi = isinstance(props, dict) and isinstance(props.get("results"), dict)
+    if is_multi:
+        inner = (props.get("results") or {}).get("items") or {}
+        inner_required = inner.get("required") if isinstance(inner, dict) else None
+        results = payload.get("results")
+        if isinstance(results, list) and isinstance(inner_required, list):
+            for item in results:
+                if not isinstance(item, dict):
+                    continue
+                have = set(item.keys())
+                for req in inner_required:
+                    if req in have:
+                        continue
+                    cands = [k for k in have if k != req and (req.endswith(k) or k.endswith(req))]
+                    if cands:
+                        item[req] = item.pop(max(cands, key=len))
+        if isinstance(top_required, list):
+            if "results" in top_required and "results" not in payload:
+                payload["results"] = []
+            helper = next((k for k in top_required if k.startswith("_kritt_")), None)
+            if helper and helper not in payload:
+                payload[helper] = True
+    elif isinstance(top_required, list):
+        have = set(payload.keys())
+        for req in top_required:
+            if req in have:
+                continue
+            cands = [k for k in have if k != req and (req.endswith(k) or k.endswith(req))]
+            if cands:
+                payload[req] = payload.pop(max(cands, key=len))
+    return payload
+
+
+def _opencode_command(*, model: str, allow_tools: bool) -> list[str]:
+    """Build the `opencode run` command, wrapped so it can authenticate.
+
+    opencode reads its credential from auth.json, not from an env var. The
+    runner receives CODEX_API_KEY through inherited_env, so the wrapper writes
+    that key into auth.json first, then execs opencode. The prompt is NOT in
+    argv: kritt's workflow prompts carry full JSON schemas and are large enough
+    to risk ARG_MAX. opencode reads the message from stdin when no positional is
+    given, and _run_process feeds that stdin — which `exec` preserves.
+
+    HOME/XDG_DATA_HOME are set by _scan_docker_command to /home/runner for
+    isolated runs, so this resolves to the same path either way.
+    """
+    # --auto lets the model use tools; without it it answers from the prompt alone.
+    auto_flag = " --auto" if allow_tools else ""
+    # auth.json must exist because opencode reads its credential from the file,
+    # not from an env var. The runner receives CODEX_API_KEY through
+    # inherited_env, so the wrapper writes it out before exec'ing opencode.
+    #
+    # The retry loop lives here, inside the wrapper, rather than in the engine's
+    # step-attempt loop. A transient provider blip ("Cannot connect to API",
+    # "Unexpected server error", a 429) otherwise costs a whole step attempt:
+    # the agent has already burned minutes of tool calls and all of that work is
+    # thrown away. Retrying the same `opencode run` in place keeps the prompt,
+    # the workspace and the step attempt, and only pays the ~30s server spin-up
+    # again. The prompt is spooled to a file first because stdin is consumed by
+    # the first attempt.
+    script = (
+        "set -eu; "
+        'if [ -n "${CODEX_API_KEY:-}" ]; then '
+        'd="${XDG_DATA_HOME:-$HOME/.local/share}/opencode"; '
+        'mkdir -p "$d"; '
+        'printf \'{"opencode-go":{"type":"api","key":"%s"},"opencode":{"type":"api","key":"%s"}}\' "$CODEX_API_KEY" "$CODEX_API_KEY" > "$d/auth.json"; '
+        "fi; "
+        'p=$(mktemp); cat > "$p"; '
+        # A rate-limited run does not always exit: opencode logs the provider error and
+        # keeps the process alive, so the engine waits out its whole harness timeout on a
+        # dead run. `timeout` bounds each attempt so a hung attempt is killed and the
+        # caller can retry it.
+        #
+        # The retry itself lives in OpenCodeHarness.run (Python), not here. The shell
+        # only sees the raw JSONL stream, which stays non-empty even when the model
+        # produced no assistant text at all: a byte count cannot tell "the provider
+        # failed" apart from "the model said nothing", so a shell-level emptiness
+        # check misses the case that actually fails.
+        'out=$(timeout "${OPENCODE_KRITT_ATTEMPT_TIMEOUT:-900}" opencode run --format json'
+        + auto_flag
+        + ' -m "${OPENCODE_KRITT_MODEL:-'
+        + model
+        + '}" < "$p" 2>&1); '
+        "rc=$?; "
+        'printf \'%s\' "$out"; rm -f "$p"; exit $rc; '
+    )
+    return ["sh", "-c", script]
+
+
+def _run_opencode_proc(
+    cmd: list[str], *, prompt: str, repo_dir: str, timeout_seconds: int, env: dict[str, str]
+) -> tuple[str | None, dict[str, Any] | None, str | None]:
+    """Execute an opencode command (possibly wrapped in an isolated docker runner)
+    and parse its JSONL stream.
+
+    Returns (assistant_text, usage, error).
+    """
+    try:
+        proc = _run_process(cmd, prompt, repo_dir, timeout_seconds, env=env)
+    except subprocess.TimeoutExpired:
+        return None, None, f"timeout after {timeout_seconds}s"
+    except FileNotFoundError:
+        return None, None, "opencode binary not found on PATH"
+
+    texts: list[str] = []
+    json_texts: list[str] = []
+    errors: list[str] = []
+    usage: dict[str, Any] = {"total": 0, "input": 0, "output": 0, "reasoning": 0, "cache_read": 0}
+    saw_usage = False
+
+    for line in (proc.stdout or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        et = event.get("type")
+        if et == "error":
+            err = event.get("error") or {}
+            errors.append((err.get("data") or {}).get("message") or err.get("name") or "unknown")
+            continue
+        if et == "text":
+            t = (event.get("part") or {}).get("text")
+            if t:
+                texts.append(t)
+                # Prefer text that looks like JSON (starts with { or [)
+                stripped = t.strip()
+                if stripped.startswith("{") or stripped.startswith("["):
+                    json_texts.append(t)
+        if et == "step_finish":
+            toks = (event.get("part") or {}).get("tokens")
+            if isinstance(toks, dict):
+                saw_usage = True
+                usage["total"] += toks.get("total") or 0
+                usage["input"] += toks.get("input") or 0
+                usage["output"] += toks.get("output") or 0
+                usage["reasoning"] += toks.get("reasoning") or 0
+                usage["cache_read"] += (toks.get("cache") or {}).get("read") or 0
+
+    if errors:
+        return None, (usage if saw_usage else None), "; ".join(errors)[:300]
+    # Prefer JSON-looking text if available
+    if json_texts:
+        texts = json_texts
+    if not texts:
+        # No assistant text usually means the model exhausted its turn budget
+        # mid-exploration and never emitted a final answer.
+        return None, (usage if saw_usage else None), "no assistant text (model may have run out of turns)"
+    return "\n".join(texts), (usage if saw_usage else None), None
+
+
+OPENCODE_RETRYABLE_MARKERS = (
+    "cannot connect to api",
+    "unexpected server error",
+    "rate limit",
+    "rate_limit",
+    "429",
+    "too many requests",
+    "econnreset",
+    "etimedout",
+    "connection reset",
+    "server_error",
+    "overloaded",
+    "insufficient_quota",
+    "quota exceeded",
+    "no assistant text",
+    "expecting value",
+    "expecting property name",
+    "invalid control character",
+)
+
+
+def _opencode_retry_attempts(env: dict[str, str]) -> int:
+    """How many in-place attempts one opencode step may take."""
+    raw = env.get("OPENCODE_KRITT_RETRIES") or os.environ.get("OPENCODE_KRITT_RETRIES") or "4"
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = 4
+    return max(1, min(value, 10))
+
+
+def _opencode_error_is_retryable(exc: BaseException) -> bool:
+    """Whether an opencode failure is a transient provider fault worth retrying.
+
+    A JSON parse failure counts: the provider sometimes completes a run with no
+    assistant text, or with text that is not the object the schema wants, and the
+    next attempt usually returns a well-formed one. Anything else (an auth
+    failure, a rejected request, a cyber-safety block) is not transient and must
+    surface to the engine immediately.
+    """
+    if isinstance(exc, HarnessError) and exc.code in NON_RETRYABLE_HARNESS_FAILURES:
+        return False
+    if isinstance(exc, HarnessError) and exc.code == "model_process_error":
+        # The catch-all for provider-side failures on this harness. Everything
+        # non-transient (auth, rejected request, cyber-safety block, bad
+        # configuration) is already excluded above.
+        return True
+    message = str(exc).lower()
+    if isinstance(exc, json.JSONDecodeError):
+        # "Expecting value: line 1 column 1 (char 0)" is the empty-text case.
+        return True
+    return any(marker in message for marker in OPENCODE_RETRYABLE_MARKERS)
+
+
+class OpenCodeHarness:
+    """Native OpenCode harness. Calls `opencode run` directly — no CLI impersonation.
+    Replaces the previous approach of shimming a fake `codex` binary inside a
+    custom runner image. Model is passed straight through; OPENCODE_KRITT_MODEL
+    is honored as an override so a scan can pin a model independent of the
+    catalog label open-kritt stores.
+    """
+
+    name = "opencode"
+
+    def __init__(
+        self,
+        timeout_seconds: int,
+        model_provider: str | None = None,
+        runner_memory_mb: int = 0,
+        runner_memory_reservation_mb: int = 0,
+    ):
+        self.timeout_seconds = timeout_seconds
+        self.model_provider = model_provider
+        self.runner_memory_mb = max(0, int(runner_memory_mb))
+        self.runner_memory_reservation_mb = max(0, int(runner_memory_reservation_mb))
+
+    def run(
+        self,
+        *,
+        prompt: str,
+        schema: dict[str, Any],
+        repo_dir: str,
+        model: str,
+        thinking_effort: str | None = None,
+        env: dict[str, str] | None = None,
+        allow_tools: bool = True,
+        runner_image: str | None = None,
+    ) -> HarnessResult:
+        actual_env = dict(env if env is not None else _base_env())
+        # An explicit override wins so a scan can pin the real model without
+        # fighting open-kritt's catalog validation.
+        model = os.environ.get("OPENCODE_KRITT_MODEL") or actual_env.get("OPENCODE_KRITT_MODEL") or model
+        cmd = _opencode_command(model=model, allow_tools=allow_tools)
+        # Tool-enabled runs MUST go through the isolated nested runner. The engine
+        # container holds the host Docker socket; letting an agent that is reading
+        # untrusted code run directly here would hand a prompt injection the socket.
+        if allow_tools:
+            cmd = _scan_docker_command(
+                cmd,
+                repo_dir,
+                actual_env,
+                runner_image=runner_image,
+                memory_limit_mb=self.runner_memory_mb,
+                memory_reservation_mb=self.runner_memory_reservation_mb,
+            )
+        started = time.time()
+        # Retry in place, keeping the prompt, the workspace and this step attempt.
+        # A step-level retry would throw away the agent's tool work and re-render the
+        # whole prompt; an in-place retry only pays the provider round trip again.
+        #
+        # The decision is made here rather than in the shell wrapper because only the
+        # parsed stream can tell the failure modes apart. The provider's transient
+        # faults surface as an `error` event; a run that completes with no assistant
+        # text at all surfaces as an empty text list, and a run whose text is not the
+        # JSON the schema wants surfaces as a parse failure. All three are worth
+        # retrying, and none of them is visible to a byte-count check on stdout.
+        attempts = _opencode_retry_attempts(actual_env)
+        last_error: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                text, usage, err = _run_opencode_proc(
+                    cmd,
+                    prompt=prompt,
+                    repo_dir=repo_dir,
+                    timeout_seconds=self.timeout_seconds,
+                    env=actual_env,
+                )
+                if err:
+                    raise HarnessError(
+                        f"OpenCode did not return a usable response: {err}",
+                        code="invalid_output" if "no assistant text" in err else "model_process_error",
+                        harness="opencode",
+                    )
+                payload = _extract_json(text, schema)
+            except (HarnessError, json.JSONDecodeError) as exc:
+                last_error = exc
+                if attempt >= attempts or not _opencode_error_is_retryable(exc):
+                    raise
+                # Growing backoff so a provider under load is not hammered.
+                time.sleep(min(15 * attempt, 60))
+                continue
+            payload = _opencode_normalize_to_schema(payload, schema)
+            run_ms = int((time.time() - started) * 1000)
+            if usage is not None:
+                usage["run_time_ms"] = run_ms
+            return HarnessResult(payload=payload, usage=usage)
+        raise (
+            last_error
+            if last_error
+            else HarnessError(
+                "OpenCode did not return a usable response", code="model_process_error", harness="opencode"
+            )
+        )
+
+
 def harness_for(
     name: str,
     *,
@@ -2433,6 +2759,13 @@ def harness_for(
         return ClaudeHarness(
             timeout_seconds,
             provider,
+            runner_memory_mb=runner_memory_mb,
+            runner_memory_reservation_mb=runner_memory_reservation_mb,
+        )
+    if normalized == "opencode":
+        return OpenCodeHarness(
+            timeout_seconds,
+            model_provider=provider,
             runner_memory_mb=runner_memory_mb,
             runner_memory_reservation_mb=runner_memory_reservation_mb,
         )
