@@ -45,9 +45,17 @@ export const PROVIDER_DEFINITIONS = {
     description: 'DeepSeek models through the Codex harness, with model discovery and API checks.',
     management: 'api_key',
   },
+  custom: {
+    label: 'Custom',
+    envKeys: ['CUSTOM_LLM_API_KEY'],
+    credentialLabel: 'Custom API key',
+    description:
+      'An OpenAI-compatible endpoint through the Codex harness. Set CUSTOM_LLM_BASE_URL to the endpoint base URL (for example https://llm.example.com/v1) and enter any model ID it serves; prompts are sent to that endpoint.',
+    management: 'api_key',
+  },
 };
 
-const MANAGED_CREDENTIAL_PROVIDERS = new Set(['openrouter', 'xai', 'deepseek']);
+const MANAGED_CREDENTIAL_PROVIDERS = new Set(['openrouter', 'xai', 'deepseek', 'custom']);
 
 const MAX_CREDENTIAL_LENGTH = 16 * 1024;
 let writeQueue = Promise.resolve();

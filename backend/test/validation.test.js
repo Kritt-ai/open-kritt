@@ -696,6 +696,7 @@ test('validateScan enforces model provider and harness compatibility after norma
   assert.equal(validateScan({ ...base, model_provider: 'xai', harness: 'grok' }).harness, 'grok-build');
   assert.equal(validateScan({ ...base, model_provider: 'xai', harness: 'grok-build' }).modelProvider, 'xai');
   assert.equal(validateScan({ ...base, model_provider: 'deepseek', harness: 'codex' }).modelProvider, 'deepseek');
+  assert.equal(validateScan({ ...base, model_provider: 'custom', harness: 'codex' }).modelProvider, 'custom');
   assert.equal(
     validateScan({ ...base, model_provider: 'xai', harness: 'grok-build', thinking_effort: 'xhigh' }).thinkingEffort,
     'xhigh'
@@ -736,6 +737,8 @@ test('validateScan enforces model provider and harness compatibility after norma
     ['xai', 'claude-code'],
     ['deepseek', 'claude-code'],
     ['deepseek', 'grok-build'],
+    ['custom', 'claude-code'],
+    ['custom', 'grok-build'],
   ]) {
     assert.throws(
       () => validateScan({ ...base, model_provider, harness }),

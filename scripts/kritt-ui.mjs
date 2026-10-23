@@ -603,6 +603,7 @@ async function manageEnvironmentItem(terminal, context, item) {
       continue;
     }
     if (choice === 'set') {
+      const visibleInput = item.secret === false;
       const value = await terminal.readInput({
         title: item.label,
         subtitle: 'Set credential',
@@ -610,7 +611,7 @@ async function manageEnvironmentItem(terminal, context, item) {
           managedProvider
             ? `Paste the ${item.label}. It will be stored in .env and mirrored to the managed credential store used by running services.`
             : `Paste the ${item.label}. It will be stored in .env and is never shown in this interface.`,
-        secret: true,
+        secret: !visibleInput,
       });
       if (value === null) continue;
       if (!value) {
@@ -628,7 +629,7 @@ async function manageEnvironmentItem(terminal, context, item) {
       await terminal.notice({
         title: item.label,
         subtitle: 'Saved',
-        message: 'The credential was saved without displaying its value.',
+        message: visibleInput ? 'The value was saved.' : 'The credential was saved without displaying its value.',
       });
       continue;
     }

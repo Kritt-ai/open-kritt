@@ -114,6 +114,8 @@ def test_job_environment_only_includes_selected_provider_and_harness_credentials
         "DEEPSEEK_API_KEY": "deepseek-secret",
         "OPENROUTER_API_KEY": "openrouter-secret",
         "XAI_API_KEY": "xai-secret",
+        "CUSTOM_LLM_API_KEY": "custom-secret",
+        "CUSTOM_LLM_BASE_URL": "https://llm.example.com/v1",
         "CURSOR_API_KEY": "cursor-secret",
         "GROK_BIN": "/usr/local/bin/grok",
     }
@@ -123,6 +125,7 @@ def test_job_environment_only_includes_selected_provider_and_harness_credentials
     openrouter_cursor = job_environment("openrouter", "cursor", source)
     deepseek_codex = job_environment("deepseek", "codex", source)
     xai_grok = job_environment("xai", "grok-build", source)
+    custom_codex = job_environment("custom", "codex", source)
 
     assert codex == {"PATH": "/bin", "OPENAI_API_KEY": "openai-secret", "CODEX_API_KEY": "openai-secret"}
     assert openrouter_claude == {"PATH": "/bin", "OPENROUTER_API_KEY": "openrouter-secret"}
@@ -132,11 +135,16 @@ def test_job_environment_only_includes_selected_provider_and_harness_credentials
         "CURSOR_API_KEY": "cursor-secret",
     }
     assert deepseek_codex == {"PATH": "/bin", "DEEPSEEK_API_KEY": "deepseek-secret"}
+    assert custom_codex == {
+        "PATH": "/bin",
+        "CUSTOM_LLM_API_KEY": "custom-secret",
+        "CUSTOM_LLM_BASE_URL": "https://llm.example.com/v1",
+    }
     assert xai_grok == {
         "PATH": "/bin",
         "XAI_API_KEY": "xai-secret",
         "GROK_BIN": "/usr/local/bin/grok",
     }
-    for env in (codex, openrouter_claude, openrouter_cursor, deepseek_codex, xai_grok):
+    for env in (codex, openrouter_claude, openrouter_cursor, deepseek_codex, custom_codex, xai_grok):
         assert "DATABASE_URL" not in env
         assert "GITHUB_TOKEN" not in env

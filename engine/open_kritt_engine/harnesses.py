@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from jsonschema import Draft202012Validator
 
@@ -185,6 +186,9 @@ OPENROUTER_CURSOR_BASE_URL = "https://openrouter.ai/api/v1/cursor"
 OPENROUTER_CODEX_BASE_URL = "https://openrouter.ai/api/v1"
 DEEPSEEK_CODEX_BASE_URL = "https://api.deepseek.com"
 DEEPSEEK_CODEX_MODEL_CATALOG = "/app/open_kritt_engine/deepseek_models.json"
+CUSTOM_LLM_API_KEY_ENV = "CUSTOM_LLM_API_KEY"
+CUSTOM_LLM_BASE_URL_ENV = "CUSTOM_LLM_BASE_URL"
+MAX_CUSTOM_BASE_URL_LENGTH = 2000
 OPENROUTER_MODEL_ALIASES = {
     "glm-5.2": "z-ai/glm-5.2",
     "grok-4.5": "x-ai/grok-4.5",
@@ -203,7 +207,7 @@ CLAUDE_MODEL_ALIASES = {
     "opus-4.8": "claude-opus-4-8",
 }
 DEFAULT_MODEL_PROVIDER = "openrouter"
-MODEL_PROVIDERS = {"codex", "claude", "openrouter", "xai", "deepseek"}
+MODEL_PROVIDERS = {"codex", "claude", "openrouter", "xai", "deepseek", "custom"}
 GROK_BUILD_THINKING_EFFORTS = frozenset({"low", "medium", "high", "xhigh"})
 DEFAULT_GROK_BUILD_MODEL = "grok-4.6"
 GROK_BUILD_RUNTIME_ENV = {
@@ -982,6 +986,7 @@ def _scan_docker_command(
         "OPENAI_API_KEY",
         "OPENROUTER_API_KEY",
         "XAI_API_KEY",
+        "CUSTOM_LLM_API_KEY",
         "ANTHROPIC_BASE_URL",
         "ANTHROPIC_AUTH_TOKEN",
         "ANTHROPIC_API_KEY",
@@ -1114,6 +1119,44 @@ def _append_deepseek_codex_config(command: list[str]) -> None:
     command.extend(["-c", 'model_providers.deepseek.env_key="DEEPSEEK_API_KEY"'])
     command.extend(["-c", 'model_providers.deepseek.wire_api="responses"'])
     command.extend(["-c", f'model_catalog_json="{DEEPSEEK_CODEX_MODEL_CATALOG}"'])
+    command.extend(["-c", 'web_search="disabled"'])
+
+
+def custom_codex_base_url(source: dict[str, str] | None = None) -> str:
+    """Return the validated custom OpenAI-compatible base URL."""
+
+    raw = (source if source is not None else os.environ).get(CUSTOM_LLM_BASE_URL_ENV, "")
+    value = (raw or "").strip()
+    if not value or len(value) > MAX_CUSTOM_BASE_URL_LENGTH:
+        raise HarnessError(
+            f"{CUSTOM_LLM_BASE_URL_ENV} must be configured with the custom endpoint base URL.",
+            code="configuration_error",
+            harness="codex",
+        )
+    parsed = urlparse(value)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.username
+        or parsed.password
+        or any(char.isspace() or char in "\"'\\<>" for char in value)
+    ):
+        raise HarnessError(
+            f"{CUSTOM_LLM_BASE_URL_ENV} must be an http(s) base URL such as https://llm.example.com/v1.",
+            code="configuration_error",
+            harness="codex",
+        )
+    return value.rstrip("/")
+
+
+def _append_custom_codex_config(command: list[str], base_url: str | None = None) -> None:
+    """Add the operator-configured Codex provider definition for custom endpoints."""
+
+    resolved = custom_codex_base_url({CUSTOM_LLM_BASE_URL_ENV: base_url} if (base_url or "").strip() else None)
+    command.extend(["-c", 'model_providers.custom.name="Custom"'])
+    command.extend(["-c", f"model_providers.custom.base_url={json.dumps(resolved)}"])
+    command.extend(["-c", f'model_providers.custom.env_key="{CUSTOM_LLM_API_KEY_ENV}"'])
+    command.extend(["-c", 'model_providers.custom.wire_api="responses"'])
     command.extend(["-c", 'web_search="disabled"'])
 
 
@@ -1663,6 +1706,7 @@ def codex_exec_command(
     codex_model_provider: str | None = None,
     max_subagents: int | None = None,
     fast_mode: bool = False,
+    custom_base_url: str | None = None,
 ) -> list[str]:
     """Build a Codex exec command while preserving scan-mode compatibility."""
 
@@ -1675,7 +1719,7 @@ def codex_exec_command(
         model = OPENROUTER_MODEL_ALIASES.get(model, model)
     command = ["codex"]
     selected_provider = normalize_model_provider(model_provider)
-    if allow_tools and selected_provider != "deepseek":
+    if allow_tools and selected_provider not in {"deepseek", "custom"}:
         command.append("--search")
     command.extend(["exec", "--json", "-C", repo_dir, "-m", model])
     if allow_tools:
@@ -1708,6 +1752,8 @@ def codex_exec_command(
         command.extend(["-c", 'model_providers.openrouter.wire_api="responses"'])
     if cli_model_provider == "deepseek":
         _append_deepseek_codex_config(command)
+    if cli_model_provider == "custom":
+        _append_custom_codex_config(command, custom_base_url)
     if cli_model_provider:
         command.extend(["-c", f"model_provider={json.dumps(cli_model_provider)}"])
     if thinking_effort and thinking_effort != "default":
@@ -1787,6 +1833,7 @@ class CodexHarness:
                 allow_tools=allow_tools,
                 max_subagents=self.max_subagents if allow_tools else None,
                 fast_mode=self.fast_mode,
+                custom_base_url=actual_env.get(CUSTOM_LLM_BASE_URL_ENV),
             )
             if allow_tools:
                 cmd = _scan_docker_command(
@@ -1912,6 +1959,8 @@ class CodexHarness:
         )
         if cli_model_provider == "deepseek":
             _append_deepseek_codex_config(cmd)
+        if cli_model_provider == "custom":
+            _append_custom_codex_config(cmd, env.get(CUSTOM_LLM_BASE_URL_ENV))
         if cli_model_provider:
             cmd.extend(["-c", f"model_provider={json.dumps(cli_model_provider)}"])
         if thinking_effort and thinking_effort != "default":

@@ -1,4 +1,4 @@
-export const MODEL_PROVIDER_IDS = ['codex', 'claude', 'openrouter', 'xai', 'deepseek'];
+export const MODEL_PROVIDER_IDS = ['codex', 'claude', 'openrouter', 'xai', 'deepseek', 'custom'];
 export const MODEL_CATALOG_STATUSES = ['ready', 'loading', 'unavailable'];
 const SAFE_MODEL_NOTE_URLS = new Set(['https://chatgpt.com/cyber']);
 
@@ -10,6 +10,7 @@ const PROVIDER_HARNESSES = {
   openrouter: ['claude-code', 'codex'],
   xai: ['grok-build'],
   deepseek: ['codex'],
+  custom: ['codex'],
 };
 
 const PROVIDER_DEFAULT_MODELS = {
@@ -26,6 +27,7 @@ const PROVIDER_THINKING_EFFORTS = {
   openrouter: ['default', 'low', 'medium', 'high', 'xhigh', 'max'],
   xai: ['low', 'medium', 'high', 'xhigh'],
   deepseek: ['low', 'high', 'max'],
+  custom: ['default', 'low', 'medium', 'high', 'xhigh', 'max'],
 };
 
 const HARNESS_THINKING_EFFORTS = {
@@ -118,7 +120,8 @@ export function usesFreeTextModelInput(catalog, provider) {
   const providerCatalog = modelCatalogForProvider(catalog, normalizedProvider);
   return (
     providerCatalog?.input === 'text' ||
-    (!providerCatalog && (normalizedProvider === 'openrouter' || normalizedProvider === 'xai'))
+    (!providerCatalog &&
+      (normalizedProvider === 'openrouter' || normalizedProvider === 'xai' || normalizedProvider === 'custom'))
   );
 }
 

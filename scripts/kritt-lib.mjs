@@ -13,17 +13,20 @@ export const PROVIDER_KEYS = [
   'DEEPSEEK_API_KEY',
   'OPENROUTER_API_KEY',
   'XAI_API_KEY',
+  'CUSTOM_LLM_API_KEY',
 ];
 export const CODEX_LOGIN_STATUS_KEY = 'CODEX_LOGIN_CONFIGURED';
 export const MANAGED_PROVIDER_ENV_KEYS = {
   deepseek: 'DEEPSEEK_API_KEY',
   openrouter: 'OPENROUTER_API_KEY',
   xai: 'XAI_API_KEY',
+  custom: 'CUSTOM_LLM_API_KEY',
 };
 export const MANAGED_PROVIDER_LABELS = {
   deepseek: 'DeepSeek API key',
   openrouter: 'OpenRouter API key',
   xai: 'xAI API key',
+  custom: 'Custom API key',
 };
 const MANAGED_ENV_KEY_TO_PROVIDER = Object.fromEntries(
   Object.entries(MANAGED_PROVIDER_ENV_KEYS).map(([provider, key]) => [key, provider])
@@ -73,6 +76,17 @@ export const ENVIRONMENT_ITEMS = [
     key: 'XAI_API_KEY',
     label: 'xAI API key',
     info: 'Used by the Grok Build harness via the xAI provider.',
+  },
+  {
+    key: 'CUSTOM_LLM_API_KEY',
+    label: 'Custom LLM API key',
+    info: 'Used by the Codex harness with a custom OpenAI-compatible endpoint. Requires CUSTOM_LLM_BASE_URL.',
+  },
+  {
+    key: 'CUSTOM_LLM_BASE_URL',
+    label: 'Custom LLM base URL',
+    secret: false,
+    info: 'Base URL of a custom OpenAI-compatible endpoint, for example https://llm.example.com/v1. Needed with CUSTOM_LLM_API_KEY.',
   },
   {
     key: 'GITHUB_TOKEN',
@@ -866,7 +880,10 @@ async function manageEnvironmentItem(context, item) {
   const action = await prompter.ask('Choose an action: ');
 
   if (action === '1') {
-    const value = await prompter.secret(`Enter ${item.label} (input is hidden): `);
+    const value =
+      item.secret === false
+        ? await prompter.ask(`Enter ${item.label}: `)
+        : await prompter.secret(`Enter ${item.label} (input is hidden): `);
     if (!value) {
       write(io, 'Nothing changed.');
       return;
@@ -1377,19 +1394,19 @@ export async function runSetup(options = {}) {
   while (true) {
     const status = await getSetupStatus(context);
     renderStatus(status, context.io);
+    const providerItems = providerEnvironmentItems();
+    const githubChoice = String(providerItems.length + 3);
+    const finishChoice = String(providerItems.length + 4);
     write(context.io, '\n1) Codex login (recommended)');
     write(context.io, '2) Claude login');
-    write(context.io, '3) Codex API key');
-    write(context.io, '4) OpenAI API key');
-    write(context.io, '5) Anthropic API key');
-    write(context.io, '6) DeepSeek API key');
-    write(context.io, '7) OpenRouter API key');
-    write(context.io, '8) xAI API key');
-    write(context.io, '9) GitHub token');
-    write(context.io, '10) Finish setup');
+    providerItems.forEach((item, index) => {
+      write(context.io, `${index + 3}) ${item.label}`);
+    });
+    write(context.io, `${githubChoice}) GitHub token`);
+    write(context.io, `${finishChoice}) Finish setup`);
     const choice = (await context.prompter.ask('Choose an item: ')).toLowerCase();
 
-    if (choice === '10' || choice === 'q' || choice === 'quit') break;
+    if (choice === finishChoice || choice === 'q' || choice === 'quit') break;
     if (choice === '1') {
       await manageCodexLogin(context);
       continue;
@@ -1398,8 +1415,6 @@ export async function runSetup(options = {}) {
       await manageClaudeLogin(context);
       continue;
     }
-    const providerItems = providerEnvironmentItems();
-    const githubChoice = String(providerItems.length + 3);
     const item =
       providerItems[Number(choice) - 3] ||
       (choice === githubChoice ? ENVIRONMENT_ITEMS.find((candidate) => candidate.key === 'GITHUB_TOKEN') : null);

@@ -8,6 +8,7 @@ const PROVIDER_CREDENTIALS = {
   openrouter: ['OPENROUTER_API_KEY'],
   xai: ['XAI_API_KEY'],
   deepseek: ['DEEPSEEK_API_KEY'],
+  custom: ['CUSTOM_LLM_API_KEY'],
 };
 
 function hasValue(value) {
@@ -24,6 +25,11 @@ function credentialIsConfigured(env, key) {
   return hasConfiguredFlag(env[`OPEN_KRITT_${key}_CONFIGURED`]) || hasValue(env[key]);
 }
 
+function customBaseUrlConfigured(env) {
+  const value = typeof env.CUSTOM_LLM_BASE_URL === 'string' ? env.CUSTOM_LLM_BASE_URL.trim() : '';
+  return /^https?:\/\//i.test(value);
+}
+
 export function configuredModelProviders({
   env = process.env,
   credentialsPath = PROVIDER_CREDENTIALS_PATH,
@@ -33,6 +39,8 @@ export function configuredModelProviders({
   const managed = store.credentials;
   const disabledEnvironmentProviders = new Set(store.disabledEnvironmentProviders);
   return MODEL_PROVIDERS.filter((provider) => {
+    // The custom provider also needs its endpoint URL; a key alone is not enough.
+    if (provider === 'custom' && !customBaseUrlConfigured(env)) return false;
     if (hasValue(managed[provider])) return true;
     if (providerLoginIsConfigured(provider, { env, ...loginOptions })) return true;
     if (disabledEnvironmentProviders.has(provider)) return false;

@@ -1,0 +1,37 @@
+---
+title: 'Custom OpenAI-compatible endpoint'
+description: 'Point the custom provider at an OpenAI-compatible base URL and run scans or draft generation through Codex.'
+---
+
+The **Custom** provider sends prompts to an operator-configured OpenAI-compatible
+endpoint (`CUSTOM_LLM_BASE_URL`) using `CUSTOM_LLM_API_KEY`, and runs through the
+**Codex** harness. It is available for scans and workflow or post-script drafts.
+There is no model catalog: enter any exact model ID served by the endpoint.
+
+1. Set `CUSTOM_LLM_BASE_URL` to the endpoint base URL, for example
+   `https://llm.example.com/v1`, in `.env` (or in the container environment for
+   native deployments). The provider stays unavailable until this value is an
+   `http(s)` URL. Recreate the stack after changing it.
+2. Add the endpoint API key: run `./kritt setup` and choose **Custom LLM API key**,
+   or open **Accounts** (show the provider first under **Show or hide providers**)
+   and select **Add Custom key**.
+3. Create or duplicate a scan, choose **Custom**, then enter the exact model ID.
+   Codex is selected as the compatible harness.
+
+Saving a key never contacts the endpoint. Scans and draft generation send their
+configured prompts and relevant workspace content to the configured base URL, so
+only point the provider at an endpoint you trust with the scanned source.
+
+## Credentials and protocol
+
+Accounts uses the existing protected provider credential file for the key and
+mirrors changes to the project `.env` when that persistence path is configured.
+Keys are not returned to the browser. The base URL is plain endpoint
+configuration and lives in `.env` alongside the key. Compose users can set both
+through `./kritt setup`.
+
+The engine injects a `custom` Codex provider definition per job with the
+configured base URL, the `CUSTOM_LLM_API_KEY` credential reference, and the
+Responses wire API. The credential value itself never appears on the harness
+command line. Codex's built-in web search is disabled for this provider;
+repository tools inside the disposable scan runner remain available to the agent.

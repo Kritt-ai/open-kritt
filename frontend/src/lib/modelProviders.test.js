@@ -77,9 +77,9 @@ describe('configuredModelProviders', () => {
   it('uses only supported provider IDs returned by the API', () => {
     expect(
       configuredModelProviders({
-        providers: ['OPENROUTER', 'unknown', 'claude', 'codex', 'codex', 'xai', 'deepseek'],
+        providers: ['OPENROUTER', 'unknown', 'claude', 'codex', 'codex', 'xai', 'deepseek', 'custom'],
       })
-    ).toEqual(['codex', 'claude', 'openrouter', 'xai', 'deepseek']);
+    ).toEqual(['codex', 'claude', 'openrouter', 'xai', 'deepseek', 'custom']);
   });
 
   it('handles empty and malformed availability responses', () => {
@@ -95,6 +95,7 @@ describe('model provider defaults', () => {
     expect(defaultModelForModelProvider('openrouter')).toBe('z-ai/glm-5.2');
     expect(defaultModelForModelProvider('xai')).toBe('grok-4.6');
     expect(defaultModelForModelProvider('deepseek')).toBe('deepseek-flash');
+    expect(defaultModelForModelProvider('custom')).toBe('');
   });
 
   it('moves provider-owned model defaults with the provider', () => {
@@ -214,6 +215,19 @@ describe('model catalog', () => {
     expect(modelForCatalogChange('gpt-5-codex', 'codex', 'xai', loadingCatalog)).toBe('');
   });
 
+  it('keeps exact custom-endpoint IDs usable without a catalog', () => {
+    expect(usesFreeTextModelInput({}, 'custom')).toBe(true);
+    const loadingCatalog = configuredModelCatalog({
+      providers: [{ provider: 'custom', input: 'text', status: 'loading', models: [] }],
+    });
+
+    expect(usesFreeTextModelInput(loadingCatalog, 'custom')).toBe(true);
+    expect(isModelSelectionValid('my-endpoint/model', loadingCatalog, 'custom')).toBe(true);
+    expect(isModelSelectionValid('', loadingCatalog, 'custom')).toBe(false);
+    expect(modelForCatalogChange('my-endpoint/model', 'custom', 'custom', loadingCatalog)).toBe('my-endpoint/model');
+    expect(modelForCatalogChange('gpt-5-codex', 'codex', 'custom', loadingCatalog)).toBe('');
+  });
+
   it('uses Grok Build model-specific efforts and includes xhigh for Grok 4.6', () => {
     const xaiCatalog = configuredModelCatalog({
       providers: [
@@ -315,6 +329,19 @@ describe('model provider harnesses', () => {
     expect(thinkingEffortsForModel(modelCatalog, 'deepseek', 'deepseek-flash', [], 'codex')).toEqual([
       'low',
       'high',
+      'max',
+    ]);
+  });
+
+  it('pairs a custom endpoint with the Codex harness and gateway efforts', () => {
+    expect(harnessesForModelProvider('custom')).toEqual(['codex']);
+    expect(defaultHarnessForModelProvider('custom')).toBe('codex');
+    expect(thinkingEffortsForModel({}, 'custom', 'my-endpoint/model', [], 'codex')).toEqual([
+      'default',
+      'low',
+      'medium',
+      'high',
+      'xhigh',
       'max',
     ]);
   });

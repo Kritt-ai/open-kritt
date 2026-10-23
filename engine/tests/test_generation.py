@@ -324,6 +324,8 @@ def test_generation_environment_contains_only_selected_provider_credentials():
         "DEEPSEEK_API_KEY": "deepseek-secret",
         "OPENROUTER_API_KEY": "openrouter-secret",
         "XAI_API_KEY": "xai-secret",
+        "CUSTOM_LLM_API_KEY": "custom-secret",
+        "CUSTOM_LLM_BASE_URL": "https://llm.example.com/v1",
         "GITHUB_TOKEN": "github-secret",
         "DATABASE_URL": "database-secret",
     }
@@ -332,6 +334,7 @@ def test_generation_environment_contains_only_selected_provider_credentials():
     openrouter_env = generation_environment("openrouter", source)
     deepseek_env = generation_environment("deepseek", source)
     xai_env = generation_environment("xai", source)
+    custom_env = generation_environment("custom", source)
 
     assert codex_env["CODEX_API_KEY"] == "openai-secret"
     assert codex_env["CODEX_HOME"] == "/codex-a"
@@ -341,7 +344,10 @@ def test_generation_environment_contains_only_selected_provider_credentials():
     assert deepseek_env["DEEPSEEK_API_KEY"] == "deepseek-secret"
     assert xai_env["XAI_API_KEY"] == "xai-secret"
     assert "OPENROUTER_API_KEY" not in xai_env
-    for env in (codex_env, openrouter_env, deepseek_env, xai_env):
+    assert custom_env["CUSTOM_LLM_API_KEY"] == "custom-secret"
+    assert custom_env["CUSTOM_LLM_BASE_URL"] == "https://llm.example.com/v1"
+    assert "OPENROUTER_API_KEY" not in custom_env
+    for env in (codex_env, openrouter_env, deepseek_env, xai_env, custom_env):
         assert "GITHUB_TOKEN" not in env
         assert "DATABASE_URL" not in env
 
@@ -683,6 +689,58 @@ def test_deepseek_codex_command_uses_fixed_provider_without_search_or_secret():
     assert f'model_catalog_json="{harnesses.DEEPSEEK_CODEX_MODEL_CATALOG}"' in configs
     assert 'web_search="disabled"' in configs
     assert not any("secret" in value for value in command)
+
+
+def test_custom_codex_command_uses_configured_base_url_without_search_or_secret():
+    command = codex_exec_command(
+        repo_dir="/tmp/repo",
+        model="my-endpoint/model",
+        schema_path="/tmp/schema.json",
+        output_path="/tmp/output.json",
+        model_provider="custom",
+        thinking_effort="high",
+        allow_tools=True,
+        custom_base_url="https://llm.example.com/v1/",
+    )
+    configs = [command[index + 1] for index, value in enumerate(command) if value == "-c"]
+
+    assert "--search" not in command
+    assert 'model_provider="custom"' in configs
+    assert 'model_providers.custom.name="Custom"' in configs
+    assert 'model_providers.custom.base_url="https://llm.example.com/v1"' in configs
+    assert 'model_providers.custom.env_key="CUSTOM_LLM_API_KEY"' in configs
+    assert 'model_providers.custom.wire_api="responses"' in configs
+    assert 'web_search="disabled"' in configs
+    assert not any("secret" in value for value in command)
+
+
+def test_custom_codex_command_rejects_an_invalid_base_url():
+    with pytest.raises(harnesses.HarnessError):
+        codex_exec_command(
+            repo_dir="/tmp/repo",
+            model="my-endpoint/model",
+            schema_path="/tmp/schema.json",
+            output_path="/tmp/output.json",
+            model_provider="custom",
+            thinking_effort=None,
+            allow_tools=False,
+            custom_base_url="llm.example.com/v1",
+        )
+
+
+def test_custom_codex_base_url_validation():
+    expected = "https://llm.example.com/v1"
+    assert harnesses.custom_codex_base_url({"CUSTOM_LLM_BASE_URL": f"{expected}/"}) == expected
+    for invalid in (
+        "",
+        "llm.example.com/v1",
+        "ftp://llm.example.com/v1",
+        "https://user:pass@llm.example.com/v1",
+        'https://llm.example.com/v1" -c evil="1',
+        "https://llm.example.com/v 1",
+    ):
+        with pytest.raises(harnesses.HarnessError):
+            harnesses.custom_codex_base_url({"CUSTOM_LLM_BASE_URL": invalid})
 
 
 def test_tool_free_claude_command_has_no_default_tools(monkeypatch):

@@ -52,7 +52,7 @@ POST_SCRIPT_MARKDOWN_OUTPUT_KEYS = frozenset({"_reserved_report", "_reserved_poc
 POST_SCRIPT_CHIP_PREFIX = "_chip_"
 WORKFLOW_FIELD_TYPES = ("string", "number", "boolean", "array", "object")
 POST_SCRIPT_FIELD_TYPES = WORKFLOW_FIELD_TYPES
-MODEL_PROVIDERS = frozenset({"codex", "claude", "openrouter", "xai", "deepseek"})
+MODEL_PROVIDERS = frozenset({"codex", "claude", "openrouter", "xai", "deepseek", "custom"})
 THINKING_EFFORTS = frozenset({"default", "low", "medium", "high", "xhigh", "max", "ultra"})
 GENERATION_REQUEST_MAX_LENGTH = 20_000
 MODEL_ID_MAX_LENGTH = 200
@@ -67,6 +67,7 @@ MODEL_PROVIDER_HARNESSES = {
     "openrouter": frozenset({"codex", "claude-code"}),
     "xai": frozenset({"grok-build"}),
     "deepseek": frozenset({"codex"}),
+    "custom": frozenset({"codex"}),
 }
 HARNESS_THINKING_EFFORTS = {
     "codex": frozenset({"default", "low", "medium", "high", "xhigh", "max", "ultra"}),
@@ -108,6 +109,7 @@ GENERATION_PROVIDER_ENV_KEYS = {
     "openrouter": frozenset({"OPENROUTER_API_KEY"}),
     "xai": frozenset({"XAI_API_KEY", "GROK_BIN", "GROK_HOME"}),
     "deepseek": frozenset({"DEEPSEEK_API_KEY"}),
+    "custom": frozenset({"CUSTOM_LLM_API_KEY", "CUSTOM_LLM_BASE_URL"}),
 }
 
 

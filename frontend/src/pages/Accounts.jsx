@@ -512,7 +512,8 @@ export function removeProviderFromOverview(overview, providerId) {
 }
 
 function ProviderMark({ provider }) {
-  const label = { codex: 'CX', claude: 'CL', xai: 'XA', openrouter: 'OR', deepseek: 'DS' }[provider] || provider;
+  const label =
+    { codex: 'CX', claude: 'CL', xai: 'XA', openrouter: 'OR', deepseek: 'DS', custom: 'CU' }[provider] || provider;
   return <span className={`mono account-provider-mark account-provider-mark-${provider}`}>{label}</span>;
 }
 

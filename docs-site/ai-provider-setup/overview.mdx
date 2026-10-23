@@ -11,6 +11,7 @@ between them per run, but a single working provider is enough to start.
 | **Codex** | ChatGPT/Codex login or an OpenAI Platform key | Account-specific picker |
 | **Claude** | Claude subscription login or `ANTHROPIC_API_KEY` | Subscription aliases or account-specific picker |
 | **DeepSeek** | `DEEPSEEK_API_KEY` | Searchable authenticated catalog |
+| **Custom** | `CUSTOM_LLM_API_KEY` + `CUSTOM_LLM_BASE_URL` | Exact model ID, no catalog |
 | **OpenRouter** | `OPENROUTER_API_KEY` | Searchable authenticated catalog, with an exact-ID fallback |
 | **xAI** | Grok device login or `XAI_API_KEY` | Searchable authenticated catalog (with key), with an exact-ID fallback |
 
@@ -30,12 +31,15 @@ between them per run, but a single working provider is enough to start.
   <Card title="xAI" icon="bolt" href="/ai-provider-setup/xai">
     Use Grok device login or an xAI API key with the Grok Build harness.
   </Card>
+  <Card title="Custom" icon="plug" href="/ai-provider-setup/custom">
+    Point the Codex harness at an OpenAI-compatible endpoint.
+  </Card>
 </CardGroup>
 
 ## Provider visibility and API checks
 
 New browser profiles show all providers. Scan and draft-generation selectors list
-**Codex**, **Claude Code**, **DeepSeek**, **OpenRouter**, and **xAI**; providers without
+**Codex**, **Claude Code**, **Custom**, **DeepSeek**, **OpenRouter**, and **xAI**; providers without
 an account are visible but disabled.
 Use **Show or hide providers** in Accounts or beside a provider selector to customize
 the list. Existing browser preferences are preserved, so re-enable any providers
@@ -60,7 +64,8 @@ for scans and draft generation. Accounts also offers a short text API check.
     **DeepSeek API key**, **OpenRouter API key**, or **xAI API key**. Follow the provider
     guide above to obtain the correct credential. The CLI configures keys and Codex login;
     Claude and xAI device login, plus DeepSeek/OpenRouter/xAI key management, are also
-    available from the running application's **Accounts** page.
+    available from the running application's **Accounts** page. The custom provider also
+    needs its endpoint URL; see the [Custom guide](/ai-provider-setup/custom).
   </Step>
   <Step title="Start or recreate the stack">
     ```bash
@@ -85,7 +90,7 @@ are stored under `ENGINE_CODEX_ACCOUNTS_HOST`, which defaults to
 defaults to `./.data/claude`; a Grok/xAI login is stored under
 `ENGINE_GROK_HOME_HOST` / `ENGINE_GROK_ACCOUNTS_HOST`, which default to `./.data/grok`
 and `./.data/grok-accounts`. The Accounts page keeps Codex/Claude/xAI account paths and
-its DeepSeek, OpenRouter, and xAI keys synchronized with `.env`, and mirrors those keys
+its Custom, DeepSeek, OpenRouter, and xAI keys synchronized with `.env`, and mirrors those keys
 under `.data/engine/credentials` so running services see changes immediately. `.env` and
 `.data/` are ignored by Git.
 
@@ -108,6 +113,6 @@ engine receives the actual credential when it starts a model harness.
 Next: configure the recommended [Codex provider](/ai-provider-setup/codex),
 [Claude Code](/ai-provider-setup/claude-code), or
 [DeepSeek](/ai-provider-setup/deepseek), [OpenRouter](/ai-provider-setup/openrouter),
-or [xAI](/ai-provider-setup/xai).
+[xAI](/ai-provider-setup/xai), or [Custom](/ai-provider-setup/custom).
 
 Simultaneous requests to start a login for the same provider share one login session. Logins for different providers remain independent.

@@ -105,7 +105,7 @@ model Generation {
   kind             String
   request          String
   model            String
-  modelProvider    String    @map("model_provider") // codex, claude, openrouter, xai, deepseek
+  modelProvider    String    @map("model_provider") // codex, claude, openrouter, xai, deepseek, custom
   harness          String
   thinkingEffort   String    @default("medium") @map("thinking_effort")
   status           String    @default("pending")
@@ -155,7 +155,7 @@ model Scan {
   agentSkillIds BigInt[] @default([]) @map("agent_skill_ids")
   configuration Json     @map("configuration")
   model         String
-  modelProvider String  @default("openrouter") @map("model_provider") // codex, claude, openrouter, xai, deepseek
+  modelProvider String  @default("openrouter") @map("model_provider") // codex, claude, openrouter, xai, deepseek, custom
   harness       String
   thinkingEffort String? @map("thinking_effort") // default, low, medium, high, xhigh, max, ultra
   // Optional depth-keyed model tuples. The top-level tuple remains the fallback

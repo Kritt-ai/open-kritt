@@ -364,7 +364,7 @@ export function getAccountsSummary({ statusOptions } = {}) {
 export async function getAccountProvider(providerId, { refresh = false, statusOptions, executorOptions } = {}) {
   const status = providerCredentialStatuses(statusOptions).find((provider) => provider.id === providerId);
   if (!status) return null;
-  if (providerId === 'deepseek') {
+  if (providerId === 'deepseek' || providerId === 'custom') {
     return { ...buildAccountsOverview([status], null, readAccountActivity()).providers[0], loadError: null };
   }
   const executorProvider = await fetchExecutorProvider(providerId, { refresh, ...executorOptions });

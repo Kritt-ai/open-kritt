@@ -21,3 +21,11 @@ test('DeepSeek generation storage permits only the Codex harness', () => {
   assert.match(sql, /model_provider = 'deepseek' AND harness = 'codex'/);
   assert.doesNotMatch(sql, /model_provider = 'deepseek' AND harness = '(?:claude-code|grok-build)'/);
 });
+
+test('Custom generation storage permits only the Codex harness', () => {
+  const sql = fs.readFileSync(path.join(migrationDir, '034_generations_custom_codex.sql'), 'utf8');
+
+  assert.match(sql, /model_provider IN \([^)]*'custom'[^)]*\)/);
+  assert.match(sql, /model_provider = 'custom' AND harness = 'codex'/);
+  assert.doesNotMatch(sql, /model_provider = 'custom' AND harness = '(?:claude-code|grok-build)'/);
+});
