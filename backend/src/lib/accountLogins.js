@@ -106,7 +106,9 @@ async function updateCodexRuntimeHome(
   let nextHomes = [];
   const state = await mutateEnvironmentFile(
     (values) => {
-      const homes = splitConfiguredHomes(values.ENGINE_CODEX_HOME || initialHomes.join(','));
+      const homes = splitConfiguredHomes(
+        Object.hasOwn(values, 'ENGINE_CODEX_HOME') ? values.ENGINE_CODEX_HOME : initialHomes.join(',')
+      );
       const updatedHomes = present
         ? homes.includes(home)
           ? homes
@@ -227,7 +229,9 @@ async function updateGrokRuntimeHome(
   let nextHomes = [];
   const state = await mutateEnvironmentFile(
     (values) => {
-      const homes = splitConfiguredHomes(values.ENGINE_GROK_HOME || initialHomes.join(','));
+      const homes = splitConfiguredHomes(
+        Object.hasOwn(values, 'ENGINE_GROK_HOME') ? values.ENGINE_GROK_HOME : initialHomes.join(',')
+      );
       const updatedHomes = present
         ? homes.includes(home)
           ? homes
@@ -458,9 +462,23 @@ export class AccountLoginManager {
     this.environmentFilePath = environmentFilePath;
     this.timeoutMs = timeoutMs;
     this.sessions = new Map();
+    this.startingProviders = new Map();
   }
 
   async start(provider, accountId = null) {
+    const existing = this.startingProviders.get(provider);
+    if (existing) return existing;
+
+    const pending = this.startSession(provider, accountId);
+    this.startingProviders.set(provider, pending);
+    try {
+      return await pending;
+    } finally {
+      this.startingProviders.delete(provider);
+    }
+  }
+
+  async startSession(provider, accountId) {
     if (!LOGIN_PROVIDERS.has(provider)) throw loginError('Choose Codex, Claude, or xAI login.');
     const activeForProvider = [...this.sessions.values()].find(
       (session) => session.provider === provider && ['starting', 'waiting'].includes(session.status)

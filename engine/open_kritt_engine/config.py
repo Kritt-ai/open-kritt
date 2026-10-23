@@ -1,8 +1,12 @@
+import math
 import os
 from dataclasses import dataclass
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from .runtime_config import runtime_bool, runtime_int, sync_runtime_config_file
+
+_BYTES_PER_GIB = 1024**3
+_MAX_STORAGE_BYTES = 2**63 - 1
 
 
 def _float_env(name, default):
@@ -10,9 +14,18 @@ def _float_env(name, default):
     if not raw:
         return default
     try:
-        return float(raw)
+        value = float(raw)
     except ValueError:
         return default
+    return value if math.isfinite(value) else default
+
+
+def _storage_bytes_env(name, default_gib):
+    value = _float_env(name, default_gib)
+    byte_value = max(0.0, value) * _BYTES_PER_GIB
+    if not math.isfinite(byte_value) or byte_value > _MAX_STORAGE_BYTES:
+        byte_value = default_gib * _BYTES_PER_GIB
+    return int(byte_value)
 
 
 def _bool_env(name, default):
@@ -106,12 +119,12 @@ class EngineConfig:
                 maximum=86400,
             ),
             data_dir=data_dir,
-            min_free_storage_bytes=int(max(0.0, _float_env("ENGINE_MIN_FREE_STORAGE_GB", 20.0)) * 1024**3),
+            min_free_storage_bytes=_storage_bytes_env("ENGINE_MIN_FREE_STORAGE_GB", 20.0),
             ignore_low_storage=_bool_env("ENGINE_IGNORE_LOW_STORAGE", False),
             scan_cache_retention_days=max(0.0, _float_env("ENGINE_SCAN_CACHE_RETENTION_DAYS", 0.0)),
             auto_prune_docker_build_cache=_bool_env("ENGINE_AUTO_PRUNE_DOCKER_BUILD_CACHE", True),
             auto_prune_unused_docker_images=_bool_env("ENGINE_AUTO_PRUNE_UNUSED_DOCKER_IMAGES", True),
-            docker_build_cache_keep_bytes=int(max(0.0, _float_env("ENGINE_DOCKER_BUILD_CACHE_KEEP_GB", 0.0)) * 1024**3),
+            docker_build_cache_keep_bytes=_storage_bytes_env("ENGINE_DOCKER_BUILD_CACHE_KEEP_GB", 0.0),
             docker_build_cache_prune_interval_seconds=max(
                 30.0,
                 _float_env("ENGINE_DOCKER_BUILD_CACHE_PRUNE_INTERVAL_SECONDS", 300.0),

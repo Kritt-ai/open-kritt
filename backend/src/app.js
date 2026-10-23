@@ -108,6 +108,9 @@ export function createApp({ env = process.env } = {}) {
     if (err?.type === 'entity.too.large') {
       return res.status(413).json({ error: 'Request body exceeds the 8 MB limit.' });
     }
+    if (err?.type === 'entity.parse.failed') {
+      return res.status(400).json({ error: 'Malformed JSON body.' });
+    }
     if (err instanceof ValidationError) {
       return res.status(422).json({ error: 'Validation failed.', errors: err.errors });
     }

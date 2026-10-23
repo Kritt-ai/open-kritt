@@ -103,3 +103,16 @@ test('null removes an environment key without disturbing surrounding content', a
   assert.equal(await readFile(environmentFilePath, 'utf8'), '# keep\nKEEP=value\n');
   assert.equal(result.previous.REMOVE, 'duplicate');
 });
+
+test('saved apostrophes retain the existing single-quote encoding', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'open-kritt-environment-quote-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const environmentFilePath = join(directory, '.env');
+  const home = "/local/O'Brien/.claude";
+
+  await updateEnvironmentFile({ ENGINE_CLAUDE_HOME: home }, { environmentFilePath });
+
+  const text = await readFile(environmentFilePath, 'utf8');
+  assert.equal(text, "ENGINE_CLAUDE_HOME='/local/O\\'Brien/.claude'\n");
+  assert.equal(parseEnvironmentText(text).ENGINE_CLAUDE_HOME, home);
+});

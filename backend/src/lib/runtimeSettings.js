@@ -3,6 +3,8 @@ import { readFile } from 'node:fs/promises';
 import { parseEnvironmentText, PROJECT_ENV_FILE_PATH, updateEnvironmentFile } from './environmentFile.js';
 import { ValidationError } from './validation.js';
 
+let updateQueue = Promise.resolve();
+
 export const ENGINE_RUNTIME_CONFIG_PATH =
   process.env.OPEN_KRITT_ENGINE_RUNTIME_CONFIG_PATH || '/engine-data/engine-runtime.env';
 
@@ -320,19 +322,25 @@ export async function updateRuntimeSettings(
     Object.entries(values).map(([key, value]) => [RUNTIME_SETTING_DEFINITIONS[key].envKey, `${value}`])
   );
 
-  const runtimeUpdate = await updateEnvironmentFile(environmentUpdates, {
-    environmentFilePath: runtimeConfigPath,
-  });
-  try {
-    await updateEnvironmentFile(environmentUpdates, { environmentFilePath });
-  } catch (error) {
-    if (runtimeUpdate?.changed) {
-      await updateEnvironmentFile(runtimeUpdate.previous, {
-        environmentFilePath: runtimeConfigPath,
-      }).catch(() => {});
+  // Keep persistence and rollback together so a failed save cannot undo a later save.
+  const update = async () => {
+    const runtimeUpdate = await updateEnvironmentFile(environmentUpdates, {
+      environmentFilePath: runtimeConfigPath,
+    });
+    try {
+      await updateEnvironmentFile(environmentUpdates, { environmentFilePath });
+    } catch (error) {
+      if (runtimeUpdate?.changed) {
+        await updateEnvironmentFile(runtimeUpdate.previous, {
+          environmentFilePath: runtimeConfigPath,
+        }).catch(() => {});
+      }
+      throw error;
     }
-    throw error;
-  }
 
-  return readRuntimeSettings({ runtimeConfigPath, environmentFilePath, env });
+    return readRuntimeSettings({ runtimeConfigPath, environmentFilePath, env });
+  };
+  const pending = updateQueue.then(update);
+  updateQueue = pending.catch(() => {});
+  return pending;
 }

@@ -259,5 +259,5 @@ def _unquote_env_value(value: str) -> str:
         body = value[1:-1]
         if value[0] == '"':
             return body.replace('\\"', '"').replace("\\\\", "\\")
-        return body
+        return body.replace("\\'", "'")
     return value

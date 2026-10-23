@@ -1,6 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 
+import { parseEnvironmentText } from './environmentFile.js';
+
 export const CODEX_PRIMARY_HOME = process.env.OPEN_KRITT_CODEX_HOME_DIR || '/provider-homes/codex';
 export const CODEX_ACCOUNTS_ROOT = process.env.OPEN_KRITT_CODEX_ACCOUNTS_DIR || '/provider-homes/codex-accounts';
 export const CLAUDE_HOME = process.env.OPEN_KRITT_CLAUDE_HOME || '/provider-homes/claude';
@@ -29,18 +31,6 @@ function readableJsonObject(path) {
   }
 }
 
-function runtimeValue(text, key) {
-  for (const rawLine of text.split(/\r?\n/)) {
-    const line = rawLine.trim().replace(/^export\s+/, '');
-    if (!line.startsWith(`${key}=`)) continue;
-    return line
-      .slice(key.length + 1)
-      .trim()
-      .replace(/^['"]|['"]$/g, '');
-  }
-  return null;
-}
-
 function splitConfiguredHomes(value) {
   const text = String(value || '').trim();
   if (!text) return [];
@@ -52,7 +42,7 @@ function splitConfiguredHomes(value) {
 
 function configuredRuntimeHomes(runtimeConfigPath, key, initialHome) {
   try {
-    const configured = runtimeValue(readFileSync(runtimeConfigPath, 'utf8'), key);
+    const configured = parseEnvironmentText(readFileSync(runtimeConfigPath, 'utf8'))[key] ?? null;
     if (configured !== null) return splitConfiguredHomes(configured);
   } catch {
     // The engine creates the runtime file on first start. Until then, .env is
