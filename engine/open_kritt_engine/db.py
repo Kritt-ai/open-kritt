@@ -9,6 +9,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from .artifact_cleanup import POST_WORKSPACE_ID_OFFSET
+from .discovery_store import DiscoveryStore
 from .models import Step, StepResultRow, Workflow
 
 RATE_LIMIT_RETRY_BASE_SECONDS = 60.0
@@ -86,7 +87,7 @@ def _completed_scan_reasoning_sql() -> str:
     END"""
 
 
-class Database:
+class Database(DiscoveryStore):
     def __init__(self, database_url: str):
         self.database_url = database_url
 

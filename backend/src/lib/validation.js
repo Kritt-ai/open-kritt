@@ -895,6 +895,67 @@ function normalizeRepoRef(raw, localNames, push, prefix) {
   return { kind, repoFull, commitSha: LOCAL_SNAPSHOT_REVISION };
 }
 
+export function validateAdaptiveDiscovery(configuration) {
+  if (!isObjectMap(configuration) || !Object.hasOwn(configuration, 'adaptive_discovery')) return null;
+  const value = configuration.adaptive_discovery;
+  if (value === false || (isObjectMap(value) && value.enabled === false)) return null;
+  const field = 'configuration.adaptive_discovery';
+  const fail = (suffix, message) => {
+    throw new ValidationError([{ field: suffix ? `${field}.${suffix}` : field, message }]);
+  };
+  if (!isObjectMap(value) || value.enabled !== true) fail('', 'Use enabled: true or explicitly disable discovery.');
+  const allowed = ['enabled', 'step_id', 'max_paths', 'wall_time_seconds'];
+  if (Object.keys(value).some((key) => !allowed.includes(key))) fail('', 'Unknown adaptive discovery option.');
+  for (const [key, maximum] of [
+    ['step_id', Number.MAX_SAFE_INTEGER],
+    ['max_paths', 1000],
+    ['wall_time_seconds', 86400],
+  ]) {
+    if (!Number.isSafeInteger(value[key]) || value[key] < 1 || value[key] > maximum) {
+      fail(key, `Must be an integer from 1 to ${maximum}.`);
+    }
+  }
+  if (Object.hasOwn(configuration, 'repeat_runs') && configuration.repeat_runs !== 1) {
+    fail('', 'Adaptive discovery requires repeat_runs=1.');
+  }
+  const rawSkipped = configuration.skip_attempted_step_ids;
+  const skipped = Array.isArray(rawSkipped)
+    ? rawSkipped
+    : typeof rawSkipped === 'string' || typeof rawSkipped === 'number' || typeof rawSkipped === 'boolean'
+      ? [rawSkipped]
+      : [];
+  for (const item of skipped) {
+    // Match legacy engine int conversion without allowing an attempted-root deadlock.
+    let id = NaN;
+    if (typeof item === 'number' || typeof item === 'boolean') id = Math.trunc(Number(item));
+    else if (typeof item === 'string' && /^[+-]?[0-9](?:_?[0-9])*$/.test(item.trim())) {
+      id = Number(item.trim().replaceAll('_', ''));
+    }
+    if (id === value.step_id) fail('', 'Adaptive discovery root cannot be in skip_attempted_step_ids.');
+  }
+  return { ...value };
+}
+
+export function validateAdaptiveDiscoveryWorkflow(configuration, steps) {
+  const option = validateAdaptiveDiscovery(configuration);
+  if (!option) return null;
+  const roots = steps.filter((step) => step.depth === 0);
+  if (
+    roots.length !== 1 ||
+    `${roots[0].id}` !== `${option.step_id}` ||
+    roots[0].multiOutput !== true ||
+    roots[0].isLastStep !== false
+  ) {
+    throw new ValidationError([
+      {
+        field: 'configuration.adaptive_discovery.step_id',
+        message: 'Select the only depth-0 root step; it must be nonterminal and multi-output.',
+      },
+    ]);
+  }
+  return roots[0];
+}
+
 export function validateScan(body, { localNames = null } = {}) {
   const errors = [];
   const push = (field, message) => errors.push({ field, message });
@@ -961,6 +1022,12 @@ export function validateScan(body, { localNames = null } = {}) {
     } catch {
       push('configuration', 'Configuration is not valid JSON.');
     }
+  }
+  try {
+    validateAdaptiveDiscovery(configuration);
+  } catch (error) {
+    if (error instanceof ValidationError) errors.push(...error.errors);
+    else throw error;
   }
   const postProcessingInput = postProcessingRuntimeInput(body, configuration);
   const postProcessingModelOverride = hasPostProcessingModelOverride(postProcessingInput);

@@ -2,6 +2,7 @@ import hashlib
 import re
 from typing import Any
 
+from .adaptive_discovery import discovery_step
 from .models import Job, State, StepResultRow, Workflow
 from .prompting import scan_context
 
@@ -174,6 +175,7 @@ def build_pending_jobs(
     completed: set[tuple[int, int, str | None, int]],
     step_results: dict[tuple[int, int, str | None, int], list[StepResultRow]],
     claimed: set[tuple[int, int, str | None, int]] | None = None,
+    discovery_frontier: dict[str, Any] | None = None,
 ) -> list[Job]:
     validate_workflow_bindings(workflow)
     pending: list[Job] = []
@@ -181,9 +183,30 @@ def build_pending_jobs(
         claimed = completed
     runs = repeat_runs(scan)
     states = [State(prev_id=0, prev_table=None, repeat_run=1, context=scan_context(scan))]
+    adaptive_step = discovery_step(scan, workflow)
+    if adaptive_step is not None:
+        if discovery_frontier is None or int(discovery_frontier["step_id"]) != adaptive_step.id:
+            raise ValueError("adaptive discovery requires its persisted frontier")
+        states = [
+            State(
+                prev_id=int(path["id"]),
+                prev_table="workflows.discovery_paths",
+                repeat_run=1,
+                context={**scan_context(scan), "discovery_path": path},
+            )
+            for path in discovery_frontier["paths"]
+        ]
     previous_depth_complete = True
 
     for depth in workflow.depths:
+        # Consume-all identities are fixed, so no downstream job may observe an
+        # incomplete discovery result set, even if an early path found something.
+        if (
+            depth > 0
+            and adaptive_step is not None
+            and (discovery_frontier["status"] == "running" or not previous_depth_complete)
+        ):
+            break
         steps = workflow.steps_at_depth(depth)
         next_states: list[State] = []
         depth_complete = previous_depth_complete
@@ -208,10 +231,17 @@ def build_pending_jobs(
                 for repeat_run in range(1, runs + 1):
                     repeated_state = _state_for_repeat(state, repeat_run)
                     key = metadata_key(step.id, repeated_state)
+                    path = repeated_state.context.get("discovery_path") if depth == 0 and adaptive_step else None
+                    if path and key not in completed:
+                        if path["status"] == "completed" or path.get("metadata_status") == "completed":
+                            raise ValueError("completed discovery path is missing its native completion")
+                        if path["status"] in {"blocked", "budget_stopped"}:
+                            continue
                     if key not in completed:
                         task_complete = False
                         depth_complete = False
-                        if key not in claimed:
+                        path = repeated_state.context.get("discovery_path") if depth == 0 else None
+                        if key not in claimed and (adaptive_step is None or depth > 0 or path["status"] == "pending"):
                             pending.append(Job(step=step, state=repeated_state))
                         # The next repeat needs the output from this one, and the
                         # next depth needs the complete accumulated task output.

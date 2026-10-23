@@ -1,6 +1,6 @@
 ---
-title: "Configuration"
-description: "A JSON blob of scan settings your prompts and the engine can read."
+title: 'Configuration'
+description: 'A JSON blob of scan settings your prompts and the engine can read.'
 ---
 
 **Configuration** is a free-form JSON object attached to a scan. It's available to prompts
@@ -23,8 +23,8 @@ A typical starting value:
 ```
 
 A prompt can then say "respect the limits in `{{configuration}}`" and the agent will see
-those values. open·kritt doesn't enforce a schema - the meaning of each key is whatever
-your workflow decides to make of it. For local targets, the scan form uses a positive
+those values. Custom keys have the meaning your workflow gives them; engine-recognized
+settings below have their own validation. For local targets, the scan form uses a positive
 `max_files` value for an advisory comparison with the folder's current
 [file count](/scans/local-vs-remote#file-count-preflight). The engine does not enforce that
 value; the selected workflow decides what exceeding it means.
@@ -39,8 +39,79 @@ A few keys are meaningful to the engine itself:
   the next depth. Start with `1`; use `2` or `3` when the extra model cost is worthwhile.
 
 <Note>
-  open·kritt also stores the scan's selected post-script and skill IDs inside the
-  configuration object for bookkeeping. Your own keys sit alongside them untouched.
+  open·kritt also stores the scan's selected post-script and skill IDs inside the configuration object for bookkeeping.
+  Your own keys sit alongside them untouched.
 </Note>
+
+## Adaptive discovery (opt-in)
+
+Adaptive discovery lets a root step propose specific follow-up investigations even when
+it has found nothing yet. Existing scans keep their usual fixed workflow unless you
+enable it:
+
+```json
+{
+  "repeat_runs": 1,
+  "adaptive_discovery": {
+    "enabled": true,
+    "step_id": 12,
+    "max_paths": 8,
+    "wall_time_seconds": 600
+  }
+}
+```
+
+Replace `12` with the workflow's only depth-0 step ID. That step must be multi-output and
+nonterminal. Enabled configuration requires exactly the four shown keys; `step_id` must
+be a positive integer, `max_paths` must be an integer from 1 to 1000, and
+`wall_time_seconds` must be an integer from 1 to 86400. `repeat_runs` must be `1` (its
+default). Omit `adaptive_discovery`, set it to `false`, or set `enabled` to `false` to
+retain ordinary scheduling. The discovery root cannot appear in
+`skip_attempted_step_ids`.
+
+The engine adds a `discovery` object beside the step's usual `results`, `stub`, and
+`stub_explanation` fields. Keep the step's existing output format for result records.
+The discovery object reports whether the current investigation completed or was blocked,
+a reason, and up to 16 follow-up paths:
+
+```json
+{
+  "_kritt_extractor_helper": true,
+  "stub": true,
+  "stub_explanation": "No supported result from this investigation.",
+  "results": [],
+  "discovery": {
+    "status": "completed",
+    "reason": "The parser delegates validation to another module.",
+    "next_paths": [
+      {
+        "scope": "src/validation",
+        "question": "Can this validator accept a missing required field?",
+        "rationale": "The parser passes optional input to this validator."
+      }
+    ]
+  }
+}
+```
+
+An empty result array does not close discovery. The engine schedules admitted paths,
+remembers them across worker restarts, and waits for the discovery frontier to close
+before scheduling downstream steps. Exact normalized scope/question duplicates are
+suppressed; this is separate from finding deduplication.
+
+The frontier has its own status: `running`, `exhausted`, `blocked`, or `budget_stopped`.
+`exhausted` means no admitted investigation remains; it does not establish complete
+source coverage or absence of vulnerabilities. A scan can finish with incomplete
+discovery, so read its discovery status and reason alongside its overall status.
+`GET /api/scans/:id/discovery` returns the frontier and path history; an enabled scan
+can have a null frontier before the engine first schedules it.
+
+`max_paths` counts admitted paths, including the initial root investigation and paths that are pending or blocked. Elapsed
+wall time starts when the frontier is first created and survives restarts. Both limits
+apply to this discovery stage. The scan's existing
+`job_limit` still applies to the whole workflow. These settings do not cap the cost or
+time of later workflow steps, deduplication, ranking, or post-scripts. Discovery model
+subprocesses, including structured-output resumes, are clipped to the remaining
+discovery time; workspace setup and cleanup can take longer.
 
 Next: [reserved extra](/scans/reserved-extra).
