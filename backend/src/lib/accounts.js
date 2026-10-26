@@ -13,6 +13,17 @@ const EXECUTOR_VIEW_INTERNAL_TOKEN_FILE =
 const EXECUTOR_ACCOUNT_PROVIDER_IDS = ['codex', 'claude', 'openrouter', 'xai'];
 const EXECUTOR_ACCOUNT_TIMEOUT_MS = 180000;
 const ACCOUNT_STATUS_KINDS = new Set(['available', 'limited', 'stale', 'expired', 'warning', 'missing']);
+const VERIFIED_ACCESS_STATUSES = new Set([
+  'active',
+  'security_key_signin_required',
+  'security_setup_required',
+  'inactive',
+  'unavailable',
+  'error',
+  'unknown',
+]);
+const VERIFIED_ACCESS_LEVELS = new Set(['tac1', 'tac2', 'tac3', 'government']);
+const VERIFIED_ACCESS_SOURCES = new Set(['individual', 'organization']);
 const ACCOUNT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 function safeText(value, limit = 500) {
@@ -86,6 +97,16 @@ function safeCredit(credit) {
   return Object.values(result).some((value) => value !== null) ? result : null;
 }
 
+function safeVerifiedAccess(access) {
+  const status = VERIFIED_ACCESS_STATUSES.has(access?.status) ? access.status : 'unknown';
+  return {
+    status,
+    checkedAt: safeText(access?.checkedAt, 100),
+    grantLevel: status === 'active' && VERIFIED_ACCESS_LEVELS.has(access?.grantLevel) ? access.grantLevel : null,
+    grantSource: status === 'active' && VERIFIED_ACCESS_SOURCES.has(access?.grantSource) ? access.grantSource : null,
+  };
+}
+
 function safeAccount(account, provider, activity) {
   if (!account || typeof account !== 'object') return null;
   const statusKind = ACCOUNT_STATUS_KINDS.has(account.statusKind) ? account.statusKind : 'warning';
@@ -102,6 +123,7 @@ function safeAccount(account, provider, activity) {
     canRemove: Boolean(id && account.canRemove),
     status: safeText(account.status, 200) || 'unknown',
     statusKind,
+    verifiedAccess: provider === 'codex' ? safeVerifiedAccess(account.verifiedAccess) : null,
     authError: safeText(account.authError, 500),
     plan: safeText(account.plan, 100),
     subscriptionUntil: safeText(account.subscriptionUntil, 100),

@@ -6,6 +6,7 @@ import {
   applyAccountActivity,
   CodexSignInRequired,
   CodexWeeklyUsage,
+  DaybreakAccess,
   ProviderCard,
   ProviderSignInRequired,
   codexWeeklyUsage,
@@ -21,6 +22,32 @@ import {
   startCodexWeeklyUsageUntilStarted,
   updatePendingAccounts,
 } from './Accounts.jsx';
+
+describe('Daybreak access status', () => {
+  it('shows server-verified active access and its grant without claiming a key identity', () => {
+    const html = renderToStaticMarkup(
+      createElement(DaybreakAccess, {
+        access: { status: 'active', grantLevel: 'tac1', grantSource: 'individual' },
+      })
+    );
+    expect(html).toContain('Active access');
+    expect(html).toContain('TAC1 (individual)');
+    expect(html).not.toContain('physical key');
+  });
+
+  it.each([
+    ['security_key_signin_required', 'Security-key sign-in required'],
+    ['security_setup_required', 'Security setup required'],
+    ['inactive', 'Inactive access'],
+    ['unavailable', 'Unavailable'],
+    ['error', 'Could not verify'],
+    ['unknown', 'Unknown'],
+  ])('renders %s as %s', (status, label) => {
+    const html = renderToStaticMarkup(createElement(DaybreakAccess, { access: { status } }));
+    expect(html).toContain(label);
+    expect(html).not.toContain('Active access');
+  });
+});
 
 describe('expired Codex login', () => {
   it('explains that authentication, not usage, needs attention', () => {

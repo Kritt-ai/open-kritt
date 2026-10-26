@@ -712,6 +712,54 @@ a {
   background: var(--fail-bg);
 }
 
+.daybreak-access {
+  margin-top: 12px;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.daybreak-access-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.daybreak-access-badge {
+  border-radius: 16px;
+  padding: 3px 7px;
+  color: var(--text-2);
+  background: var(--surface-2);
+  font-size: 10.5px;
+}
+
+.daybreak-access-badge-active {
+  color: var(--ok);
+  background: var(--ok-bg);
+}
+
+.daybreak-access-badge-security_key_signin_required,
+.daybreak-access-badge-security_setup_required,
+.daybreak-access-badge-inactive {
+  color: var(--pend);
+  background: var(--pend-bg);
+}
+
+.daybreak-access-detail,
+.daybreak-access-checked {
+  color: var(--text-2);
+  font-size: 11.5px;
+  line-height: 1.45;
+  margin-top: 5px;
+}
+
+.daybreak-access-checked {
+  color: var(--text-3);
+  font-size: 10.5px;
+}
+
 .account-auth-required {
   display: flex;
   align-items: flex-start;

@@ -56,6 +56,17 @@ When Codex reports manual reset credits, Accounts shows how many are available. 
 because this action cannot be undone. These controls apply to ChatGPT sign-ins, not OpenAI
 Platform API keys.
 
+## Daybreak access status
+
+**Accounts → Codex** also checks each saved ChatGPT login's Daybreak access status. It
+shows active access, required security setup or security-key sign-in, inactive or
+unavailable access, and cases where the status could not be verified. Use **Refresh
+accounts** after completing a sign-in or setup step. A working Codex login alone does
+not establish Daybreak access, and this status does not identify which physical key
+was used.
+
+![Accounts page showing a synthetic example of active Daybreak access](/images/daybreak-access-example.png)
+
 ## Linux ownership and permissions
 
 Run `./kritt` as your regular Linux user, **not with `sudo`**. The guided device flow and

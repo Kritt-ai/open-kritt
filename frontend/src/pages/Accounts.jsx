@@ -579,6 +579,8 @@ function AccountDetail({
         </div>
       )}
 
+      {providerId === 'codex' && <DaybreakAccess access={account.verifiedAccess} />}
+
       {signInRequired && <ProviderSignInRequired providerId={providerId} message={account.authError} />}
 
       {account.credit && <CreditUsage credit={account.credit} />}
@@ -619,6 +621,44 @@ function AccountDetail({
             {removing ? 'Removing…' : 'Remove account'}
           </Button>
         </div>
+      )}
+    </div>
+  );
+}
+
+const DAYBREAK_ACCESS_COPY = {
+  active: ['Active access', 'ChatGPT verifies access for this signed-in account.'],
+  security_key_signin_required: [
+    'Security-key sign-in required',
+    'Complete security-key sign-in in ChatGPT, then refresh this page.',
+  ],
+  security_setup_required: ['Security setup required', 'Complete security setup in ChatGPT, then refresh this page.'],
+  inactive: ['Inactive access', 'ChatGPT reports that access for this account is inactive.'],
+  unavailable: ['Unavailable', 'ChatGPT reports that access is unavailable for this account.'],
+  error: ['Could not verify', 'The access check failed. Refresh this page to try again.'],
+  unknown: ['Unknown', 'Access could not be determined from the current account status.'],
+};
+
+export function DaybreakAccess({ access }) {
+  const status = DAYBREAK_ACCESS_COPY[access?.status] ? access.status : 'unknown';
+  const [label, detail] = DAYBREAK_ACCESS_COPY[status];
+  const checkedAt = typeof access?.checkedAt === 'string' ? new Date(access.checkedAt) : null;
+  const grant =
+    status === 'active' && access?.grantLevel && access?.grantSource
+      ? ` · ${access.grantLevel.toUpperCase()} (${access.grantSource})`
+      : '';
+  return (
+    <div className="daybreak-access" data-status={status}>
+      <div className="daybreak-access-heading">
+        <span className="mono account-kicker">Daybreak access</span>
+        <span className={`daybreak-access-badge daybreak-access-badge-${status}`}>{label}</span>
+      </div>
+      <div className="daybreak-access-detail">
+        {detail}
+        {grant}
+      </div>
+      {checkedAt && Number.isFinite(checkedAt.getTime()) && (
+        <div className="daybreak-access-checked">Last checked {checkedAt.toLocaleString()}</div>
       )}
     </div>
   );

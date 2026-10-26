@@ -4,7 +4,12 @@ import { test } from 'node:test';
 
 import express from 'express';
 
-import { consumeCodexManualReset, fetchExecutorAccounts, fetchExecutorProvider } from '../src/lib/accounts.js';
+import {
+  buildAccountsOverview,
+  consumeCodexManualReset,
+  fetchExecutorAccounts,
+  fetchExecutorProvider,
+} from '../src/lib/accounts.js';
 import { createAccountsRouter } from '../src/routes/accounts.js';
 
 async function requestRouter(router, path = '/') {
@@ -30,6 +35,39 @@ test('account API responses cannot be stored by browser caches', async () => {
 
   assert.equal(response.status, 200);
   assert.equal(response.headers.get('cache-control'), 'no-store');
+});
+
+test('Codex access status is whitelisted before it reaches the browser', () => {
+  const overview = buildAccountsOverview([{ id: 'codex', label: 'Codex', configured: true }], {
+    providers: [
+      {
+        kind: 'codex',
+        accounts: [
+          {
+            id: 'sample',
+            path: '/synthetic/.codex',
+            active: true,
+            statusKind: 'available',
+            verifiedAccess: {
+              status: 'active',
+              checkedAt: '2026-01-01T00:00:00Z',
+              grantLevel: 'tac1',
+              grantSource: 'individual',
+              rawCredential: 'must-not-leak',
+            },
+          },
+        ],
+      },
+    ],
+  });
+  const access = overview.providers[0].accounts[0].verifiedAccess;
+  assert.deepEqual(access, {
+    status: 'active',
+    checkedAt: '2026-01-01T00:00:00Z',
+    grantLevel: 'tac1',
+    grantSource: 'individual',
+  });
+  assert.equal(JSON.stringify(overview).includes('must-not-leak'), false);
 });
 
 test('executor account integration loads each provider independently with the distinct internal bearer token', async (t) => {

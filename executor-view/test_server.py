@@ -677,6 +677,159 @@ class ExecutorViewSummaryTests(unittest.TestCase):
         )
         self.assertEqual(result["primary"]["usedPercent"], 0.2)
 
+    def test_verified_access_normalizes_only_an_unambiguous_program(self):
+        checked_at = "2026-01-01T00:00:00+00:00"
+        program = {
+            "program": "cyber",
+            "state": "active",
+            "grants": [{"level": "tac1", "source": "individual", "secret": "hidden"}],
+            "individual_blue_security_setup_required": False,
+            "individual_blue_security_signin_required": False,
+        }
+        active = server.normalize_codex_verified_access(
+            {"programs": [program], "private": "hidden"}, checked_at
+        )
+        self.assertEqual(
+            active,
+            {
+                "status": "active",
+                "checkedAt": checked_at,
+                "grantLevel": "tac1",
+                "grantSource": "individual",
+            },
+        )
+        inactive = {**program, "state": "inactive", "grants": []}
+        cases = (
+            (
+                {**inactive, "individual_blue_security_signin_required": True},
+                "security_key_signin_required",
+            ),
+            (
+                {**inactive, "individual_blue_security_setup_required": True},
+                "security_setup_required",
+            ),
+            (inactive, "inactive"),
+            ({**program, "state": "unavailable"}, "unavailable"),
+            ({**program, "grants": []}, "unknown"),
+            ({**program, "individual_blue_security_signin_required": True}, "unknown"),
+        )
+        for candidate, expected in cases:
+            self.assertEqual(
+                server.normalize_codex_verified_access(
+                    {"programs": [candidate]}, checked_at
+                )["status"],
+                expected,
+            )
+        for payload in ({}, {"programs": None}, {"programs": [program, program]}):
+            self.assertEqual(
+                server.normalize_codex_verified_access(payload, checked_at)["status"],
+                "unknown",
+            )
+
+    def test_verified_access_request_uses_account_headers_and_returns_no_raw_data(self):
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, _limit):
+                return json.dumps(
+                    {
+                        "private": "hidden",
+                        "programs": [
+                            {
+                                "program": "cyber",
+                                "state": "active",
+                                "grants": [{"level": "tac2", "source": "organization"}],
+                            }
+                        ],
+                    }
+                ).encode()
+
+        with patch.object(server.urlrequest, "build_opener") as build_opener:
+            build_opener.return_value.open.return_value = Response()
+            result = server.fetch_codex_verified_access(
+                "unit-test-access-token", "unit-test-account-id"
+            )
+        build_opener.assert_called_once_with(server.NoRedirect)
+        open_request = build_opener.return_value.open
+        request = open_request.call_args.args[0]
+        self.assertEqual(request.full_url, server.CODEX_VERIFIED_ACCESS_URL)
+        self.assertEqual(
+            request.get_header("Authorization"), "Bearer unit-test-access-token"
+        )
+        self.assertEqual(
+            request.get_header("Chatgpt-account-id"), "unit-test-account-id"
+        )
+        self.assertEqual(open_request.call_args.kwargs["timeout"], 5)
+        self.assertIsNone(
+            server.NoRedirect().redirect_request(
+                None, None, 302, "", {}, "https://elsewhere.test"
+            )
+        )
+        self.assertEqual(result["status"], "active")
+        self.assertNotIn("hidden", json.dumps(result))
+        self.assertNotIn("unit-test-access-token", json.dumps(result))
+
+    def test_verified_access_failures_do_not_reuse_or_expose_raw_responses(self):
+        class MalformedResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, _limit):
+                return b"not json"
+
+        with patch.object(server.urlrequest, "build_opener") as build_opener:
+            build_opener.return_value.open.return_value = MalformedResponse()
+            malformed = server.fetch_codex_verified_access("unit-test-access-token")
+            build_opener.return_value.open.side_effect = server.urlerror.HTTPError(
+                server.CODEX_VERIFIED_ACCESS_URL, 503, "private detail", None, None
+            )
+            failed = server.fetch_codex_verified_access("unit-test-access-token")
+        self.assertEqual(malformed["status"], "unknown")
+        self.assertEqual(failed["status"], "error")
+        self.assertNotIn("private detail", json.dumps(failed))
+
+    def test_verified_access_refresh_does_not_reuse_a_previous_success_after_failure(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory) / ".codex"
+            home.mkdir()
+            (home / "auth.json").write_text(
+                json.dumps(
+                    {
+                        "tokens": {
+                            "access_token": "unit-test-access-token",
+                            "account_id": "unit-test-account-id",
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with (
+                patch.object(server, "CODEX_VERIFIED_ACCESS_CACHE", {}),
+                patch.object(
+                    server,
+                    "fetch_codex_verified_access",
+                    side_effect=[
+                        {"status": "active", "checkedAt": "first"},
+                        {"status": "error", "checkedAt": "second"},
+                    ],
+                ) as fetch_access,
+            ):
+                first = server.codex_verified_access_for_account(home)
+                cached = server.codex_verified_access_for_account(home)
+                refreshed = server.codex_verified_access_for_account(home, force=True)
+        self.assertIs(first, cached)
+        self.assertEqual(refreshed, {"status": "error", "checkedAt": "second"})
+        self.assertEqual(fetch_access.call_count, 2)
+
     def test_codex_usage_retains_latest_401_status_with_cached_usage(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory) / ".codex"
@@ -748,6 +901,11 @@ class ExecutorViewSummaryTests(unittest.TestCase):
                     "codex_usage_for_account",
                     return_value=invalid_usage,
                 ),
+                patch.object(
+                    server,
+                    "codex_verified_access_for_account",
+                    return_value={"status": "unknown", "checkedAt": None},
+                ),
             ):
                 account = server.codex_account(home, {}, force=True)
 
@@ -789,6 +947,11 @@ class ExecutorViewSummaryTests(unittest.TestCase):
                     "codex_usage_for_account",
                     return_value=codex_usage(),
                 ) as usage_for_account,
+                patch.object(
+                    server,
+                    "codex_verified_access_for_account",
+                    return_value={"status": "unknown", "checkedAt": None},
+                ),
             ):
                 account = server.codex_account(home, {}, force=True)
 
@@ -843,6 +1006,11 @@ class ExecutorViewSummaryTests(unittest.TestCase):
                     server,
                     "codex_usage_for_account",
                     return_value=codex_usage(),
+                ),
+                patch.object(
+                    server,
+                    "codex_verified_access_for_account",
+                    return_value={"status": "unknown", "checkedAt": None},
                 ),
             ):
                 account = server.codex_account(home, {}, force=True)

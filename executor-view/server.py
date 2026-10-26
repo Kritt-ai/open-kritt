@@ -10,7 +10,7 @@ import secrets
 import time
 import uuid
 from collections import defaultdict
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime, timezone
 from decimal import Decimal
 from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -157,6 +157,9 @@ CODEX_ACCOUNT_CACHE_SECONDS = int(
 CODEX_USAGE_URL = os.getenv(
     "EXECUTOR_VIEW_CODEX_USAGE_URL", "https://chatgpt.com/backend-api/wham/usage"
 )
+CODEX_VERIFIED_ACCESS_URL = "https://chatgpt.com/backend-api/accounts/verified_access"
+CODEX_VERIFIED_ACCESS_TIMEOUT_SECONDS = 5
+CODEX_VERIFIED_ACCESS_CACHE_SECONDS = 60
 CODEX_RESET_CREDITS_URL = os.getenv(
     "EXECUTOR_VIEW_CODEX_RESET_CREDITS_URL",
     "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits",
@@ -231,6 +234,7 @@ RECENT_ATTEMPT_LIMIT = int(
 )
 CODEX_ACCOUNT_CACHE = {"expires_at": 0.0, "data": None}
 CODEX_USAGE_CACHE = {}
+CODEX_VERIFIED_ACCESS_CACHE = {}
 CLAUDE_USAGE_CACHE = {}
 OPENROUTER_KEY_CACHE = {"expires_at": 0.0, "credential": None, "data": None}
 XAI_KEY_CACHE = {"expires_at": 0.0, "credential": None, "data": None}
@@ -2468,6 +2472,11 @@ def codex_account(home, job_rate_limits, force=False):
     auth = load_codex_auth(home)
     identity = codex_account_identity(auth, home)
     usage = codex_usage_for_account(home, force=force) if auth.get("exists") else None
+    verified_access = (
+        codex_verified_access_for_account(home, force=force)
+        if auth.get("exists")
+        else {"status": "unknown", "checkedAt": None}
+    )
     source_rate_limits = latest_rate_limits(
         home,
         session_limit=CODEX_SOURCE_SESSION_SCAN_LIMIT,
@@ -2568,6 +2577,7 @@ def codex_account(home, job_rate_limits, force=False):
         "canRemove": account_id is not None,
         "status": status,
         "statusKind": status_kind,
+        "verifiedAccess": verified_access,
         "details": details,
         "subscriptionUntil": subscription_until,
         "subscriptionLastChecked": last_checked,
@@ -2656,6 +2666,109 @@ def load_codex_usage_credential(home):
     account_id = tokens.get("account_id") or auth_info.get("chatgpt_account_id")
     account_id = account_id.strip() if isinstance(account_id, str) else ""
     return {"accessToken": access_token, "accountId": account_id}
+
+
+def normalize_codex_verified_access(payload, checked_at):
+    result = {"status": "unknown", "checkedAt": checked_at}
+    if not isinstance(payload, dict) or not isinstance(payload.get("programs"), list):
+        return result
+    programs = [
+        program
+        for program in payload["programs"]
+        if isinstance(program, dict) and program.get("program") == "cyber"
+    ]
+    if len(programs) != 1:
+        return result
+    program = programs[0]
+    state = program.get("state")
+    grants = program.get("grants")
+    if state == "unavailable":
+        result["status"] = "unavailable"
+    elif (
+        state == "active"
+        and isinstance(grants, list)
+        and grants
+        and program.get("individual_blue_security_setup_required") is not True
+        and program.get("individual_blue_security_signin_required") is not True
+    ):
+        grant = next(
+            (
+                item
+                for item in grants
+                if isinstance(item, dict)
+                and item.get("level") in {"tac1", "tac2", "tac3", "government"}
+                and item.get("source") in {"individual", "organization"}
+            ),
+            None,
+        )
+        if grant:
+            result.update(
+                status="active", grantLevel=grant["level"], grantSource=grant["source"]
+            )
+    elif state == "inactive" and isinstance(grants, list):
+        setup_required = program.get("individual_blue_security_setup_required")
+        signin_required = program.get("individual_blue_security_signin_required")
+        if not grants and setup_required is True:
+            result["status"] = "security_setup_required"
+        elif not grants and setup_required is False and signin_required is True:
+            result["status"] = "security_key_signin_required"
+        elif not grants and setup_required is False and signin_required is False:
+            result["status"] = "inactive"
+    return result
+
+
+class NoRedirect(urlrequest.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def fetch_codex_verified_access(access_token, account_id=""):
+    """Return only the access decision; never return the request credentials or raw response."""
+
+    checked_at = datetime.now(UTC).isoformat()
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json",
+        "User-Agent": "open-kritt-executor-view",
+    }
+    if account_id:
+        headers["ChatGPT-Account-ID"] = account_id
+    request = urlrequest.Request(
+        CODEX_VERIFIED_ACCESS_URL, headers=headers, method="GET"
+    )
+    try:
+        with urlrequest.build_opener(NoRedirect).open(
+            request, timeout=CODEX_VERIFIED_ACCESS_TIMEOUT_SECONDS
+        ) as response:
+            payload = json.loads(response.read(1024 * 256).decode("utf-8"))
+        return normalize_codex_verified_access(payload, checked_at)
+    except (urlerror.HTTPError, OSError, TimeoutError):
+        return {"status": "error", "checkedAt": checked_at}
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        return {"status": "unknown", "checkedAt": checked_at}
+
+
+def codex_verified_access_for_account(home, force=False):
+    credential = load_codex_usage_credential(home)
+    access_token = credential.get("accessToken")
+    if not access_token:
+        return {"status": "unknown", "checkedAt": None}
+    account_id = credential.get("accountId") or ""
+    cache_key = secret_fingerprint(f"{access_token}\n{account_id}")
+    now = time.monotonic()
+    cached = CODEX_VERIFIED_ACCESS_CACHE.get(cache_key)
+    if not force and cached and now < cached["expires_at"]:
+        return cached["data"]
+    result = fetch_codex_verified_access(access_token, account_id)
+    ttl = (
+        CODEX_VERIFIED_ACCESS_CACHE_SECONDS
+        if result["status"] not in {"error", "unknown"}
+        else 20
+    )
+    if len(CODEX_VERIFIED_ACCESS_CACHE) >= 64:
+        CODEX_VERIFIED_ACCESS_CACHE.clear()
+    CODEX_VERIFIED_ACCESS_CACHE[cache_key] = {"data": result, "expires_at": now + ttl}
+    return result
 
 
 def codex_usage_for_account(home, force=False):
