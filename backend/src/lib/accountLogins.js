@@ -27,6 +27,8 @@ import { CLAUDE_CREDENTIAL_FILENAMES, promoteClaudeCredential, withClaudeCredent
 const LOGIN_PROVIDERS = new Set(['codex', 'claude', 'xai']);
 const PROVIDER_LABELS = { codex: 'Codex', claude: 'Claude', xai: 'xAI' };
 const SESSION_TIMEOUT_MS = 20 * 60 * 1000;
+const WEEKLY_USAGE_TIMEOUT_MS = 2 * 60 * 1000;
+const WEEKLY_USAGE_TERMINATION_GRACE_MS = 1000;
 const MAX_CAPTURED_OUTPUT = 32 * 1024;
 const ACCOUNT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const LOGIN_ENV_KEYS = [
@@ -701,6 +703,19 @@ export class AccountLoginManager {
     try {
       await new Promise((resolvePromise, rejectPromise) => {
         let child;
+        let timeout;
+        let escalation;
+        let settled = false;
+        let timedOut = false;
+        const timeoutError = () => loginError('Codex weekly usage timed out.', 504);
+        const finish = (error) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          clearTimeout(escalation);
+          if (error) rejectPromise(error);
+          else resolvePromise();
+        };
         try {
           child = this.spawnProcess(
             'codex',
@@ -723,13 +738,32 @@ export class AccountLoginManager {
             { cwd: '/tmp', env, stdio: 'ignore' }
           );
         } catch {
-          rejectPromise(loginError('Could not start Codex weekly usage.', 503));
+          finish(loginError('Could not start Codex weekly usage.', 503));
           return;
         }
-        child.once('error', () => rejectPromise(loginError('Could not start Codex weekly usage.', 503)));
+        child.on('error', () => {
+          if (!timedOut) finish(loginError('Could not start Codex weekly usage.', 503));
+          // A post-timeout error does not prove the child has closed; keep escalation armed.
+        });
         child.once('close', (code) =>
-          code === 0 ? resolvePromise() : rejectPromise(loginError('Codex could not start weekly usage.', 502))
+          finish(timedOut ? timeoutError() : code === 0 ? null : loginError('Codex could not start weekly usage.', 502))
         );
+        timeout = setTimeout(() => {
+          timedOut = true;
+          try {
+            child.kill?.('SIGTERM');
+          } catch {
+            // Escalation still bounds this request if graceful termination fails.
+          }
+          escalation = setTimeout(() => {
+            try {
+              child.kill?.('SIGKILL');
+            } catch {
+              // The request must still settle if signaling is unavailable.
+            }
+            finish(timeoutError());
+          }, WEEKLY_USAGE_TERMINATION_GRACE_MS);
+        }, WEEKLY_USAGE_TIMEOUT_MS);
       });
     } finally {
       await Promise.allSettled([chown(authPath, original.uid, original.gid), chmod(authPath, original.mode & 0o7777)]);
