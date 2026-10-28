@@ -116,3 +116,17 @@ Push your branch and open a pull request against `main`. In the pull request:
 
 Contributions are distributed as part of the project under the repository's
 [GNU AGPL v3.0 license](LICENSE).
+
+### Migration replay regression checks
+
+The startup runner reapplies every SQL file, including earlier constraint definitions.
+When changing an accepted value, verify replay against rows containing that value; an
+empty database can pass while a populated database fails before the newest migration.
+Use only a disposable PostgreSQL database for the populated replay test:
+
+```bash
+cd backend
+MIGRATION_TEST_DATABASE_URL="$DATABASE_URL" node --test test/migrationReplay.test.js
+```
+
+The database CI job runs this check in its disposable PostgreSQL service.
