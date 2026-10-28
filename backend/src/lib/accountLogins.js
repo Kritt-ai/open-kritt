@@ -522,75 +522,71 @@ export class AccountLoginManager {
     };
     this.sessions.set(id, session);
 
-    let command;
-    let args;
-    let env = { ...process.env, NO_COLOR: '1', TERM: 'dumb' };
-    delete env.DEEPSEEK_API_KEY;
-    if (provider === 'codex') {
-      if (reloginTarget) {
-        session.codexHome = reloginTarget.home;
-        session.codexRuntimeHome = reloginTarget.runtimeHome;
-        session.replacesAccountId = accountId;
-      } else {
-        const folder = `account-${createdAt.toISOString().replace(/\D/g, '').slice(0, 14)}-${id.slice(0, 8)}`;
-        session.codexDirectory = join(this.codexAccountsRoot, folder);
-        session.codexHome = join(session.codexDirectory, '.codex');
-        session.codexRuntimeHome = join(this.codexRuntimeAccountsRoot, folder, '.codex');
-        await mkdir(session.codexHome, { recursive: true, mode: 0o700 });
-      }
-      command = 'codex';
-      args = ['login', '--device-auth'];
-      env.CODEX_HOME = session.codexHome;
-    } else if (provider === 'claude') {
-      if (reloginTarget) {
-        session.claudeHome = reloginTarget.home;
-        session.claudeRuntimeHome = reloginTarget.runtimeHome;
-        session.replacesAccountId = accountId;
-      } else {
-        const folder = `account-${createdAt.toISOString().replace(/\D/g, '').slice(0, 14)}-${id.slice(0, 8)}`;
-        session.claudeDirectory = join(this.claudeAccountsRoot, folder);
-        session.claudeHome = join(session.claudeDirectory, '.claude');
-        session.claudeRuntimeHome = join(this.claudeRuntimeAccountsRoot, folder, '.claude');
-        await mkdir(session.claudeHome, { recursive: true, mode: 0o700 });
-      }
-      session.claudeLoginHome = join(dirname(this.claudeHome), `.claude-login-${id}`);
-      await mkdir(session.claudeLoginHome, { recursive: true, mode: 0o700 });
-      command = 'claude';
-      args = ['auth', 'login', '--claudeai'];
-      env.HOME = session.claudeLoginHome;
-      env.CLAUDE_HOME = session.claudeLoginHome;
-      env.CLAUDE_CONFIG_DIR = session.claudeLoginHome;
-    } else {
-      // Grok is a separately distributed binary. Give device login only the
-      // process settings it needs, never backend/database or provider secrets.
-      env = scopedLoginEnvironment();
-      if (reloginTarget) {
-        session.grokHome = reloginTarget.home;
-        session.grokRuntimeHome = reloginTarget.runtimeHome;
-        session.replacesAccountId = accountId;
-      } else {
-        const folder = `account-${createdAt.toISOString().replace(/\D/g, '').slice(0, 14)}-${id.slice(0, 8)}`;
-        session.grokDirectory = join(this.grokAccountsRoot, folder);
-        session.grokHome = join(session.grokDirectory, '.grok');
-        session.grokRuntimeHome = join(this.grokRuntimeAccountsRoot, folder, '.grok');
-        await mkdir(session.grokHome, { recursive: true, mode: 0o700 });
-      }
-      command = 'grok';
-      args = ['login', '--device-auth'];
-      env.GROK_HOME = session.grokHome;
-      env.HOME = session.grokDirectory || dirname(session.grokHome);
-    }
-    delete env.CI;
-
     let child;
     try {
+      let command;
+      let args;
+      let env = { ...process.env, NO_COLOR: '1', TERM: 'dumb' };
+      delete env.DEEPSEEK_API_KEY;
+      if (provider === 'codex') {
+        if (reloginTarget) {
+          session.codexHome = reloginTarget.home;
+          session.codexRuntimeHome = reloginTarget.runtimeHome;
+          session.replacesAccountId = accountId;
+        } else {
+          const folder = `account-${createdAt.toISOString().replace(/\D/g, '').slice(0, 14)}-${id.slice(0, 8)}`;
+          session.codexDirectory = join(this.codexAccountsRoot, folder);
+          session.codexHome = join(session.codexDirectory, '.codex');
+          session.codexRuntimeHome = join(this.codexRuntimeAccountsRoot, folder, '.codex');
+          await mkdir(session.codexHome, { recursive: true, mode: 0o700 });
+        }
+        command = 'codex';
+        args = ['login', '--device-auth'];
+        env.CODEX_HOME = session.codexHome;
+      } else if (provider === 'claude') {
+        if (reloginTarget) {
+          session.claudeHome = reloginTarget.home;
+          session.claudeRuntimeHome = reloginTarget.runtimeHome;
+          session.replacesAccountId = accountId;
+        } else {
+          const folder = `account-${createdAt.toISOString().replace(/\D/g, '').slice(0, 14)}-${id.slice(0, 8)}`;
+          session.claudeDirectory = join(this.claudeAccountsRoot, folder);
+          session.claudeHome = join(session.claudeDirectory, '.claude');
+          session.claudeRuntimeHome = join(this.claudeRuntimeAccountsRoot, folder, '.claude');
+          await mkdir(session.claudeHome, { recursive: true, mode: 0o700 });
+        }
+        session.claudeLoginHome = join(dirname(this.claudeHome), `.claude-login-${id}`);
+        await mkdir(session.claudeLoginHome, { recursive: true, mode: 0o700 });
+        command = 'claude';
+        args = ['auth', 'login', '--claudeai'];
+        env.HOME = session.claudeLoginHome;
+        env.CLAUDE_HOME = session.claudeLoginHome;
+        env.CLAUDE_CONFIG_DIR = session.claudeLoginHome;
+      } else {
+        // Grok is a separately distributed binary. Give device login only the
+        // process settings it needs, never backend/database or provider secrets.
+        env = scopedLoginEnvironment();
+        if (reloginTarget) {
+          session.grokHome = reloginTarget.home;
+          session.grokRuntimeHome = reloginTarget.runtimeHome;
+          session.replacesAccountId = accountId;
+        } else {
+          const folder = `account-${createdAt.toISOString().replace(/\D/g, '').slice(0, 14)}-${id.slice(0, 8)}`;
+          session.grokDirectory = join(this.grokAccountsRoot, folder);
+          session.grokHome = join(session.grokDirectory, '.grok');
+          session.grokRuntimeHome = join(this.grokRuntimeAccountsRoot, folder, '.grok');
+          await mkdir(session.grokHome, { recursive: true, mode: 0o700 });
+        }
+        command = 'grok';
+        args = ['login', '--device-auth'];
+        env.GROK_HOME = session.grokHome;
+        env.HOME = session.grokDirectory || dirname(session.grokHome);
+      }
+      delete env.CI;
+
       child = this.spawnProcess(command, args, { env, stdio: ['pipe', 'pipe', 'pipe'] });
     } catch (error) {
-      session.status = 'failed';
-      session.message = `Could not start ${provider} login: ${error.message}`;
-      if (session.claudeDirectory) void rm(session.claudeDirectory, { recursive: true, force: true });
-      if (session.claudeLoginHome) void rm(session.claudeLoginHome, { recursive: true, force: true });
-      if (session.grokDirectory) void rm(session.grokDirectory, { recursive: true, force: true });
+      await this.fail(session, `Could not start ${provider} login: ${error.message}`);
       throw loginError(session.message, 503);
     }
     session.child = child;
@@ -854,10 +850,15 @@ export class AccountLoginManager {
     session.status = 'failed';
     session.message = message;
     session.child = null;
-    if (session.codexDirectory) void rm(session.codexDirectory, { recursive: true, force: true });
-    if (session.claudeDirectory) void rm(session.claudeDirectory, { recursive: true, force: true });
-    if (session.claudeLoginHome) void rm(session.claudeLoginHome, { recursive: true, force: true });
-    if (session.grokDirectory) void rm(session.grokDirectory, { recursive: true, force: true });
+    const directories = [
+      session.codexDirectory,
+      session.claudeDirectory,
+      session.claudeLoginHome,
+      session.grokDirectory,
+    ];
+    return Promise.all(
+      directories.filter(Boolean).map((directory) => rm(directory, { recursive: true, force: true }).catch(() => {}))
+    );
   }
 
   async finish(session, code) {

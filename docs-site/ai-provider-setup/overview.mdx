@@ -77,6 +77,8 @@ for scans and draft generation. Accounts also offers a short text API check.
   </Step>
 </Steps>
 
+If a login cannot initialize its local account directory, correct the filesystem problem and start the login again. The failed attempt does not remain an active login session.
+
 ## Credential handling
 
 API keys configured by the CLI are written to the repository's `.env` file. Codex logins
