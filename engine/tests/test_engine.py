@@ -3,7 +3,7 @@ import json
 import shutil
 import subprocess
 import threading
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -2743,6 +2743,80 @@ def test_execute_job_rechecks_scan_status_after_waiting_for_workspace_slot(monke
     assert did_claim is False
     assert fake_db.metadata == []
     assert fake_harness.calls == []
+
+
+@pytest.mark.parametrize("status", ["running", "stopped", "paused"])
+def test_execute_job_rechecks_scan_status_after_waiting_for_account_lease(monkeypatch, tmp_path, status):
+    current = {**scan(), "status": "running"}
+    metadata = []
+
+    class LeaseDb:
+        @contextmanager
+        def connect(self):
+            yield SimpleNamespace(commit=lambda: None)
+
+        def load_scan(self, _conn, _scan_id):
+            return dict(current)
+
+        def claim_step_metadata(self, _conn, **kwargs):
+            metadata.append(kwargs)
+            return 1
+
+        def update_metadata(self, _conn, _metadata_id, **kwargs):
+            metadata[0].update(kwargs)
+
+    worker = Worker.__new__(Worker)
+    worker.db = LeaseDb()
+    worker.config = SimpleNamespace(data_dir=str(tmp_path), github_token=None)
+    worker.workspace_setup_slots = nullcontext()
+    worker.runtime_retry_count = lambda: 0
+    worker.runtime_cyber_safety_retry_count = lambda: 0
+    worker._new_scan_container_allowed = lambda _scan_id: True
+    prepared = SimpleNamespace(
+        workspace=SimpleNamespace(env={}),
+        repo_dir=str(tmp_path),
+        checked_out_commit="fixture",
+        layout="",
+        manifest_json="{}",
+    )
+    for name, replacement in {
+        "prepare_dependency_workspace": lambda **_kwargs: prepared,
+        "workspace_context": lambda _prepared: {},
+        "workspace_prompt_context": lambda *_args: "",
+        "native_agent_skills_prompt": lambda *_args: "",
+        "harness_prompt": lambda value, **_kwargs: value,
+        "image_workspace_enabled": lambda **_kwargs: False,
+        "cleanup_workspace": lambda _workspace: None,
+    }.items():
+        monkeypatch.setattr(worker_module, name, replacement)
+
+    @contextmanager
+    def lease(*_args, **_kwargs):
+        current["status"] = status
+        yield
+
+    monkeypatch.setattr(worker_module, "provider_account_lease", lease)
+    calls = []
+
+    class ReachedFakeHarness(BaseException):
+        pass
+
+    def run(**_kwargs):
+        calls.append(current["status"])
+        raise ReachedFakeHarness  # Stop before parsing output or processing records.
+
+    job = Job(
+        step=step(1, 0, output_format='{"value":"string"}'),
+        state=State(prev_id=0, prev_table=None, repeat_run=1, context={}),
+    )
+    try:
+        worker.execute_job(scan=dict(current), workflow_id=3, job=job, harness=SimpleNamespace(run=run))
+    except ReachedFakeHarness:
+        pass
+
+    assert calls == (["running"] if status == "running" else [])
+    if status != "running":
+        assert metadata[0]["phase"] == "interrupted"
 
 
 def test_workspace_credential_rate_limit_defers_instead_of_failing_scan(monkeypatch, tmp_path):
