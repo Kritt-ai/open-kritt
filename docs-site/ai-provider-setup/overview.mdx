@@ -110,4 +110,6 @@ Next: configure the recommended [Codex provider](/ai-provider-setup/codex),
 [DeepSeek](/ai-provider-setup/deepseek), [OpenRouter](/ai-provider-setup/openrouter),
 or [xAI](/ai-provider-setup/xai).
 
+Canceling a login or letting it expire prevents that attempt from registering an account, even if buffered provider output arrives later. Once the completed login is being saved, cancellation returns a conflict instead of reporting that the save was canceled; wait for the saved account to appear.
+
 Simultaneous requests to start a login for the same provider share one login session. Logins for different providers remain independent.
