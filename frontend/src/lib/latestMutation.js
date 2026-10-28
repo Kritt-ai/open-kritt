@@ -23,61 +23,69 @@ export function createLatestFieldMutationGate() {
 // that the final request reaching the server is also the newest user choice,
 // rather than merely ignoring an older response after it has already won in the
 // database.
-export function createLatestFieldMutationQueue() {
-  let sequence = 0;
-  let disposed = false;
-  const states = new Map();
-  const overlays = new Map();
+// Route remounts create new queue instances, so in-flight writes for one field
+// must share a lane across instances as well as within one view.
+const pendingFieldWrites = new Map();
+const settledListeners = new Map();
+let fieldWriteSequence = 0;
 
-  const keyFor = (scope, field) => `${scope}\u0000${field}`;
+async function drainFieldWrite(key, state) {
+  if (state.active || !state.queued) return;
+  const item = state.queued;
+  state.queued = null;
+  state.active = item;
 
-  const drain = async (key, state) => {
-    if (disposed || state.active || !state.queued) return;
-    const item = state.queued;
-    state.queued = null;
-    state.active = item;
-
-    try {
-      const result = await item.mutate();
-      const latest = !disposed && overlays.get(key)?.id === item.id && !state.queued;
-      if (latest) {
-        overlays.delete(key);
-        item.onSuccess?.(result);
-      }
-    } catch (error) {
-      const latest = !disposed && overlays.get(key)?.id === item.id && !state.queued;
-      if (latest) {
-        overlays.delete(key);
-        item.onError?.(error);
-      }
-    } finally {
-      state.active = null;
-      if (!disposed) {
-        if (state.queued) void drain(key, state);
-        else states.delete(key);
+  try {
+    const result = await item.mutate();
+    const latest = !item.owner.disposed && item.owner.overlays.get(key)?.id === item.id && !state.queued;
+    if (latest) {
+      item.owner.overlays.delete(key);
+      item.onSuccess?.(result);
+    }
+  } catch (error) {
+    const latest = !item.owner.disposed && item.owner.overlays.get(key)?.id === item.id && !state.queued;
+    if (latest) {
+      item.owner.overlays.delete(key);
+      item.onError?.(error);
+    }
+  } finally {
+    state.active = null;
+    if (state.queued) void drainFieldWrite(key, state);
+    else {
+      pendingFieldWrites.delete(key);
+      for (const subscription of settledListeners.get(item.scope) || []) {
+        if (subscription.owner !== item.owner && !subscription.owner.disposed) subscription.listener();
       }
     }
-  };
+  }
+}
+
+export function createLatestFieldMutationQueue() {
+  const owner = { disposed: false, overlays: new Map(), subscriptions: new Set() };
 
   return {
     enqueue({ scope = '', field, value, mutate, onSuccess, onError }) {
-      if (disposed) return;
-      const key = keyFor(scope, field);
-      const state = states.get(key) || { active: null, queued: null };
-      const item = { id: ++sequence, mutate, onSuccess, onError };
+      if (owner.disposed) return;
+      const key = `${scope}\u0000${field}`;
+      const state = pendingFieldWrites.get(key) || { active: null, queued: null };
+      const item = { id: ++fieldWriteSequence, owner, scope: String(scope), field, value, mutate, onSuccess, onError };
+      state.active?.owner.overlays.delete(key);
+      state.queued?.owner.overlays.delete(key);
       state.queued = item;
-      states.set(key, state);
-      overlays.set(key, { id: item.id, scope: String(scope), field, value });
-      void drain(key, state);
+      pendingFieldWrites.set(key, state);
+      owner.overlays.set(key, { id: item.id, scope: String(scope), field, value });
+      void drainFieldWrite(key, state);
     },
 
     overlayRecords(records, idField = 'id') {
-      if (!Array.isArray(records) || overlays.size === 0) return records;
+      if (!Array.isArray(records) || pendingFieldWrites.size === 0) return records;
       const patches = new Map();
-      for (const overlay of overlays.values()) {
-        const patch = patches.get(overlay.scope) || {};
-        patch[overlay.field] = overlay.value;
-        patches.set(overlay.scope, patch);
+      for (const state of pendingFieldWrites.values()) {
+        const pending = state.queued || state.active;
+        if (!pending) continue;
+        const patch = patches.get(pending.scope) || {};
+        patch[pending.field] = pending.value;
+        patches.set(pending.scope, patch);
       }
       return records.map((record) => {
         const patch = patches.get(String(record?.[idField]));
@@ -85,10 +93,26 @@ export function createLatestFieldMutationQueue() {
       });
     },
 
+    subscribe(scope, listener) {
+      if (owner.disposed) return () => {};
+      const key = String(scope);
+      const subscribers = settledListeners.get(key) || new Set();
+      const subscription = { owner, listener };
+      subscribers.add(subscription);
+      settledListeners.set(key, subscribers);
+      const unsubscribe = () => {
+        subscribers.delete(subscription);
+        owner.subscriptions.delete(unsubscribe);
+        if (subscribers.size === 0) settledListeners.delete(key);
+      };
+      owner.subscriptions.add(unsubscribe);
+      return unsubscribe;
+    },
+
     dispose() {
-      disposed = true;
-      states.clear();
-      overlays.clear();
+      owner.disposed = true;
+      owner.overlays.clear();
+      for (const unsubscribe of owner.subscriptions) unsubscribe();
     },
   };
 }
