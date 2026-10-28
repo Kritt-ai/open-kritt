@@ -6,7 +6,8 @@ import shutil
 import subprocess
 import tempfile
 import time
-from contextlib import nullcontext, suppress
+from contextlib import contextmanager, nullcontext, suppress
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -730,6 +731,37 @@ def _uses_openrouter(cmd: list[str], env: dict[str, str]) -> bool:
     return "openrouter.ai" in command or 'model_provider="openrouter"' in command
 
 
+_HARNESS_DEADLINE: ContextVar[float | None] = ContextVar("harness_deadline", default=None)
+
+
+@contextmanager
+def harness_deadline(remaining_seconds: float | None):
+    """Share one deadline across initial calls and structured-output resumes.
+
+    Worker-local context avoids mutating shared harness instances. This bounds
+    model subprocesses; workspace preparation and container cleanup may overrun.
+    """
+    deadline = _HARNESS_DEADLINE.get()
+    if remaining_seconds is not None:
+        proposed = time.monotonic() + max(0.0, remaining_seconds)
+        deadline = proposed if deadline is None else min(deadline, proposed)
+    token = _HARNESS_DEADLINE.set(deadline)
+    try:
+        yield
+    finally:
+        _HARNESS_DEADLINE.reset(token)
+
+
+def _deadline_timeout(timeout):
+    deadline = _HARNESS_DEADLINE.get()
+    if deadline is None:
+        return timeout
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise HarnessError("Discovery wall-time budget expired before model dispatch.", code="timeout", retryable=False)
+    return remaining if timeout is None else min(timeout, remaining)
+
+
 def _run_process(cmd, prompt, cwd, timeout, env=None):
     harness = _command_harness(cmd)
     process_env = env if env is not None else _base_env()
@@ -755,7 +787,7 @@ def _run_process(cmd, prompt, cwd, timeout, env=None):
                     text=True,
                     stdout=stdout_file,
                     stderr=stderr_file,
-                    timeout=timeout,
+                    timeout=_deadline_timeout(timeout),
                     check=False,
                 )
             except subprocess.TimeoutExpired as exc:

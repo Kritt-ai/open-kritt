@@ -3,6 +3,8 @@ from typing import Any
 
 from jsonschema import Draft202012Validator
 
+from .adaptive_discovery import discovery_schema, validate_discovery
+
 EXTRACTOR_HELPER_FIELD = "_kritt_extractor_helper"
 
 FIELD_TYPE_MAP = {
@@ -55,7 +57,7 @@ def _field_type(value: Any) -> str:
     return "string"
 
 
-def output_schema(raw_output_format: Any, multi_output: bool) -> dict[str, Any]:
+def output_schema(raw_output_format: Any, multi_output: bool, *, discovery: bool = False) -> dict[str, Any]:
     fields = normalize_output_format(raw_output_format)
     properties = {key: FIELD_TYPE_MAP.get(kind, {"type": "string"}) for key, kind in fields.items()}
     item_schema = {
@@ -70,7 +72,7 @@ def output_schema(raw_output_format: Any, multi_output: bool) -> dict[str, Any]:
     }
     if not multi_output:
         results_schema["maxItems"] = 1
-    return {
+    schema = {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
@@ -82,6 +84,10 @@ def output_schema(raw_output_format: Any, multi_output: bool) -> dict[str, Any]:
         "required": [EXTRACTOR_HELPER_FIELD, "stub", "stub_explanation", "results"],
         "additionalProperties": False,
     }
+    if discovery:
+        schema["properties"]["discovery"] = discovery_schema()
+        schema["required"].append("discovery")
+    return schema
 
 
 def validate_payload(payload: Any, schema: dict[str, Any], multi_output: bool) -> list[dict[str, Any]]:
@@ -99,4 +105,9 @@ def validate_payload(payload: Any, schema: dict[str, Any], multi_output: bool) -
         raise OutputValidationError("stub=false requires at least one result")
     if not multi_output and len(results) > 1:
         raise OutputValidationError("single-output step returned more than one result")
+    if "discovery" in schema.get("properties", {}):
+        try:
+            validate_discovery(payload["discovery"])
+        except ValueError as exc:
+            raise OutputValidationError(str(exc)) from exc
     return results

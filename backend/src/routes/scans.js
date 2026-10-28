@@ -3,8 +3,10 @@ import { ZipArchive } from 'archiver';
 import { Router } from 'express';
 import { Readable } from 'node:stream';
 import { prisma } from '../db.js';
+import { scanDiscoveryStatus } from '../lib/adaptiveDiscovery.js';
 import {
   validateScan,
+  validateAdaptiveDiscoveryWorkflow,
   validateScanJobLimit,
   validateModelSelection,
   validateModelOverrides,
@@ -117,6 +119,8 @@ export async function deleteScanOwnedData(tx, scanId) {
   await tx.vulnerabilityEnrichment.deleteMany({ where: { scanId } });
   await tx.supplementalPostScriptTarget.deleteMany({ where: { scanId } });
   await tx.supplementalPostScriptRun.deleteMany({ where: { scanId } });
+  await tx.discoveryPath.deleteMany({ where: { scanId } });
+  await tx.discoveryFrontier.deleteMany({ where: { scanId } });
   await tx.stepMetadata.deleteMany({ where: { scanId } });
   await tx.postProcessMetadata.deleteMany({ where: { scanId } });
   await tx.vulnerability.deleteMany({ where: { scanId } });
@@ -747,6 +751,17 @@ router.get('/:id', async (req, res, next) => {
   }
 });
 
+// GET /api/scans/:id/discovery — exploration state is separate from findings.
+router.get('/:id/discovery', async (req, res, next) => {
+  try {
+    const scan = await prisma.scan.findUnique({ where: { id: BigInt(req.params.id) } });
+    if (!scan) return res.status(404).json({ error: 'Scan not found.' });
+    res.json(await scanDiscoveryStatus(prisma, scan));
+  } catch (error) {
+    next(error);
+  }
+});
+
 // GET /api/scans/:id/vulnerabilities — ranked findings for a scan.
 router.get('/:id/vulnerabilities', async (req, res, next) => {
   try {
@@ -1057,8 +1072,12 @@ router.post('/', async (req, res, next) => {
       // unioned with the stored array, so this also supports workflows saved before
       // the extra field existed. Every selected-config key must be supplied.
       const wfSteps = workflow.stepIds?.length
-        ? await tx.step.findMany({ where: { id: { in: workflow.stepIds } }, select: { content: true, depth: true } })
+        ? await tx.step.findMany({
+            where: { id: { in: workflow.stepIds } },
+            select: { id: true, content: true, depth: true, multiOutput: true, isLastStep: true },
+          })
         : [];
+      validateAdaptiveDiscoveryWorkflow(configurationObject, wfSteps);
       validateModelOverrides(valid.modelOverrides, { allowedDepths: wfSteps.map((step) => step.depth) });
       await assertModelOverridesAvailable(valid.modelOverrides, transactionModelAvailabilityChecker(tx));
       const selectedPostScripts = queryPostScriptIds.map((id) => postScriptMap.get(id));

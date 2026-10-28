@@ -422,3 +422,46 @@ model Triage {
   @@map("triage")
   @@schema("workflows")
 }
+
+
+/// Durable, opt-in discovery budget and queue disposition; not a findings verdict.
+model DiscoveryFrontier {
+  scanId          BigInt   @id @map("scan_id")
+  workflowId      BigInt   @map("workflow_id")
+  stepId          BigInt   @map("step_id")
+  maxPaths        Int      @map("max_paths")
+  wallTimeSeconds Int      @map("wall_time_seconds")
+  status          String   @default("running")
+  reason          String?
+  budgetReason    String?  @map("budget_reason")
+  startedAt       DateTime @default(dbgenerated("clock_timestamp()")) @map("started_at") @db.Timestamptz(6)
+  deadlineAt      DateTime @map("deadline_at") @db.Timestamptz(6)
+  updatedAt       DateTime @default(dbgenerated("clock_timestamp()")) @map("updated_at") @db.Timestamptz(6)
+
+  @@map("discovery_frontiers")
+  @@schema("workflows")
+}
+
+/// Paths and proposal dispositions are not vulnerability or step-result records.
+model DiscoveryPath {
+  id           BigInt   @id @default(autoincrement())
+  scanId       BigInt   @map("scan_id")
+  stepId       BigInt   @map("step_id")
+  parentPathId BigInt?  @map("parent_path_id")
+  pathKey      String   @map("path_key")
+  scope        String
+  question     String
+  rationale    String
+  status       String   @default("pending")
+  reason       String?
+  metadataId   BigInt?  @map("metadata_id")
+  proposals    Json     @default("[]")
+  completion   Json?
+  insertedAt   DateTime @default(dbgenerated("clock_timestamp()")) @map("inserted_at") @db.Timestamptz(6)
+  updatedAt    DateTime @default(dbgenerated("clock_timestamp()")) @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([scanId, pathKey], map: "discovery_paths_scan_path_key")
+  @@index([scanId, status, id], map: "discovery_paths_scan_status_idx")
+  @@map("discovery_paths")
+  @@schema("workflows")
+}
