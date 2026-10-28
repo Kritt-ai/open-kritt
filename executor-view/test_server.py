@@ -1,6 +1,8 @@
 import json
+import sys
 import tempfile
 import time
+import tracemalloc
 import unittest
 from email.message import Message
 from pathlib import Path
@@ -1603,6 +1605,250 @@ class ExecutorViewSummaryTests(unittest.TestCase):
                 patch.dict(server.os.environ, {"OPENROUTER_API_KEY": "initial-key"}),
             ):
                 self.assertIsNone(server.configured_secret("OPENROUTER_API_KEY"))
+
+
+class ExecutorViewQueueRepeatTests(unittest.TestCase):
+    def setUp(self):
+        self.scan = {
+            "model": "synthetic",
+            "model_provider": "codex",
+            "harness": "codex",
+            "thinking_effort": "medium",
+            "configuration": {"repeat_runs": 2},
+        }
+        self.steps = [
+            {"id": 1, "name": "root", "depth": 0, "is_last_step": False},
+            {"id": 2, "name": "final", "depth": 1, "is_last_step": True},
+        ]
+        self.root_1 = server.line_key(1, 0, None, 1)
+        self.root_2 = server.line_key(1, 0, None, 2)
+
+    def queue(self, completed=(), claimed=(), results=None):
+        return server.build_queue(
+            self.scan,
+            self.steps,
+            set(completed),
+            set(completed) | set(claimed),
+            results or {},
+        )
+
+    def jobs(self, queue):
+        return [
+            (int(job["stepId"]), job["prevId"], job["repeatRun"])
+            for job in queue["pending"]
+        ]
+
+    def assert_expected(self, queue, step_id, keys):
+        expected = queue["expected_by_step"][step_id]
+        self.assertEqual(expected.count, len(keys))
+        for key in keys:
+            self.assertIn(key, expected)
+
+    def test_one_repeat_control_keeps_normal_downstream_progression(self):
+        self.scan["configuration"]["repeat_runs"] = 1
+        self.assertEqual(self.jobs(self.queue()), [(1, 0, 1)])
+        queue = self.queue(completed={self.root_1}, results={self.root_1: [{"id": 10}]})
+        self.assertEqual(self.jobs(queue), [(2, 10, 1)])
+        self.assert_expected(
+            queue,
+            2,
+            {server.line_key(2, 10, server.STEP_RESULTS_TABLE, 1)},
+        )
+
+    def test_fresh_repeated_task_queues_only_its_first_run(self):
+        queue = self.queue()
+        self.assertEqual(self.jobs(queue), [(1, 0, 1)])
+        self.assert_expected(queue, 1, {self.root_1, self.root_2})
+        self.assertNotIn(2, queue["expected_by_step"])
+
+    def test_claimed_first_repeat_does_not_release_second(self):
+        queue = self.queue(claimed={self.root_1})
+        self.assertEqual(self.jobs(queue), [])
+        self.assert_expected(queue, 1, {self.root_1, self.root_2})
+
+    def test_first_completed_repeat_does_not_release_downstream(self):
+        queue = self.queue(completed={self.root_1}, results={self.root_1: [{"id": 10}]})
+        self.assertEqual(self.jobs(queue), [(1, 0, 2)])
+        self.assertNotIn(2, queue["expected_by_step"])
+
+    def test_completed_root_repeats_release_each_child_at_run_one(self):
+        queue = self.queue(
+            completed={self.root_1, self.root_2},
+            results={self.root_1: [{"id": 10}], self.root_2: [{"id": 11}]},
+        )
+        self.assertEqual(self.jobs(queue), [(2, 10, 1), (2, 11, 1)])
+        self.assert_expected(
+            queue,
+            2,
+            {
+                server.line_key(2, prev_id, server.STEP_RESULTS_TABLE, repeat_run)
+                for prev_id in (10, 11)
+                for repeat_run in (1, 2)
+            },
+        )
+
+    def test_child_second_repeat_waits_for_its_first(self):
+        child_10_first = server.line_key(2, 10, server.STEP_RESULTS_TABLE, 1)
+        queue = self.queue(
+            completed={self.root_1, self.root_2, child_10_first},
+            results={self.root_1: [{"id": 10}], self.root_2: [{"id": 11}]},
+        )
+        self.assertEqual(self.jobs(queue), [(2, 11, 1), (2, 10, 2)])
+
+    def test_consume_all_waits_for_every_root_repeat(self):
+        self.steps[1]["consume_all_previous"] = True
+        partial = self.queue(
+            completed={self.root_1}, results={self.root_1: [{"id": 10}]}
+        )
+        self.assertEqual(self.jobs(partial), [(1, 0, 2)])
+        self.assertNotIn(2, partial["expected_by_step"])
+
+        complete = self.queue(
+            completed={self.root_1, self.root_2},
+            results={self.root_1: [{"id": 10}], self.root_2: [{"id": 11}]},
+        )
+        self.assertEqual(self.jobs(complete), [(2, 0, 1)])
+        self.assert_expected(
+            complete,
+            2,
+            {server.line_key(2, 0, None, run) for run in (1, 2)},
+        )
+
+    def test_bound_children_only_receive_their_source_step_results(self):
+        self.scan["configuration"]["repeat_runs"] = 1
+        self.steps = [
+            self.steps[0],
+            {"id": 3, "name": "other root", "depth": 0, "is_last_step": False},
+            {**self.steps[1], "bound_source_step_id": 1},
+            {
+                "id": 4,
+                "name": "other final",
+                "depth": 1,
+                "is_last_step": True,
+                "bound_source_step_id": 3,
+            },
+        ]
+        other_root = server.line_key(3, 0, None, 1)
+        queue = self.queue(
+            completed={self.root_1, other_root},
+            results={self.root_1: [{"id": 10}], other_root: [{"id": 30}]},
+        )
+        self.assertEqual(self.jobs(queue), [(2, 10, 1), (4, 30, 1)])
+
+    def test_completed_sibling_can_feed_downstream_while_other_sibling_waits(self):
+        self.scan["configuration"]["repeat_runs"] = 1
+        self.steps.insert(
+            1, {"id": 3, "name": "other root", "depth": 0, "is_last_step": False}
+        )
+        other_root = server.line_key(3, 0, None, 1)
+        results = {self.root_1: [{"id": 10}]}
+        queue = self.queue(completed={self.root_1}, results=results)
+        self.assertEqual(self.jobs(queue), [(2, 10, 1), (3, 0, 1)])
+
+        claimed = self.queue(
+            completed={self.root_1}, claimed={other_root}, results=results
+        )
+        self.assertEqual(self.jobs(claimed), [(2, 10, 1)])
+
+    def test_pending_priority_uses_workflow_step_order_not_numeric_ids(self):
+        self.steps = [
+            {"id": 9, "name": "first configured", "depth": 0, "is_last_step": True},
+            {"id": 1, "name": "second configured", "depth": 0, "is_last_step": True},
+        ]
+        queue = self.queue()
+        self.assertEqual(self.jobs(queue), [(9, 0, 1), (1, 0, 1)])
+        first_claimed = self.queue(claimed={server.line_key(9, 0, None, 1)})
+        self.assertEqual(self.jobs(first_claimed), [(1, 0, 1)])
+
+    def test_large_repeat_count_keeps_preview_memory_bounded(self):
+        self.scan["configuration"]["repeat_runs"] = 50_000
+        self.steps = [{"id": 1, "name": "root", "depth": 0, "is_last_step": True}]
+        tracemalloc.start()
+        try:
+            queue = self.queue()
+            peak_bytes = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        self.assertEqual(self.jobs(queue), [(1, 0, 1)])
+        self.assertEqual(queue["expected_by_step"][1].count, 50_000)
+        self.assertLess(peak_bytes, 1_000_000)
+
+    def test_expected_summary_handles_repeat_count_above_platform_list_limit(self):
+        self.scan["configuration"]["repeat_runs"] = sys.maxsize + 1
+        self.steps = [
+            {
+                "id": 1,
+                "name": "root",
+                "depth": 0,
+                "multi_output": False,
+                "is_last_step": True,
+            }
+        ]
+        queue = self.queue()
+        summary = server.summarize_step(
+            self.steps[0],
+            [],
+            queue["expected_by_step"][1],
+            {},
+            {},
+            0,
+            0,
+            None,
+            False,
+        )
+        self.assertEqual(self.jobs(queue), [(1, 0, 1)])
+        self.assertEqual(summary["expected"], sys.maxsize + 1)
+
+    def test_summary_counts_only_known_inputs_and_valid_repeat_runs(self):
+        self.steps = [
+            {
+                "id": 1,
+                "name": "root",
+                "depth": 0,
+                "multi_output": False,
+                "is_last_step": True,
+            }
+        ]
+        expected = self.queue()["expected_by_step"][1]
+        rows = [
+            {
+                "step_id": 1,
+                "prev_id": 0,
+                "prev_table": None,
+                "repeat_run": 1,
+                "status": "completed",
+            },
+            {
+                "step_id": 1,
+                "prev_id": 0,
+                "prev_table": None,
+                "repeat_run": 3,
+                "status": "completed",
+            },
+            {
+                "step_id": 1,
+                "prev_id": 77,
+                "prev_table": None,
+                "repeat_run": 1,
+                "status": "completed",
+            },
+        ]
+        by_line = {server.metadata_key(row): row for row in rows}
+        summary = server.summarize_step(
+            self.steps[0],
+            rows,
+            expected,
+            by_line,
+            by_line,
+            0,
+            0,
+            None,
+            False,
+        )
+        self.assertEqual(summary["expected"], 2)
+        self.assertEqual(summary["completed"], 1)
+        self.assertEqual(summary["pending"], 1)
+        self.assertEqual(summary["attempts"], 3)
 
 
 if __name__ == "__main__":

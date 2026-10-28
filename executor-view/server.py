@@ -514,6 +514,37 @@ def state_key(step_id, state):
     return line_key(step_id, state["prev_id"], state["prev_table"], state["repeat_run"])
 
 
+class ExpectedLineages:
+    """Count future repeats without allocating a key for each one."""
+
+    def __init__(self, step_id, runs):
+        self.step_id = step_id
+        self.runs = runs
+        self.inputs = set()
+
+    def add(self, state):
+        self.inputs.add(
+            line_key(self.step_id, state["prev_id"], state["prev_table"], 1).rsplit(
+                "|", 1
+            )[0]
+        )
+
+    @property
+    def count(self):
+        return len(self.inputs) * self.runs
+
+    def __contains__(self, key):
+        if not isinstance(key, str):
+            return False
+        input_key, separator, run = key.rpartition("|")
+        return (
+            bool(separator)
+            and input_key in self.inputs
+            and run.isdecimal()
+            and 1 <= int(run) <= self.runs
+        )
+
+
 def millis(value):
     if value is None:
         return None
@@ -3628,44 +3659,96 @@ def summarize_post_attempts(post_metadata):
 
 
 def build_queue(scan, steps, completed_keys, claimed_keys, results_by_line):
+    # Mirror the engine's per-task repeat and routing order; this is a preview,
+    # while only the engine claims work. Count future repeats for known inputs.
     depths = sorted({step["depth"] for step in steps})
+    step_order = {step["id"]: order for order, step in enumerate(steps)}
     by_depth = {
-        depth: sorted(
-            [step for step in steps if step["depth"] == depth],
-            key=lambda item: item["id"],
-        )
-        for depth in depths
+        depth: [step for step in steps if step["depth"] == depth] for depth in depths
     }
+    runs = repeat_runs(scan)
     states = [
-        {"prev_id": 0, "prev_table": None, "repeat_run": run}
-        for run in range(1, repeat_runs(scan) + 1)
+        {"prev_id": 0, "prev_table": None, "repeat_run": 1, "source_step_id": None}
     ]
-    expected_by_step = defaultdict(set)
+    expected_by_step = {}
     pending = []
+    previous_depth_complete = True
 
     for depth in depths:
+        depth_steps = by_depth[depth]
         next_states = []
-        for state in states:
-            for step in by_depth[depth]:
-                key = state_key(step["id"], state)
-                expected_by_step[step["id"]].add(key)
-                if key not in completed_keys:
-                    if key not in claimed_keys:
-                        pending.append(job_from_state(step, state, scan))
-                    continue
-                if step["is_last_step"]:
-                    continue
-                for row in results_by_line.get(key, []):
-                    next_states.append(
-                        {
-                            "prev_id": row["id"],
-                            "prev_table": STEP_RESULTS_TABLE,
-                            "repeat_run": state["repeat_run"],
-                        }
-                    )
-        states = next_states
+        depth_complete = previous_depth_complete
+        consumes_all = (
+            depth > 0
+            and depth_steps
+            and all(step.get("consume_all_previous") for step in depth_steps)
+        )
+        if consumes_all:
+            input_states = (
+                [
+                    {
+                        "prev_id": 0,
+                        "prev_table": None,
+                        "repeat_run": 1,
+                        "source_step_id": None,
+                    }
+                ]
+                if previous_depth_complete and states
+                else []
+            )
+        else:
+            input_states = states
 
-    pending.sort(key=lambda job: (-job["depth"], job["repeatRun"], int(job["stepId"])))
+        for step in depth_steps:
+            bound_source_id = step.get("bound_source_step_id")
+            routed_states = (
+                [
+                    state
+                    for state in input_states
+                    if state["source_step_id"] == bound_source_id
+                ]
+                if bound_source_id is not None
+                else input_states
+            )
+            for state in routed_states:
+                if step["id"] not in expected_by_step:
+                    expected_by_step[step["id"]] = ExpectedLineages(step["id"], runs)
+                expected_by_step[step["id"]].add(state)
+                task_complete = True
+                task_next_states = []
+                for run in range(1, runs + 1):
+                    repeated_state = {**state, "repeat_run": run}
+                    key = state_key(step["id"], repeated_state)
+                    if key not in completed_keys:
+                        task_complete = False
+                        depth_complete = False
+                        if key not in claimed_keys:
+                            pending.append(job_from_state(step, repeated_state, scan))
+                        break
+                    if step["is_last_step"]:
+                        continue
+                    for row in results_by_line.get(key, []):
+                        task_next_states.append(
+                            {
+                                "prev_id": row["id"],
+                                "prev_table": STEP_RESULTS_TABLE,
+                                "repeat_run": 1,
+                                "source_step_id": step["id"],
+                            }
+                        )
+                if task_complete:
+                    next_states.extend(task_next_states)
+        states = next_states
+        previous_depth_complete = depth_complete
+
+    pending.sort(
+        key=lambda job: (
+            -job["depth"],
+            job["repeatRun"],
+            step_order[int(job["stepId"])],
+            job["prevId"],
+        )
+    )
     return {"expected_by_step": expected_by_step, "pending": pending}
 
 
@@ -3728,10 +3811,10 @@ def summarize_step(
 ):
     rows = [row for row in metadata if row["step_id"] == step["id"]]
     latest_rows = {
-        key: latest_by_line[key] for key in expected_keys if key in latest_by_line
+        key: row for key, row in latest_by_line.items() if key in expected_keys
     }
     completed_rows = [
-        completed_by_line[key] for key in expected_keys if key in completed_by_line
+        row for key, row in completed_by_line.items() if key in expected_keys
     ]
     completed_keys = set(completed_by_line.keys())
     completed = len(completed_rows)
@@ -3746,7 +3829,11 @@ def summarize_step(
         if key not in completed_keys and row.get("status") == "failed"
     )
     no_result_lineages = sum(1 for row in completed_rows if row.get("stub"))
-    expected = len(expected_keys)
+    expected = (
+        expected_keys.count
+        if isinstance(expected_keys, ExpectedLineages)
+        else len(expected_keys)
+    )
     active = active_job and active_job["stepId"] == scalar_id(step["id"])
     pending = max(0, expected - completed - running)
     latest = max(rows, key=row_time) if rows else None
