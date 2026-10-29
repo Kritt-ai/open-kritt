@@ -92,7 +92,9 @@ only the earlier output from the same step and input, and appends results that a
 missing. The accumulated terminal findings are then de-duplicated and ranked normally.
 
 <Note>
-  Resuming preserves the repository revision and scan configuration. Create a separate scan
+  Resuming preserves the repository revision and completed results. The scan configuration
+  stays the same unless you explicitly update runtime settings or increase repeats with
+  the [scan update API](/scans/configuration#engine-recognized-keys). Create a separate scan
   when you intentionally want to run every workflow depth again from the beginning.
 </Note>
 
