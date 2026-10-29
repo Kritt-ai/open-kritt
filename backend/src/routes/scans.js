@@ -603,6 +603,33 @@ export async function patchScanIfPresent(tx, scanId, body, { assertAvailable, av
   if (!existing) return { kind: 'not-found' };
 
   const data = {};
+  const updatesRepeats =
+    Object.prototype.hasOwnProperty.call(body, 'repeatRuns') ||
+    Object.prototype.hasOwnProperty.call(body, 'repeat_runs');
+  const requestedRepeats = body.repeatRuns ?? body.repeat_runs;
+  if (updatesRepeats && (!Number.isInteger(requestedRepeats) || requestedRepeats < 1 || requestedRepeats > 10)) {
+    throw new ValidationError([{ field: 'repeatRuns', message: 'Repeat runs must be an integer from 1 to 10.' }]);
+  }
+  const currentConfiguration =
+    existing.configuration && typeof existing.configuration === 'object' && !Array.isArray(existing.configuration)
+      ? existing.configuration
+      : {};
+  const currentRepeats = Number.parseInt(currentConfiguration.repeat_runs ?? 1, 10);
+  const expandsCompletedScan =
+    existing.status === 'completed' && body.status === 'pending' && updatesRepeats && requestedRepeats > currentRepeats;
+  const updatesCyberAccess =
+    Object.prototype.hasOwnProperty.call(body, 'cyberAccessProgram') ||
+    Object.prototype.hasOwnProperty.call(body, 'cyber_access_program');
+  const cyberAccessProgram = body.cyberAccessProgram ?? body.cyber_access_program;
+  if (
+    updatesCyberAccess &&
+    cyberAccessProgram !== null &&
+    !['standard', 'daybreak_blue', 'daybreak_red'].includes(cyberAccessProgram)
+  ) {
+    throw new ValidationError([
+      { field: 'cyberAccessProgram', message: 'Choose standard, daybreak_blue, or daybreak_red.' },
+    ]);
+  }
   if (
     Object.prototype.hasOwnProperty.call(body, 'jobLimit') ||
     Object.prototype.hasOwnProperty.call(body, 'job_limit')
@@ -614,7 +641,7 @@ export async function patchScanIfPresent(tx, scanId, body, { assertAvailable, av
     if (!status || !SCAN_STATUSES.includes(status)) {
       throw new ValidationError([{ field: 'status', message: `Status must be one of: ${SCAN_STATUSES.join(', ')}.` }]);
     }
-    if (status !== existing.status && !USER_STATUS_TRANSITIONS[existing.status]?.has(status)) {
+    if (status !== existing.status && !USER_STATUS_TRANSITIONS[existing.status]?.has(status) && !expandsCompletedScan) {
       throw invalidScanTransition(existing.status, status);
     }
     if (status === 'pending' && existing.status !== 'pending') {
@@ -651,12 +678,12 @@ export async function patchScanIfPresent(tx, scanId, body, { assertAvailable, av
     postProcessingThinkingEffort: 'post_processing_thinking_effort',
   };
   if (
+    updatesRepeats ||
+    updatesCyberAccess ||
     Object.keys(postProcessingConfigurationKeys).some((key) => Object.prototype.hasOwnProperty.call(runtimeData, key))
   ) {
     const configuration = {
-      ...(existing.configuration && typeof existing.configuration === 'object' && !Array.isArray(existing.configuration)
-        ? existing.configuration
-        : {}),
+      ...currentConfiguration,
     };
     for (const [runtimeKey, configurationKey] of Object.entries(postProcessingConfigurationKeys)) {
       if (!Object.prototype.hasOwnProperty.call(runtimeData, runtimeKey)) continue;
@@ -664,6 +691,11 @@ export async function patchScanIfPresent(tx, scanId, body, { assertAvailable, av
       if (value === null) delete configuration[configurationKey];
       else configuration[configurationKey] = value;
       delete runtimeData[runtimeKey];
+    }
+    if (updatesRepeats) configuration.repeat_runs = requestedRepeats;
+    if (updatesCyberAccess) {
+      if (cyberAccessProgram === null) delete configuration.codex_cyber_access_program;
+      else configuration.codex_cyber_access_program = cyberAccessProgram;
     }
     data.configuration = configuration;
   }

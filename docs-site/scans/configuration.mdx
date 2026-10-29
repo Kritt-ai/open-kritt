@@ -37,6 +37,10 @@ A few keys are meaningful to the engine itself:
   sequential; after the first run, a task sees only its own earlier output for the same
   step and input, then returns new records to append. The accumulated task output feeds
   the next depth. Start with `1`; use `2` or `3` when the extra model cost is worthwhile.
+- **`codex_cyber_access_program`** - for Codex scans, set `daybreak_blue` or
+  `daybreak_red` to request that access program on initial and resumed model turns.
+  The selected Codex account must have the corresponding access. Omit this key to
+  use the provider default.
 
 <Note>
   open·kritt also stores the scan's selected post-script and skill IDs inside the
@@ -44,3 +48,14 @@ A few keys are meaningful to the engine itself:
 </Note>
 
 Next: [reserved extra](/scans/reserved-extra).
+
+To extend a completed scan with another repeat while retaining its completed work,
+update the repeat count and status together with `PATCH /api/scans/:id`:
+
+```json
+{"status":"pending","repeatRuns":2}
+```
+
+The new count must exceed the current count and be between 1 and 10. A configured
+job limit may also need to increase to allow the additional work. Runtime model
+settings and `cyberAccessProgram` can be updated in the same request.

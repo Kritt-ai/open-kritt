@@ -680,6 +680,58 @@ test('failed scans resume through pending and establish a new error-history boun
   assert.ok(calls[1].data.lastResumedAt instanceof Date);
 });
 
+test('completed scans resume only when repeats expand in the same runtime update', async () => {
+  const writes = [];
+  const current = {
+    id: 8n,
+    status: 'completed',
+    model: 'synthetic-previous',
+    modelProvider: 'codex',
+    harness: 'codex',
+    thinkingEffort: 'medium',
+    configuration: { repeat_runs: 1, unrelated: true },
+  };
+  const tx = {
+    $queryRaw: async () => [],
+    scan: {
+      findUnique: async () => current,
+      update: async ({ data }) => {
+        writes.push(data);
+        return { ...current, ...data };
+      },
+    },
+    supplementalPostScriptTarget: { count: async () => 0 },
+  };
+
+  await assert.rejects(
+    patchScanIfPresent(tx, 8n, { status: 'pending', repeatRuns: 1 }, { assertAvailable: async () => {} }),
+    (error) => error.status === 409
+  );
+  assert.equal(writes.length, 0);
+
+  const result = await patchScanIfPresent(
+    tx,
+    8n,
+    {
+      status: 'pending',
+      repeatRuns: 2,
+      model: 'synthetic-next',
+      cyberAccessProgram: 'daybreak_blue',
+    },
+    { assertAvailable: async () => {} }
+  );
+  assert.equal(result.kind, 'updated');
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].status, 'pending');
+  assert.equal(writes[0].model, 'synthetic-next');
+  assert.deepEqual(writes[0].configuration, {
+    repeat_runs: 2,
+    unrelated: true,
+    codex_cyber_access_program: 'daybreak_blue',
+  });
+  assert.equal(writes[0].reasoning, Prisma.DbNull);
+});
+
 test('scans cannot resume while supplemental findings are queued or running', async () => {
   const tx = {
     $queryRaw: async () => [],

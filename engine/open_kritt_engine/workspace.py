@@ -377,6 +377,15 @@ def prepare_dependency_workspace(
         harness_name=harness_name,
         model_provider=model_provider,
     )
+    workspace.env.pop("OPEN_KRITT_CODEX_CYBER_ACCESS_PROGRAM", None)
+    configuration = scan.get("configuration") or {}
+    cyber_access_program = configuration.get("codex_cyber_access_program") if isinstance(configuration, dict) else None
+    if (
+        harness_name == "codex"
+        and model_provider == "codex"
+        and cyber_access_program in {"daybreak_blue", "daybreak_red"}
+    ):
+        workspace.env["OPEN_KRITT_CODEX_CYBER_ACCESS_PROGRAM"] = cyber_access_program
     timings["job_home_ms"] = _elapsed_ms(home_started)
     if use_snapshot_image:
         try:

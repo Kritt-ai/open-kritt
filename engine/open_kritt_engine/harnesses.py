@@ -36,6 +36,7 @@ NON_RETRYABLE_HARNESS_FAILURES = frozenset(
 )
 CAPACITY_RATE_LIMIT_FAILURES = frozenset({"provider_throttled", "subagent_limited", "runner_resource_limited"})
 RETRYABLE_RATE_LIMIT_FAILURES = frozenset({"rate_limited", "account_quota_limited", *CAPACITY_RATE_LIMIT_FAILURES})
+MAX_CODEX_CYBER_BLOCKS = 5
 
 HARNESS_FAILURE_MESSAGES = {
     "auth_failed": (
@@ -125,6 +126,7 @@ class HarnessError(RuntimeError):
         self.harness = harness
         self.retry_after_seconds = retry_after_seconds
         self.attempts: int | None = None
+        self.cyber_blocks_exhausted = False
 
 
 def harness_failure_retry_count(
@@ -135,6 +137,8 @@ def harness_failure_retry_count(
     """Return the configured inline retry allowance for one harness failure."""
 
     if error.code == "cyber_safety_blocked":
+        if error.cyber_blocks_exhausted:
+            return 0
         return max(0, int(cyber_safety_retry_count))
     if not error.retryable:
         return 0
@@ -1663,6 +1667,7 @@ def codex_exec_command(
     codex_model_provider: str | None = None,
     max_subagents: int | None = None,
     fast_mode: bool = False,
+    cyber_access_program: str | None = None,
 ) -> list[str]:
     """Build a Codex exec command while preserving scan-mode compatibility."""
 
@@ -1678,6 +1683,11 @@ def codex_exec_command(
     if allow_tools and selected_provider != "deepseek":
         command.append("--search")
     command.extend(["exec", "--json", "-C", repo_dir, "-m", model])
+    if normalize_model_provider(model_provider) == "codex" and cyber_access_program in {
+        "daybreak_blue",
+        "daybreak_red",
+    }:
+        command.extend(["--cyber-access-program", cyber_access_program])
     if allow_tools:
         command.append("--dangerously-bypass-approvals-and-sandbox")
         if max_subagents is not None:
@@ -1787,6 +1797,7 @@ class CodexHarness:
                 allow_tools=allow_tools,
                 max_subagents=self.max_subagents if allow_tools else None,
                 fast_mode=self.fast_mode,
+                cyber_access_program=actual_env.get("OPEN_KRITT_CODEX_CYBER_ACCESS_PROGRAM"),
             )
             if allow_tools:
                 cmd = _scan_docker_command(
@@ -1825,6 +1836,49 @@ class CodexHarness:
                         if session_result.source_text is not None:
                             source_name = f"session-{Path(session_result.source_file or 'codex-session.jsonl').name}"
                             process_output = _add_output_file(process_output, source_name, session_result.source_text)
+                diagnostic = _codex_error_diagnostic_text(proc.stdout, proc.stderr)
+                if parsed_payload is None and _classify_harness_output(diagnostic) == "cyber_safety_blocked":
+                    if not thread_id or not allow_tools:
+                        raise HarnessError(
+                            "Codex blocked before a resumable thread was available.",
+                            output=process_output,
+                            code="harness_failed",
+                            harness="codex",
+                        ) from payload_error
+                    for block_count in range(2, MAX_CODEX_CYBER_BLOCKS + 1):
+                        try:
+                            continued = self._resume_for_json(
+                                session_id=thread_id,
+                                schema=schema,
+                                schema_path=schema_path,
+                                output_path=os.path.join(tmp, f"continue-{block_count}.json"),
+                                repo_dir=repo_dir,
+                                model=model,
+                                thinking_effort=thinking_effort,
+                                env=actual_env,
+                                runner_image=runner_image,
+                                continuation_prompt="please continue",
+                            )
+                        except HarnessError as exc:
+                            if exc.output is not None:
+                                process_output = _combine_harness_outputs(
+                                    process_output, exc.output, secondary_name=f"continue-{block_count}"
+                                )
+                            exc.output = process_output
+                            if exc.code != "cyber_safety_blocked":
+                                raise
+                            if block_count == MAX_CODEX_CYBER_BLOCKS:
+                                exc.cyber_blocks_exhausted = True
+                                raise
+                        else:
+                            parsed_payload = continued.payload
+                            usage = continued.usage or usage
+                            thread_id = continued.codex_session_id or thread_id
+                            if continued.output is not None:
+                                process_output = _combine_harness_outputs(
+                                    process_output, continued.output, secondary_name=f"continue-{block_count}"
+                                )
+                            break
                 if parsed_payload is None and thread_id and allow_tools:
                     try:
                         resume_result = self._resume_for_json(
@@ -1889,6 +1943,7 @@ class CodexHarness:
         thinking_effort: str | None,
         env: dict[str, str],
         runner_image: str | None = None,
+        continuation_prompt: str | None = None,
     ) -> HarnessResult:
         cmd = [
             "codex",
@@ -1903,6 +1958,12 @@ class CodexHarness:
             "-o",
             output_path,
         ]
+        cyber_access_program = env.get("OPEN_KRITT_CODEX_CYBER_ACCESS_PROGRAM")
+        if normalize_model_provider(self.model_provider) == "codex" and cyber_access_program in {
+            "daybreak_blue",
+            "daybreak_red",
+        }:
+            cmd.extend(["--cyber-access-program", cyber_access_program])
         if self.fast_mode and normalize_model_provider(self.model_provider) == "codex":
             cmd.extend(["-c", "features.fast_mode=true", "-c", 'service_tier="fast"'])
         cli_model_provider = codex_cli_model_provider(
@@ -1926,7 +1987,13 @@ class CodexHarness:
             memory_reservation_mb=self.runner_memory_reservation_mb,
         )
         started_at = time.time()
-        proc = _run_process(cmd, _resume_json_prompt(schema), repo_dir, self.timeout_seconds, env=env)
+        proc = _run_process(
+            cmd,
+            continuation_prompt if continuation_prompt is not None else _resume_json_prompt(schema),
+            repo_dir,
+            self.timeout_seconds,
+            env=env,
+        )
         output_files = {}
         raw_output_file = _read_output_file(output_path)
         if raw_output_file is not None:
