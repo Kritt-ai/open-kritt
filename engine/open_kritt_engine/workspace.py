@@ -14,6 +14,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -1188,19 +1189,24 @@ def _checkout_scan_repo_to_cache(
 ) -> tuple[str, str]:
     cache_base = _checkout_cache_base(cache_dir, repo_full, commit_sha, kind=kind, scan_id=scan_id)
     try:
-        ready = _read_ready_cache_checkout(cache_base)
-        if ready is not None:
-            return ready
+        # Workers that find a cold cache at the same time (for example when a
+        # supplemental run starts several targets at once) must not delete each
+        # other's in-progress build, so check, rebuild and mark ready under one
+        # lock that lives outside the cache entry being replaced.
+        with _checkout_cache_build_lock(cache_dir, cache_base):
+            ready = _read_ready_cache_checkout(cache_base)
+            if ready is not None:
+                return ready
 
-        if cache_base.exists():
-            shutil.rmtree(cache_base)
+            if cache_base.exists():
+                shutil.rmtree(cache_base)
 
-        if kind == "local":
-            repo_dir, checked_out = snapshot_local_repo(repo_full, str(cache_base), os.getenv("LOCAL_REPOS_PATH"))
-        else:
-            repo_dir, checked_out = checkout_repo(repo_full, commit_sha, str(cache_base), github_token)
-        _write_ready_cache_checkout(cache_base, repo_dir, checked_out, kind=kind)
-        return repo_dir, checked_out
+            if kind == "local":
+                repo_dir, checked_out = snapshot_local_repo(repo_full, str(cache_base), os.getenv("LOCAL_REPOS_PATH"))
+            else:
+                repo_dir, checked_out = checkout_repo(repo_full, commit_sha, str(cache_base), github_token)
+            _write_ready_cache_checkout(cache_base, repo_dir, checked_out, kind=kind)
+            return repo_dir, checked_out
     except OSError as exc:
         if not allow_fallback or exc.errno not in {errno.EACCES, errno.EPERM, errno.EROFS}:
             raise
@@ -1224,6 +1230,17 @@ def _checkout_scan_repo_to_cache(
             scan_id=scan_id,
             allow_fallback=False,
         )
+
+
+@contextmanager
+def _checkout_cache_build_lock(cache_dir: Path, cache_base: Path) -> Iterator[None]:
+    lock_dir = cache_dir / ".locks"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_dir / f"{cache_base.name}.lock"
+    with _shared_workspace_thread_lock(lock_path):
+        with open(lock_path, "w") as lock_file:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            yield
 
 
 def _fallback_checkout_cache_dir(cache_dir: Path) -> Path | None:

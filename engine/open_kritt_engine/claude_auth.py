@@ -22,6 +22,11 @@ CLAUDE_OAUTH_EXPIRY_ENV = "OPEN_KRITT_CLAUDE_OAUTH_EXPIRES_AT_MS"
 DEFAULT_REFRESH_MARGIN_SECONDS = 15 * 60
 DEFAULT_REFRESH_WINDOW_SECONDS = 60 * 60
 DEFAULT_REFRESH_TIMEOUT_SECONDS = 120
+# Claude Code only renews an access token that expires within five minutes, so
+# a probe against a token with more time left exits successfully unchanged.
+CLAUDE_CLI_RENEWAL_WINDOW_SECONDS = 5 * 60
+# Shortest job window worth starting on an unrenewed but still valid token.
+MIN_UNRENEWED_JOB_WINDOW_SECONDS = 10 * 60
 LOCK_WAIT_SECONDS = 30
 STALE_LOCK_SECONDS = 30 * 60
 MAX_CREDENTIAL_BYTES = 1024 * 1024
@@ -235,6 +240,12 @@ def _refresh_credential(
     ]
 
     try:
+        _present_credential_as_expired(original, original_stat, now=now())
+    except OSError as exc:
+        _restore_credential(original, original_stat)
+        raise _reconnect_error("Claude could not refresh its OAuth credential.") from exc
+
+    try:
         with tempfile.TemporaryDirectory(prefix="open-kritt-claude-refresh-") as trusted_cwd:
             result = run_process(
                 command,
@@ -266,6 +277,15 @@ def _refresh_credential(
         raise
     if refreshed is None or refreshed.expires_at_ms <= original.expires_at_ms:
         _restore_credential(original, original_stat)
+        if not _expires_within(
+            original,
+            now(),
+            DEFAULT_REFRESH_MARGIN_SECONDS + MIN_UNRENEWED_JOB_WINDOW_SECONDS,
+        ):
+            # The CLI accepted the credential but chose not to rotate it. It is
+            # still valid, and claude_oauth_timeout_seconds keeps the job inside
+            # its remaining lifetime, so failing the scan here would be wrong.
+            return _read_credential(home) or original
         raise _reconnect_error("Claude did not renew its OAuth credential.")
     if _expires_within(refreshed, now(), refresh_window_seconds):
         _restore_credential(original, original_stat)
@@ -274,6 +294,29 @@ def _refresh_credential(
     _secure_canonical_credential(refreshed.path, original_stat)
     _remove_alternate_credentials(home, keep=refreshed.path.name)
     return _read_credential(home) or refreshed
+
+
+def _present_credential_as_expired(credential: _Credential, original_stat: os.stat_result, *, now: float) -> None:
+    """Make the refresh probe renew a token the CLI still considers fresh.
+
+    Claude Code skips renewal until the token is inside its own short renewal
+    window, which is far smaller than the job window this module needs. Marking
+    the canonical copy as expired for the duration of the locked probe makes the
+    CLI use its refresh token. Callers restore ``credential.content`` whenever
+    the probe does not produce a newer credential.
+    """
+
+    if credential.expires_at_ms <= int((now + CLAUDE_CLI_RENEWAL_WINDOW_SECONDS) * 1000):
+        return
+    payload = json.loads(credential.content)
+    payload["claudeAiOauth"]["expiresAt"] = int(now * 1000)
+    _remove_alternate_credentials(credential.path.parent, keep=credential.path.name)
+    _atomic_write(credential.path, json.dumps(payload).encode("utf-8"), mode=0o600)
+    if hasattr(os, "chown"):
+        try:
+            os.chown(credential.path, original_stat.st_uid, original_stat.st_gid)
+        except PermissionError:
+            pass
 
 
 def _preserve_rotated_credential(home: Path, original: _Credential, original_stat: os.stat_result) -> bool:

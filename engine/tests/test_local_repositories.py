@@ -241,6 +241,52 @@ def test_local_cache_is_frozen_per_scan_and_fresh_for_new_scan(monkeypatch, tmp_
     assert (fresh_path / "added-later.txt").read_text(encoding="utf-8") == "new scan only\n"
 
 
+def test_concurrent_workers_build_cold_local_cache_once(monkeypatch, tmp_path):
+    local_root = tmp_path / "local-repos"
+    source = local_root / "primary"
+    (source / "nested").mkdir(parents=True)
+    for index in range(50):
+        (source / "nested" / f"file-{index}.txt").write_text(f"{index}\n", encoding="utf-8")
+    monkeypatch.setenv("LOCAL_REPOS_PATH", str(local_root))
+    cache_dir = tmp_path / "cache"
+    real_snapshot = workspace_module.snapshot_local_repo
+    builds = []
+    start = threading.Barrier(6)
+
+    def slow_snapshot(*args, **kwargs):
+        builds.append(args[1])
+        result = real_snapshot(*args, **kwargs)
+        # Widen the window in which an unlocked worker would delete this build.
+        threading.Event().wait(0.2)
+        return result
+
+    monkeypatch.setattr(workspace_module, "snapshot_local_repo", slow_snapshot)
+    results = []
+    errors = []
+
+    def prewarm():
+        start.wait(timeout=5)
+        try:
+            results.append(prewarm_scan_checkout_cache(checkout_cache_dir=str(cache_dir), scan=local_scan(10)))
+        except Exception as exc:  # pragma: no cover - surfaced by the assertion below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=prewarm) for _ in range(6)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert errors == []
+    assert len(builds) == 1
+    paths = {result["primary"]["cache_path"] for result in results}
+    assert len(paths) == 1
+    cache_path = Path(paths.pop())
+    assert sorted(path.name for path in (cache_path / "nested").iterdir()) == sorted(
+        f"file-{index}.txt" for index in range(50)
+    )
+
+
 def test_local_cache_save_restore_uses_relative_marker(monkeypatch, tmp_path):
     local_root = tmp_path / "local-repos"
     source = local_root / "primary"

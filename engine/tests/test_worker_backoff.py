@@ -351,6 +351,30 @@ def test_artifact_cleanup_state_protects_running_workspaces_and_resumable_scans(
     assert conn.calls[2][1] == (retained_after,)
 
 
+def test_artifact_cleanup_keeps_caches_of_scans_with_supplemental_work_in_flight():
+    retained_after = worker_module.now_utc()
+    conn = _RecordingConnection(rows=(None, [], [{"id": 10}]))
+
+    _active_workspace_ids, retained_scan_ids = Database("").load_artifact_cleanup_state(
+        conn,
+        retain_inactive_scan_caches_after=retained_after,
+        retain_finished_workspaces_after=retained_after,
+    )
+
+    assert retained_scan_ids == {10}
+    persisted_query = conn.calls[2][0]
+    assert "workflows.supplemental_post_script_targets" in persisted_query
+    assert "supplemental_target.scan_id = public.scans.id" in persisted_query
+    assert "status IN ('pending', 'running')" in persisted_query
+
+    conn = _RecordingConnection(rows=([{"id": 10, "repo_kind": "local"}],))
+    assert Database("").load_active_scan_cache_specs(conn) == [{"id": 10, "repo_kind": "local"}]
+    active_query = conn.calls[0][0]
+    assert "workflows.supplemental_post_script_targets" in active_query
+    assert "supplemental_target.scan_id = public.scans.id" in active_query
+    assert "status IN ('pending', 'running')" in active_query
+
+
 def test_recursive_artifact_deletion_runs_after_database_lock_is_released(monkeypatch, tmp_path):
     class CleanupDatabase:
         active = False
