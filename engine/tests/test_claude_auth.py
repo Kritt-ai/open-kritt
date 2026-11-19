@@ -181,6 +181,86 @@ def test_concurrent_jobs_share_one_claude_refresh(tmp_path):
         assert payload["claudeAiOauth"]["accessToken"] == "new"
 
 
+def test_refresh_probe_sees_token_outside_cli_renewal_window_as_expired(tmp_path):
+    # Claude Code only renews within five minutes of expiry; a token with 74
+    # minutes left must still be renewed by the pre-job probe.
+    now = 1_800_000_000.0
+    source = tmp_path / "source"
+    target = tmp_path / "job"
+    _write_credential(source, access_token="old", expires_at_ms=int((now + 74 * 60) * 1000))
+    seen_expiry = []
+
+    def refresh(_command, **_options):
+        payload = json.loads((source / ".credentials.json").read_text(encoding="utf-8"))
+        seen_expiry.append(payload["claudeAiOauth"]["expiresAt"])
+        assert payload["claudeAiOauth"]["accessToken"] == "old"
+        assert payload["claudeAiOauth"]["refreshToken"] == "refresh-token"
+        _write_credential(source, access_token="new", expires_at_ms=int((now + 8 * 3600) * 1000))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    expires_at = prepare_claude_job_credentials(
+        source,
+        target,
+        harness_timeout_seconds=3600,
+        now=lambda: now,
+        run_process=refresh,
+    )
+
+    assert seen_expiry == [int(now * 1000)]
+    assert expires_at == int((now + 8 * 3600) * 1000)
+    payload = json.loads((target / ".credentials.json").read_text(encoding="utf-8"))
+    assert payload["claudeAiOauth"]["accessToken"] == "new"
+
+
+def test_unrenewed_but_valid_claude_credential_is_kept_for_the_job(tmp_path):
+    now = 1_800_000_000.0
+    source = tmp_path / "source"
+    target = tmp_path / "job"
+    original_expiry = int((now + 74 * 60) * 1000)
+    source_path = _write_credential(source, access_token="old", expires_at_ms=original_expiry)
+    original = source_path.read_bytes()
+
+    def unrenewed(_command, **_options):
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    expires_at = prepare_claude_job_credentials(
+        source,
+        target,
+        harness_timeout_seconds=3600,
+        now=lambda: now,
+        run_process=unrenewed,
+    )
+
+    assert expires_at == original_expiry
+    assert source_path.read_bytes() == original
+    assert stat.S_IMODE(source_path.stat().st_mode) == 0o600
+    assert (target / ".credentials.json").read_bytes() == original
+    assert claude_oauth_timeout_seconds(expires_at, 3600, now=lambda: now) == 59 * 60
+
+
+def test_unrenewed_nearly_expired_claude_credential_still_requires_reconnect(tmp_path):
+    now = 1_800_000_000.0
+    source = tmp_path / "source"
+    target = tmp_path / "job"
+    source_path = _write_credential(source, access_token="old", expires_at_ms=int((now + 20 * 60) * 1000))
+    original = source_path.read_bytes()
+
+    def unrenewed(_command, **_options):
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    with pytest.raises(ClaudeCredentialError, match="did not renew"):
+        prepare_claude_job_credentials(
+            source,
+            target,
+            harness_timeout_seconds=3600,
+            now=lambda: now,
+            run_process=unrenewed,
+        )
+
+    assert source_path.read_bytes() == original
+    assert not (target / ".credentials.json").exists()
+
+
 def test_failed_refresh_restores_canonical_credential_and_publishes_no_snapshot(tmp_path):
     now = 1_800_000_000.0
     source = tmp_path / "source"

@@ -15,6 +15,15 @@ RATE_LIMIT_RETRY_BASE_SECONDS = 60.0
 RATE_LIMIT_RETRY_MAX_SECONDS = 10 * 60.0
 QUOTA_RETRY_MAX_SECONDS = 30 * 60.0
 QUEUED_SCAN_ADMISSION_LOCK = (0x6B726974, 0x71756575)
+# Supplemental post-script runs execute against a scan's checkout cache after
+# the scan itself has stopped, completed or failed. The artifact janitor must
+# keep that cache while such work is still queued or running.
+SUPPLEMENTAL_WORK_IN_FLIGHT_SQL = """EXISTS (
+                    SELECT 1
+                    FROM workflows.supplemental_post_script_targets AS supplemental_target
+                    WHERE supplemental_target.scan_id = public.scans.id
+                      AND supplemental_target.status IN ('pending', 'running')
+               )"""
 
 
 def rate_limit_retry_delay(
@@ -2062,6 +2071,9 @@ class Database:
                     status IN ('paused', 'failed', 'stopped')
                     AND updated_at >= %s
                )
+               OR """
+            + SUPPLEMENTAL_WORK_IN_FLIGHT_SQL
+            + """
             """,
             (retain_inactive_scan_caches_after,),
         ).fetchall()
@@ -2076,6 +2088,9 @@ class Database:
             SELECT id, repo_kind, repo_full, commit_sha, dependencies, dependencies_detail
             FROM public.scans
             WHERE status IN ('queued', 'pending', 'prewarming_cache', 'running', 'rate_limited', 'post_processing')
+               OR """
+            + SUPPLEMENTAL_WORK_IN_FLIGHT_SQL
+            + """
             """
         ).fetchall()
 
